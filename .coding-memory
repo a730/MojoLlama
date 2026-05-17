@@ -16,20 +16,49 @@ Build a Mojo-based LLM inference server (MojoLlama) with native GGUF support, st
 ## Progress
 
 ### Done
-- Installed Mojo SDK 0.26.2.0 and MAX SDK 26.2.0 via `uv pip install --system mojo`
+- Installed Mojo SDK 0.26.2.0 and MAX SDK 26.2.0 via `uv pip install --system mojo` (SDK may need reinstall)
 - Project scaffold: `mojo.toml`, `.gitignore`, `justfile`, `src/mojollama/{gguf,model}/__init__.mojo`
 - `src/mojollama/gguf/types.mojo` — GGUF constants, GGML type sizes/block sizes via `if/elif` chains
 - `src/mojollama/gguf/reader.mojo` — GGUF file parser using Python bytes, manual bit-shift reads, Python slice interop. Successfully parses 26 metadata KV entries and 291 tensor info entries.
 - None-check pattern: `var is_none = Python.evaluate("lambda x: x is None")(metadata)` then `if is_none:`
-- `src/mojollama/model/inference.py` — complete Python inference module:
-  - BPE tokenizer from GGUF vocab/merges (151936 tokens, 151387 merges, GPT-2 regex pre-tokenization, `ftfy` for normalization)
-  - Memory-efficient weight loading: per-layer tensor dequantization, persistent cache for embed only
-  - Qwen2 model: 24 layers, 896 embd, 14 query heads, 2 KV heads (GQA), 4864 FFN dim, 32K context, 1e-6 norm_eps
-  - Core ops: RMSNorm, RoPE (su), GQA attention, SwiGLU FFN, SiLU, causal mask
-  - First forward pass: ~12s for 1 token, ~12s for 5 tokens (24 layers, inline script)
-  - Verified all GGML types in model: F32, Q8_0, IQ4_NL, Q3_K, Q5_0
-  - Verified forward pass produces coherent token predictions
-- Executable at `build/mojollama` via `mojo build src/main.mojo -o build/mojollama`
+- `src/mojollama/model/inference.py` — refactored to `LLMInference` class supporting multiple architectures:
+  - Qwen2: 24 layers, 896 embd, 14 query heads, 2 KV heads (GQA), 4864 FFN dim, 32K context
+  - Llama 3.2 1B: 16 layers, 2048 dim, 32 heads, 8 KV heads, 8192 FFN dim, 131072 ctx
+  - Auto-detects architecture from GGUF metadata
+  - Memory-efficient: per-layer tensor dequantization, persistent cache for embed only, lm_head fresh each forward
+  - Core ops: RMSNorm, RoPE, GQA attention, SwiGLU FFN, SiLU, causal mask
+  - **Llama 3 tiktoken BPE tokenizer** — GPT-2 byte encoding for merges, UTF-8 token lookup
+  - Forward pass: ~25s for 6 tokens on Llama 3.2 1B Q4_0
+- Downloaded Llama-3.2-1B-Instruct-Q4_0.gguf (737 MB) — Q4_0 quantization
+- Installed Python deps: numpy, gguf, regex, ftfy
+- **🎉 Llama 3.2 1B Q4_0 inference working end-to-end:**
+  - Input: "The capital of France is" → Output: " Paris. The capital of"
+  - Top prediction: "Paris" (correct!)
+  - ~16s per token (no KV cache yet)
+  - Memory stable (~1GB peak)
+- `jagtesh/gguf-mojo` cloned to `/tmp/gguf-mojo` — pure Mojo GGUF type definitions (struct+alias pattern)
+- `modular/modular` cloned to `/tmp/modular` — MAX platform Mojo kernels + Python GGUF utils
+
+### Fixed Issues
+1. ✅ **Architecture string** — Now correctly decodes bytes via `.tobytes().decode('utf-8')`
+2. ✅ **LLaMA 3 tokenizer** — Uses GPT-2 byte encoding for BPE merges, tokens stored as UTF-8 strings in GGUF
+3. ✅ **_get_np()** — Robust handling of numpy arrays, bytes, and None
+4. ✅ **generate()** — Works end-to-end with proper encode→forward→decode loop
+5. ✅ **Memory** — Embed cached, lm_head fresh each forward, per-layer cleanup with gc.collect()
+
+### Pending
+- KV cache for O(n) generation
+- Pre-dequantize layer weights for speed
+- Wire from Mojo via Python.evaluate()
+- Reinstall Mojo SDK
+
+### Known Issues (previously fixed)
+1. ✅ ~~Architecture string shows as bytes instead of "llama"~~ — Fixed with `.tobytes().decode('utf-8')`
+2. ✅ ~~Tokenizer uses GPT-2 BPE but Llama 3.2 needs tiktoken~~ — Fixed: GPT-2 byte encoding for merges, UTF-8 token lookup
+3. ✅ ~~`_get_np()` may fail on some field types — needs robust handling~~
+4. ✅ ~~`generate()` method untested~~
+5. ⏳ Mojo SDK may need reinstall (not found in PATH)
+6. ⏳ Original Qwen2 test model (test_model.gguf) may have been removed
 
 ### Critical Finding: Memory-Induced Forward Failure
 - `model.forward(ids)` was timing out (>120s) NOT due to a code bug, but due to **memory pressure**
@@ -153,10 +182,10 @@ MODEL_PATH=test_model.gguf timeout 30 python3 -c "..."  # for quick tests
 ```
 
 ## Immediate Next Steps
-1. Test `model.forward(ids)` with lm_head fix (`_tensor` not `_get_persistent`)
-2. Test `model.generate(prompt, max_tokens=10)` — full generation loop
-3. Wire from Mojo via `Python.evaluate("__import__('mojollama.model.inference')")`
-4. Test full end-to-end Mojo binary: predict 10+ tokens from "The capital of France is"
-5. Add KV caching for performance (O(n²) → O(n) generation)
-6. Pre-dequantize and cache layer weights (trade memory for speed)
-7. Bench: warm token/s, peak memory, decode quality vs llama.cpp
+1. ✅ ~~Test model.forward(ids) with lm_head fix~~
+2. ✅ ~~Test model.generate(prompt, max_tokens=10) — full generation loop~~ ✅ "Paris. The capital of"
+3. ⏳ Wire from Mojo via `Python.evaluate("__import__('mojollama.model.inference')")`
+4. ⏳ Test full end-to-end Mojo binary
+5. ⏳ Add KV caching for performance (O(n²) → O(n) generation)
+6. ⏳ Pre-dequantize and cache layer weights (trade memory for speed)
+7. ⏳ Bench: warm token/s, peak memory, decode quality vs llama.cpp

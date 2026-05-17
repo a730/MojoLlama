@@ -6,3 +6,5 @@ build/
 env/
 .venv/
 test_model.gguf
+*.gguf
+opencode.json
