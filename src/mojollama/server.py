@@ -14,6 +14,7 @@ import os
 import sys
 import json
 import time
+import argparse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Add project to path
@@ -126,9 +127,15 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
 
 def main():
     global backend
-    port = int(os.environ.get("PORT", 8080))
-    model_path = os.environ.get("MODEL_PATH", "")
-    weight_path = os.environ.get("WEIGHT_PATH", "")
+    parser = argparse.ArgumentParser(description="MojoLlama inference server")
+    parser.add_argument("--model", help="Path to GGUF model file", default="")
+    parser.add_argument("--port", type=int, help="HTTP server port", default=8080)
+    parser.add_argument("--weight", help="Path to MAX weight file", default="")
+    args, _ = parser.parse_known_args()
+    
+    port = args.port or int(os.environ.get("PORT", 8080))
+    model_path = args.model or os.environ.get("MODEL_PATH", "")
+    weight_path = args.weight or os.environ.get("WEIGHT_PATH", "")
     
     print("╔══════════════════════════════════════════════╗")
     print("║         MojoLlama — Inference Server         ║")

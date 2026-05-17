@@ -222,6 +222,12 @@ class NumpyBackend(BackendBase):
     def generate(self, prompt: str, max_tokens: int = 128, **kwargs) -> dict:
         return {"text": "[numpy backend - use llama.cpp or MAX for performance]", 
                 "tokens": 0, "backend": self.name}
+    
+    def chat(self, messages: list, max_tokens: int = 256, **kwargs) -> dict:
+        """Chat completion — formats messages into a prompt, calls generate()."""
+        prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+        prompt += "\nassistant: "
+        return self.generate(prompt, max_tokens)
 
 
 class AutoBackend:
