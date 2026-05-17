@@ -1,7 +1,7 @@
 version: 6
 
 jobs:
-  - name: MojoLlama Playground
+  - name: Build & Deploy MojoLlama Site
     steps:
       - type: CheckoutStep
         name: checkout
@@ -14,7 +14,7 @@ jobs:
         optional: false
 
       - type: CommandStep
-        name: install dependencies
+        name: build C kernel + install deps
         condition: SUCCESSFUL
         optional: false
         runInContainer: true
@@ -25,9 +25,13 @@ jobs:
             set -e
             set -o pipefail
 
-            echo "=== Install Dependencies ==="
-            apt-get update && apt-get install -y gcc 2>/dev/null
+            echo "=== System Dependencies ==="
+            apt-get update -qq && apt-get install -y -qq gcc 2>/dev/null
+            echo "✓ System deps ready"
+
+            echo "=== Python Dependencies ==="
             pip install flask numpy gguf regex ftfy --break-system-packages -q
+            echo "✓ Python deps ready"
 
             echo "=== Build C Q4_0 Kernel ==="
             gcc -O3 -march=native -shared -fPIC \
@@ -36,7 +40,7 @@ jobs:
             echo "✓ C kernel built"
 
       - type: CommandStep
-        name: verify model
+        name: verify model + smoke test
         condition: SUCCESSFUL
         optional: false
         runInContainer: true
@@ -45,6 +49,12 @@ jobs:
           type: DefaultInterpreter
           commands: |
             set -e
+            set -o pipefail
+
+            echo "=== Python Dependencies (fresh container) ==="
+            pip install flask numpy gguf regex ftfy --break-system-packages -q
+
+            echo "=== Model Check ==="
             if [ -f Llama-3.2-1B-Instruct-Q4_0.gguf ]; then
               echo "✓ Model file present ($(du -h Llama-3.2-1B-Instruct-Q4_0.gguf | cut -f1))"
             else
@@ -53,62 +63,65 @@ jobs:
                 "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_0.gguf"
             fi
 
-      - type: CommandStep
-        name: start servers + smoke test
-        condition: SUCCESSFUL
-        optional: false
-        runInContainer: true
-        image: python:3.11
-        interpreter:
-          type: DefaultInterpreter
-          commands: |
-            set -e
-
-            echo "=== Start API Server ==="
+            echo ""
+            echo "=== Start API Server (background) ==="
             cd /onedev-build/work
-            nohup /usr/bin/python3 server.py \
+
+            # Use the modern stdlib server (no Flask dependency at runtime)
+            nohup python3 -m mojollama.server \
               --model Llama-3.2-1B-Instruct-Q4_0.gguf \
               --port 8080 \
               > /tmp/mojollama-api.log 2>&1 &
-            echo "✓ API server starting on port 8080"
-
-            echo "=== Start Static File Server ==="
-            cd /onedev-build/work/www
-            nohup python3 -m http.server 8081 > /tmp/static-server.log 2>&1 &
-            echo "✓ Static server starting on port 8081"
+            API_PID=$!
+            echo "✓ API server PID=$API_PID on port 8080"
 
             echo ""
-            echo "=== Wait for API + Smoke Test ==="
-            echo "Waiting for model to load..."
+            echo "=== Wait for Model Load + Health Check ==="
             for i in $(seq 1 60); do
               if curl -sf http://localhost:8080/v1/models > /dev/null 2>&1; then
                 echo "✓ API ready after ~${i}s"
                 break
               fi
+              if [ $i -eq 60 ]; then
+                echo "✗ API failed to start within 120s"
+                cat /tmp/mojollama-api.log | tail -20
+                kill $API_PID 2>/dev/null || true
+                exit 1
+              fi
               sleep 2
             done
 
             echo ""
-            echo "--- Smoke Test ---"
+            echo "=== Smoke Test: Chat Completion ==="
             RESULT=$(curl -sf -X POST http://localhost:8080/v1/chat/completions \
               -H "Content-Type: application/json" \
               -d '{"messages":[{"role":"user","content":"Say hello in 3 words"}], "max_tokens":10}')
-            echo "Response: $RESULT" | head -c 200
+            echo "Response: $(echo "$RESULT" | head -c 200)"
             echo ""
-            echo "✓ Smoke test passed"
+            if echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['choices'][0]['message']['content']" 2>/dev/null; then
+              echo "✓ Smoke test passed"
+            else
+              echo "✗ Smoke test failed"
+              kill $API_PID 2>/dev/null || true
+              exit 1
+            fi
+
+            echo ""
+            echo "=== Smoke Test: List Models ==="
+            curl -sf http://localhost:8080/v1/models | python3 -m json.tool | head -10
 
             echo ""
             echo "══════════════════════════════════════════════════"
-            echo "  🔥 MojoLlama Playground is LIVE"
-            echo ""
-            echo "  Chat UI:  port 8081 (published by OneDev)"
-            echo "  API:      port 8080"
-            echo "  Model: Llama 3.2 1B Instruct (Q4_0)"
-            echo "  Kernel: C Q4_0 with AVX2"
+            echo "  🔥 MojoLlama Build + Smoke Test PASSED"
             echo "══════════════════════════════════════════════════"
-            echo ""
-            echo "Keep this build running to use the playground."
-            sleep 86400
+
+            kill $API_PID 2>/dev/null || true
+
+      - type: PublishSiteStep
+        name: deploy API web page to ~site
+        condition: SUCCESSFUL
+        optional: false
+        artifacts: 'www/**'
 
     triggers:
       - type: BranchUpdateTrigger
