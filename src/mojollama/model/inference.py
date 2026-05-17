@@ -18,6 +18,12 @@ except ImportError:
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
     from mojollama.model.device import get_device, DeviceBackend, DeviceType
 
+try:
+    from mojollama.model.cq4_matmul import CQ4Matmul
+    _HAS_CQ4 = True
+except ImportError:
+    _HAS_CQ4 = False
+
 logger = logging.getLogger(__name__)
 
 _gpt2_pat = re.compile(r"""(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
@@ -106,6 +112,7 @@ class LLMInference:
         self._load_config()
         self._build_tokenizer()
         self._device_tensors = {}  # GPU-side tensor cache
+        self._init_q4_matmuls()
 
     def _try_config(self, key: str, default=None):
         f = self.reader.get_field
@@ -202,6 +209,36 @@ class LLMInference:
         if name not in self._persistent_cache:
             self._persistent_cache[name] = self._tensor(name)
         return self._persistent_cache[name]
+
+    def _init_q4_matmuls(self):
+        """Pre-load all Q4_0 tensors as CQ4Matmul objects (zero allocation)."""
+        self._q4_matmuls = {}
+        if not _HAS_CQ4:
+            return
+        from gguf.constants import GGMLQuantizationType
+        count = 0
+        for name, t in self._tensors_by_name.items():
+            if hasattr(t, 'tensor_type') and t.tensor_type == GGMLQuantizationType.Q4_0:
+                try:
+                    self._q4_matmuls[name] = CQ4Matmul.from_gguf_tensor(t)
+                    count += 1
+                except Exception:
+                    pass
+        if count:
+            print(f"[MojoLlama] C-Q4 kernel ready for {count} weight tensors")
+
+    def _q4_matmul(self, name: str, x: np.ndarray, transposed: bool = True) -> np.ndarray:
+        """Compute x @ W.T (or x @ W) using C Q4_0 kernel if available.
+
+        Falls back to _tensor() + BLAS for non-Q4_0 tensors.
+        """
+        if _HAS_CQ4 and name in self._q4_matmuls:
+            return self._q4_matmuls[name].forward_t(x)
+        # Fallback: dequant + BLAS
+        W = self._tensor(name)
+        if transposed:
+            return x @ W.T
+        return x @ W
 
     def _build_tokenizer(self):
         fields = self.reader.fields
@@ -418,16 +455,12 @@ class LLMInference:
 
         for i in range(self.n_layers):
             ln1 = self._tensor(f'blk.{i}.attn_norm.weight')
-            q_w = self._tensor(f'blk.{i}.attn_q.weight')
-            k_w = self._tensor(f'blk.{i}.attn_k.weight')
-            v_w = self._tensor(f'blk.{i}.attn_v.weight')
-            o_w = self._tensor(f'blk.{i}.attn_output.weight')
 
             r = x
             x = self.rms_norm(x, ln1, self.norm_eps)
-            q = self.device.matmul(x, q_w.T) if use_gpu else x @ q_w.T
-            k = self.device.matmul(x, k_w.T) if use_gpu else x @ k_w.T
-            v = self.device.matmul(x, v_w.T) if use_gpu else x @ v_w.T
+            q = self._q4_matmul(f'blk.{i}.attn_q.weight', x)
+            k = self._q4_matmul(f'blk.{i}.attn_k.weight', x)
+            v = self._q4_matmul(f'blk.{i}.attn_v.weight', x)
 
             if self.has_bias:
                 for qkv_b_name in ['attn_q', 'attn_k', 'attn_v']:
@@ -447,7 +480,6 @@ class LLMInference:
             k = self.apply_rope(k, cos, sin)
 
             if use_cache:
-                # KV cache: store copies (on device if GPU)
                 self._kv_cache.append((k.copy() if hasattr(k, 'copy') else k[:], v.copy() if hasattr(v, 'copy') else v[:]))
 
             if n_rep > 1:
@@ -455,29 +487,20 @@ class LLMInference:
                 v = np.repeat(v, n_rep, axis=1)
 
             att = self._attention_scores(q, k, np.sqrt(head_dim))
-            att = att + mask  # broadcast: (n_head, seq, seq) + (seq, seq)
+            att = att + mask
             att = self.softmax(att, axis=-1)
             out = self._attention_apply(att, v)
             out = out.reshape(seq_len, self.n_embd)
-            out = self.device.matmul(out, o_w.T) if use_gpu else out @ o_w.T
+            out = self._q4_matmul(f'blk.{i}.attn_output.weight', out)
             x = r + out
 
-            ln2 = self._tensor(f'blk.{i}.ffn_norm.weight')
-            gate_w = self._tensor(f'blk.{i}.ffn_gate.weight')
-            up_w = self._tensor(f'blk.{i}.ffn_up.weight')
-            down_w = self._tensor(f'blk.{i}.ffn_down.weight')
-
             r = x
-            x = self.rms_norm(x, ln2, self.norm_eps)
-            gate = self.device.matmul(x, gate_w.T) if use_gpu else x @ gate_w.T
-            up = self.device.matmul(x, up_w.T) if use_gpu else x @ up_w.T
+            x = self.rms_norm(x, self._tensor(f'blk.{i}.ffn_norm.weight'), self.norm_eps)
+            gate = self._q4_matmul(f'blk.{i}.ffn_gate.weight', x)
+            up = self._q4_matmul(f'blk.{i}.ffn_up.weight', x)
             x = (self.silu(gate) * up)
-            x = self.device.matmul(x, down_w.T) if use_gpu else x @ down_w.T
+            x = self._q4_matmul(f'blk.{i}.ffn_down.weight', x)
             x = r + x
-
-            del ln1, q_w, k_w, v_w, o_w, ln2, gate_w, up_w, down_w
-
-        gc.collect()
 
         norm_w = self._tensor('output_norm.weight')
         x = self.rms_norm(x, norm_w, self.norm_eps)
@@ -505,16 +528,12 @@ class LLMInference:
 
         for i in range(self.n_layers):
             ln1 = self._tensor(f'blk.{i}.attn_norm.weight')
-            q_w = self._tensor(f'blk.{i}.attn_q.weight')
-            k_w = self._tensor(f'blk.{i}.attn_k.weight')
-            v_w = self._tensor(f'blk.{i}.attn_v.weight')
-            o_w = self._tensor(f'blk.{i}.attn_output.weight')
 
             r = x
             x = self.rms_norm(x, ln1, self.norm_eps)
-            q = self.device.matmul(x, q_w.T) if use_gpu else x @ q_w.T
-            k_new = self.device.matmul(x, k_w.T) if use_gpu else x @ k_w.T
-            v_new = self.device.matmul(x, v_w.T) if use_gpu else x @ v_w.T
+            q = self._q4_matmul(f'blk.{i}.attn_q.weight', x)
+            k_new = self._q4_matmul(f'blk.{i}.attn_k.weight', x)
+            v_new = self._q4_matmul(f'blk.{i}.attn_v.weight', x)
 
             if self.has_bias:
                 for qkv_b_name in ['attn_q', 'attn_k', 'attn_v']:
@@ -558,25 +577,16 @@ class LLMInference:
             att = self.softmax(att, axis=-1)
             out = self._attention_apply(att, v)
             out = out.reshape(new_len, self.n_embd)
-            out = self.device.matmul(out, o_w.T) if use_gpu else out @ o_w.T
+            out = self._q4_matmul(f'blk.{i}.attn_output.weight', out)
             x = r + out
 
-            ln2 = self._tensor(f'blk.{i}.ffn_norm.weight')
-            gate_w = self._tensor(f'blk.{i}.ffn_gate.weight')
-            up_w = self._tensor(f'blk.{i}.ffn_up.weight')
-            down_w = self._tensor(f'blk.{i}.ffn_down.weight')
-
             r = x
-            x = self.rms_norm(x, ln2, self.norm_eps)
-            gate = self.device.matmul(x, gate_w.T) if use_gpu else x @ gate_w.T
-            up = self.device.matmul(x, up_w.T) if use_gpu else x @ up_w.T
+            x = self.rms_norm(x, self._tensor(f'blk.{i}.ffn_norm.weight'), self.norm_eps)
+            gate = self._q4_matmul(f'blk.{i}.ffn_gate.weight', x)
+            up = self._q4_matmul(f'blk.{i}.ffn_up.weight', x)
             x = (self.silu(gate) * up)
-            x = self.device.matmul(x, down_w.T) if use_gpu else x @ down_w.T
+            x = self._q4_matmul(f'blk.{i}.ffn_down.weight', x)
             x = r + x
-
-            del ln1, q_w, k_w, v_w, o_w, ln2, gate_w, up_w, down_w
-
-        gc.collect()
 
         norm_w = self._tensor('output_norm.weight')
         x = self.rms_norm(x, norm_w, self.norm_eps)
