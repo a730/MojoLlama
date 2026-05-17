@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.mojopkg
+build/
+.magic/
+env/
+.venv/
+test_model.gguf
+*.gguf
+opencode.json

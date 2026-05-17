@@ -1,0 +1,124 @@
+version: 6
+
+jobs:
+  - name: MojoLlama Playground
+    steps:
+      - type: CheckoutStep
+        name: checkout
+        cloneCredential:
+          type: DefaultCredential
+        withLfs: false
+        withSubmodules: false
+        cloneDepth: 1
+        condition: SUCCESSFUL
+        optional: false
+
+      - type: CommandStep
+        name: install dependencies
+        condition: SUCCESSFUL
+        optional: false
+        runInContainer: true
+        image: python:3.11
+        interpreter:
+          type: DefaultInterpreter
+          commands: |
+            set -e
+            set -o pipefail
+
+            echo "=== Install Dependencies ==="
+            apt-get update && apt-get install -y gcc 2>/dev/null
+            pip install flask numpy gguf regex ftfy --break-system-packages -q
+
+            echo "=== Build C Q4_0 Kernel ==="
+            gcc -O3 -march=native -shared -fPIC \
+              -o src/mojollama/model/libq4matmul.so \
+              src/mojollama/model/q4_matmul_c.c
+            echo "✓ C kernel built"
+
+      - type: CommandStep
+        name: verify model
+        condition: SUCCESSFUL
+        optional: false
+        runInContainer: true
+        image: python:3.11
+        interpreter:
+          type: DefaultInterpreter
+          commands: |
+            set -e
+            if [ -f Llama-3.2-1B-Instruct-Q4_0.gguf ]; then
+              echo "✓ Model file present ($(du -h Llama-3.2-1B-Instruct-Q4_0.gguf | cut -f1))"
+            else
+              echo "Downloading model (728 MB)..."
+              curl -L -o Llama-3.2-1B-Instruct-Q4_0.gguf \
+                "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_0.gguf"
+            fi
+
+      - type: CommandStep
+        name: start servers
+        condition: SUCCESSFUL
+        optional: false
+        runInContainer: true
+        image: python:3.11
+        interpreter:
+          type: DefaultInterpreter
+          commands: |
+            set -e
+            echo "=== Start API Server ==="
+            nohup /usr/bin/python3 server.py \
+              --model Llama-3.2-1B-Instruct-Q4_0.gguf \
+              --port 8080 \
+              > /tmp/mojollama-api.log 2>&1 &
+            echo "✓ API server starting on port 8080"
+
+            echo "=== Start Static File Server ==="
+            cd www
+            nohup python3 -m http.server 8081 > /tmp/static-server.log 2>&1 &
+            echo "✓ Static server starting on port 8081"
+
+      - type: CommandStep
+        name: smoke test
+        condition: SUCCESSFUL
+        optional: false
+        runInContainer: true
+        image: python:3.11
+        interpreter:
+          type: DefaultInterpreter
+          commands: |
+            set -e
+            echo "=== Wait for API + Smoke Test ==="
+            echo "Waiting for model to load..."
+            for i in $(seq 1 60); do
+              if curl -sf http://localhost:8080/v1/models > /dev/null 2>&1; then
+                echo "✓ API ready after ~${i}s"
+                break
+              fi
+              sleep 2
+            done
+
+            echo ""
+            echo "--- Smoke Test ---"
+            RESULT=$(curl -sf -X POST http://localhost:8080/v1/chat/completions \
+              -H "Content-Type: application/json" \
+              -d '{"messages":[{"role":"user","content":"Say hello in 3 words"}],"max_tokens":10}')
+            echo "Response: $RESULT" | head -c 200
+            echo ""
+            echo "✓ Smoke test passed"
+
+            echo ""
+            echo "══════════════════════════════════════════════════"
+            echo "  🔥 MojoLlama Playground is LIVE"
+            echo ""
+            echo "  Chat UI:  port 8081 (published by OneDev)"
+            echo "  API:      port 8080"
+            echo "  Model: Llama 3.2 1B Instruct (Q4_0)"
+            echo "  Kernel: C Q4_0 with AVX2"
+            echo "══════════════════════════════════════════════════"
+            echo ""
+            echo "Keep this build running to use the playground."
+            sleep 86400
+
+    triggers:
+      - type: BranchUpdateTrigger
+        branches: main
+
+    retryCondition: never

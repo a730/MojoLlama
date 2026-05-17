@@ -1,0 +1,219 @@
+# MojoLlama — Coding Memory
+
+## Goal
+Build **Mojo Hybrid Serve** — a high-concurrency LLM inference engine that combines the best of **llama.cpp** and **vLLM**:
+
+| Like llama.cpp | Like vLLM |
+|---|---|
+| Native GGUF support | Continuous batching |
+| Hybrid CPU/GPU offloading | PagedAttention / RadixAttention |
+| Single binary, easy to run | High concurrent throughput |
+| CPU-friendly, works anywhere | OpenAI-compatible API |
+| Quantized inference (Q4_0, etc.) | Multiple user support |
+
+Built in **Mojo on the MAX platform** for native-code speed without C++ complexity.
+Long-term vision: Docker one-liner, desktop app (Unsloth Studio-like), and built-in GGUF quantizer.
+
+## Constraints & Preferences
+- Mojo SDK version 0.26.2.0 installed via `uv pip install --system mojo`
+- Target model: Qwen2.5-0.5B GGUF (396MB file, 630M params, 291 tensors, 24 layers)
+- Python interop requires `LD_PRELOAD=/opt/conda/lib/libpython3.12.so.1.0`
+- `main()` cannot take arguments; use `MODEL_PATH` env var
+- No file-scope enums, `match`, `DynamicVector`, or `List` in Mojo 0.26
+- System RAM: ~7.8GB total, ~2.6GB available, no swap — memory-constrained
+- Python inference module uses `gguf` library, `numpy`, `regex`, and `ftfy`
+- Bash tool default timeout 120s — must override for test scripts >2 min
+
+## Progress
+
+### Done
+- Installed Mojo SDK 0.26.2.0 and MAX SDK 26.2.0 via `uv pip install --system mojo` (SDK may need reinstall)
+- Project scaffold: `mojo.toml`, `.gitignore`, `justfile`, `src/mojollama/{gguf,model}/__init__.mojo`
+- `src/mojollama/gguf/types.mojo` — GGUF constants, GGML type sizes/block sizes via `if/elif` chains
+- `src/mojollama/gguf/reader.mojo` — GGUF file parser using Python bytes, manual bit-shift reads, Python slice interop. Successfully parses 26 metadata KV entries and 291 tensor info entries.
+- None-check pattern: `var is_none = Python.evaluate("lambda x: x is None")(metadata)` then `if is_none:`
+- `src/mojollama/model/inference.py` — refactored to `LLMInference` class supporting multiple architectures:
+  - Qwen2: 24 layers, 896 embd, 14 query heads, 2 KV heads (GQA), 4864 FFN dim, 32K context
+  - Llama 3.2 1B: 16 layers, 2048 dim, 32 heads, 8 KV heads, 8192 FFN dim, 131072 ctx
+  - Auto-detects architecture from GGUF metadata
+  - Memory-efficient: per-layer tensor dequantization, persistent cache for embed only, lm_head fresh each forward
+  - Core ops: RMSNorm, RoPE, GQA attention, SwiGLU FFN, SiLU, causal mask
+  - **Llama 3 tiktoken BPE tokenizer** — GPT-2 byte encoding for merges, UTF-8 token lookup
+  - Forward pass: ~25s for 6 tokens on Llama 3.2 1B Q4_0
+- Downloaded Llama-3.2-1B-Instruct-Q4_0.gguf (737 MB) — Q4_0 quantization
+- Installed Python deps: numpy, gguf, regex, ftfy
+- **🎉 Llama 3.2 1B Q4_0 inference working end-to-end:**
+  - Input: "The capital of France is" → Output: " Paris. The capital of"
+  - Top prediction: "Paris" (correct!)
+  - ~16s per token (no KV cache yet)
+  - Memory stable (~1GB peak)
+- `jagtesh/gguf-mojo` cloned to `/tmp/gguf-mojo` — pure Mojo GGUF type definitions (struct+alias pattern)
+- `modular/modular` cloned to `/tmp/modular` — MAX platform Mojo kernels + Python GGUF utils
+
+### Fixed Issues
+1. ✅ **Architecture string** — Now correctly decodes bytes via `.tobytes().decode('utf-8')`
+2. ✅ **LLaMA 3 tokenizer** — Uses GPT-2 byte encoding for BPE merges, tokens stored as UTF-8 strings in GGUF
+3. ✅ **_get_np()** — Robust handling of numpy arrays, bytes, and None
+4. ✅ **generate()** — Works end-to-end with proper encode→forward→decode loop
+5. ✅ **Memory** — Embed cached, lm_head fresh each forward, per-layer cleanup with gc.collect()
+
+### Pending
+- KV cache for O(n) generation
+- Pre-dequantize layer weights for speed
+- Wire from Mojo via Python.evaluate()
+- Reinstall Mojo SDK
+
+### Known Issues (previously fixed)
+1. ✅ ~~Architecture string shows as bytes instead of "llama"~~ — Fixed with `.tobytes().decode('utf-8')`
+2. ✅ ~~Tokenizer uses GPT-2 BPE but Llama 3.2 needs tiktoken~~ — Fixed: GPT-2 byte encoding for merges, UTF-8 token lookup
+3. ✅ ~~`_get_np()` may fail on some field types — needs robust handling~~
+4. ✅ ~~`generate()` method untested~~
+5. ⏳ Mojo SDK may need reinstall (not found in PATH)
+6. ⏳ Original Qwen2 test model (test_model.gguf) may have been removed
+
+### Critical Finding: Memory-Induced Forward Failure
+- `model.forward(ids)` was timing out (>120s) NOT due to a code bug, but due to **memory pressure**
+- Root cause: `_get_persistent` caches BOTH `token_embd.weight` (~1GB dequantized) AND `output.weight` (~1GB dequantized) simultaneously. With only ~2.6GB available RAM, loading the second 1GB tensor causes the OS to thrash freeing cache/buffers, and the process hangs.
+- Inline scripts (pre-caching only embed, not lm_head) work fine: 24 layers × 5 tokens = ~12s
+- Fix: use `self._tensor('output.weight')` instead of `self._get_persistent('output.weight')` in `forward()` so lm_head is not cached — keeps peak memory at ~1GB (embed) + transient layer tensors
+
+## Reusable Code from `modular/modular` (Mojo stdlib/MAX)
+
+Repo cloned to `/tmp/modular`. Mojo kernels live in `max/kernels/src/`, Python utils in `max/python/`, stdlib in `mojo/stdlib/std/`.
+
+### Directly Usable Mojo Kernels (reference implementations)
+| Code | File | Notes |
+|------|------|-------|
+| **SiLU** | `max/kernels/src/state_space/causal_conv1d.mojo:75` | `x / (1 + exp(-x))` |
+| **RMSNorm** | `max/kernels/src/nn/__init__.mojo` | Mojo kernel, CPU/GPU, supports weight_offset |
+| **RoPE** | `max/kernels/src/nn/rope.mojo` | Ragged, interleaved/non-interleaved, position IDs, mRoPE sections |
+| **CPU MHA** | `max/kernels/src/nn/attention/cpu/mha.mojo` | Flash attention with KV cache, 1586 lines |
+| **Q4_0 matmul** | `max/kernels/src/quantization/qmatmul.mojo` | CPU quantized matmul with VNNI/NEON (no dequant) |
+| **Q4_K/Q6_K matmul** | `max/kernels/src/quantization/qmatmul_k.mojo` | CPU quantized matmul for K-quants |
+| **Q4_0/Q4_K/Q6_K dequant** | `max/kernels/src/quantization/per_channel_grouped_4bit.mojo` | CPU dequant implementations |
+| **Python interop** | `mojo/stdlib/std/python/*.mojo` | `Python.evaluate`, `PythonObject`, `PythonModuleBuilder` |
+
+### Python Utilities (import from Mojo via Python interop)
+- `max/python/max/graph/weights/load_gguf.py` — `GGUFWeights` class with GGML→encoding mapping
+- `max/python/max/graph/weights/_gguf_reader.py` — Fast GGUF reader with token-skipping optimization
+- `max/python/max/nn/rotary_embedding.py` — Full RoPE in Python
+- `max/python/max/nn/attention/attention_with_rope.py` — Attention with fused QKV + GGUF quantized matmul
+- `max/python/max/nn/linear.py` — Linear layer with quantization configs
+- `max/python/max/nn/norm/rms_norm.py` — Python RMSNorm (our impl equivalent)
+
+### K-quant Block Structures (for porting)
+- `max/kernels/src/quantization/per_channel_grouped_4bit.mojo`:
+  - `block_Q4_K` (line ~352): 16 scalar_dtypes + 8 min_dtypes per block
+  - `block_Q6_K` (line ~552): 16 high_dtypes + 16 scales per block
+  - `q4_k_dequantize_impl` (line ~468): dequant with min/scale
+  - `q6_k_dequantize_impl` (line ~552): dequant with high/scales
+- These are the **K-quant block structs and dequant loops** — useful as reference for Q3_K/Q5_K support
+
+### Limitations
+- Their Mojo kernels support **Q4_0, Q4_K, Q5_K, Q6_K** only
+- **Our model uses IQ4_NL, Q8_0, Q3_K, Q5_0, F32** — zero overlap with their quantized matmul kernels
+- Their Python GGUF reader uses the same `gguf` library we already use
+- No IQ4_NL or Q3_K reference implementations in their Mojo kernels
+- No Mojo `einsum` or general matmul for dynamic shapes (they use MAX Graph ops)
+
+## Reusable Code from `jagtesh/gguf-mojo`
+
+Repo at `/tmp/gguf-mojo`. Prototype pure-Mojo GGUF header parser — no dequant, no model, no tokenizer. Saves ~15-20% of porting effort (type defs + Mojo patterns).
+
+### Directly Reusable (copy-paste with minor edits)
+| Code | File | Notes |
+|------|------|-------|
+| **`GGUFTensorType`** | `extern_gguf.mojo` | All ~19 GGML type aliases (F32=0..Q8_K=15, I8/I16/I32) as `struct` + `alias` |
+| **`GGUFValueType`** | `extern_gguf.mojo` | 15 metadata value type aliases (UINT8..FLOAT64, ARRAY) |
+| **`GGUFHeader`** | `extern_gguf.mojo` | 4-field struct: magic, version, tensor_count, metadata_kv_count |
+| **`GGUFTensor`** | `extern_gguf.mojo` | Tensor info struct: name, type, ndim, dim[], offset, bsize |
+| **`GGUFValue`** | `extern_gguf.mojo` | Union workaround struct for metadata (all possible value fields) |
+| **`read_uint32`/`read_uint64`** | `gguf_parser.mojo` | Manual little-endian byte reconstruction via bit shifts |
+| **`GGUFContext`** | `extern_gguf.mojo` | State tracking for sequential GGUF reading (fd, pointer, offset, alignment) |
+| **Enum workaround** | `extern_gguf.mojo` | `struct` with `alias` members (standard Mojo 0.26 pattern, no file-scope `enum`) |
+| **Union workaround** | `extern_gguf.mojo` | Struct with all possible fields, caller tracks active field |
+| **`InlinedFixedVector`** | `extern_gguf.mojo` | Fixed-size arrays for tensor dims (stack-allocated, auto-managed) |
+
+### What's Missing (must build from scratch)
+- **No dequantization code** at all — zero kernels for any GGML type
+- **No file I/O** — parser only works with in-memory `DynamicVector[UInt8]`
+- **No metadata KV parsing** — only header is parsed
+- **No tensor info parsing** — tensor headers not iterated
+- **No alignment handling** — GGUF data alignment (32-byte) not implemented
+- **No model architecture** — no transformer, attention, FFN, norms
+- **No tokenizer** — no BPE/SentencePiece code
+- **No IQ4_NL** — type constant not defined (newer than repo, type ID likely 27)
+- **Uses `Pointer[Char]`** for strings instead of `String` — needs adaptation
+
+### Key Value for MojoLlama
+Replace our current `types.mojo` (if/elif chains) with `extern_gguf.mojo`'s `GGUFTensorType` struct + alias pattern — cleaner, more maintainable, and matches GGUF spec. Our existing `reader.mojo` parsing logic is already equivalent to what this repo provides.
+
+## Porting Strategy (Mojo → from Python)
+1. **Phase 0 (current)**: Keep all Python, wire from Mojo via `Python.evaluate` ✅
+2. **Phase 1**: Port scalar ops to Mojo (SiLU, RMSNorm) using modular's code as reference
+3. **Phase 2**: Port RoPE and attention to Mojo using `rope.mojo` and `mha.mojo` patterns
+4. **Phase 3**: Write quantized matmul kernels for our types (Q4_0, Q8_0, Q3_K, Q5_0, IQ4_NL) inspired by their qmatmul patterns
+5. **Phase 4**: Pure Mojo inference with continuous batching (RadixAttention/PagedAttention), no Python dependency
+6. **Phase 5: One-command deploy**
+   - Docker image + docker-compose.yml
+   - Single `docker compose up` to run, matching llama.cpp ease of use
+   - Auto-download models on first run
+   - Health checks, metrics, Prometheus endpoint
+7. **Phase 6: MojoLlama Studio** (long-term)
+   - Cross-platform desktop app (Windows/macOS/Linux)
+   - Like Unsloth Studio but for MojoLlama
+   - GUI: model browser, chat, fine-tuning, system monitor
+   - One-click download & run any GGUF model
+8. **Phase 7: GGUF Quantizer** (after all perf phases)
+   - Load any transformer model (HF format, safetensors)
+   - Quantize to any GGUF format: Q4_0, Q4_K_M, Q5_0, Q5_K_M, Q6_K, Q8_0, etc.
+   - Output standard GGUF files compatible with llama.cpp and other runners
+   - CLI: `mojollama quantize --input model/ --output model.gguf --type Q4_K_M`
+   - API endpoint for server-side quantization
+   - Like `llama-quantize` but built into MojoLlama
+
+## Weight Name Mapping (GGUF → HuggingFace)
+- `token_embd.weight` → `embed_tokens` (cached as persistent)
+- `blk.N.attn_norm.weight` → `layers.N.input_layernorm.weight`
+- `blk.N.attn_q.weight` → `layers.N.self_attn.q_proj.weight`
+- `blk.N.attn_k.weight` → `layers.N.self_attn.k_proj.weight`
+- `blk.N.attn_v.weight` → `layers.N.self_attn.v_proj.weight`
+- `blk.N.attn_output.weight` → `layers.N.self_attn.o_proj.weight`
+- `blk.N.ffn_norm.weight` → `layers.N.post_attention_layernorm.weight`
+- `blk.N.ffn_gate.weight` → `layers.N.mlp.gate_proj.weight`
+- `blk.N.ffn_up.weight` → `layers.N.mlp.up_proj.weight`
+- `blk.N.ffn_down.weight` → `layers.N.mlp.down_proj.weight`
+- `output.weight` → `lm_head.weight` (NOT cached — dequantized fresh each forward)
+- `output_norm.weight` → `norm.weight`
+
+## Key Model Dimensions
+- n_layers=24, n_embd=896, n_head=14, n_kv_head=2, n_ff=4864, max_seq_len=32768
+- norm_eps=1e-6, rope_theta=1000000.0
+- bos_id=151643, eos_id=151645, vocab_size=151936
+
+## Relevant Files
+- `src/mojollama/gguf/types.mojo`: GGUF constants, type sizes/block sizes
+- `src/mojollama/gguf/reader.mojo`: `GGUFFile` struct with `read_slice/read_py_*/read_string/load_gguf`
+- `src/mojollama/model/inference.py`: Python inference (286 lines) — `forward()` at line 203, `_get_persistent` at 129, `_tensor` at 120
+- `src/mojollama/model/__init__.mojo`: Empty package init
+- `src/main.mojo`: Entry point — reads `MODEL_PATH`, calls `load_gguf`, prints metadata
+- `test_model.gguf`: Qwen2.5-0.5B GGUF test file (396MB, 630M params)
+
+## Commands
+```bash
+# Build
+LD_PRELOAD=/opt/conda/lib/libpython3.12.so.1.0 mojo build src/main.mojo -o build/mojollama
+
+# Run with timeout (overrides default 120s)
+MODEL_PATH=test_model.gguf timeout 30 python3 -c "..."  # for quick tests
+# Use bash tool timeout=300000 for long-running inference
+```
+
+## Immediate Next Steps
+1. ✅ ~~Test model.forward(ids) with lm_head fix~~
+2. ✅ ~~Test model.generate(prompt, max_tokens=10) — full generation loop~~
+3. ✅ Server with OpenAI-compatible API + web UI running
+4. ⏳ Phase 3: Q4_0 quantized matmul kernels (main perf leap)
+5. ⏳ Pre-dequantize and cache layer weights (trade memory for speed)
+6. ⏳ Dockerfile + docker-compose.yml
+7. ⏳ Bench against llama.cpp: current gap ~1000x
