@@ -75,16 +75,19 @@ class MojoLlamaBridge:
         return float(f.parts[-1])
 
     def _load_weights(self):
-        """Load all tensors, keeping Q4_0 in compact form."""
+        """Load all tensors, dequantizing Q4_0 to float32."""
         self.weights = {}
         for name, t in self._tensors_by_name.items():
-            if hasattr(t, 'tensor_type') and t.tensor_type == GGMLQuantizationType.Q4_0:
-                # Keep in raw GGUF bytes (compact)
-                self.weights[name] = ('q4_0', np.array(t.data))
+            if hasattr(t, 'tensor_type') and t.tensor_type is not None:
+                if t.tensor_type == GGMLQuantizationType.Q4_0:
+                    # Dequantize Q4_0 to float32
+                    arr = gguf.dequantize(t.data, t.tensor_type)
+                    self.weights[name] = ('q4_0', arr)
+                else:
+                    arr = gguf.dequantize(t.data, t.tensor_type)
+                    self.weights[name] = ('f32', arr)
             else:
-                # Dequantize to float32
-                arr = gguf.dequantize(t.data, t.tensor_type) if hasattr(t, 'tensor_type') and t.tensor_type is not None else np.array(t.data, dtype=np.float32)
-                self.weights[name] = ('f32', arr)
+                self.weights[name] = ('f32', np.array(t.data, dtype=np.float32))
 
     def embed(self, input_ids):
         """EmbedOp: token_embd.weight[input_ids]"""
@@ -103,8 +106,9 @@ class MojoLlamaBridge:
             raise ValueError(f"Weight {name} not found")
 
         if typ == 'q4_0':
-            # Q4_0 direct matmul via our C kernel
-            return self._q4_matmul(w, x)
+            # Q4_0: w is (out_rows, packed_cols) — dequantized via gguf
+            # gguf stores weights as 2D: shape=[cols, rows] but data is (rows, packed)
+            return x @ w.T
         else:
             # Float32 — always x @ W.T (GGUF stores transposed)
             return x @ w.T

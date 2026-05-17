@@ -1,108 +1,190 @@
 # MojoLlama
 
-**High‑concurrency LLM serving engine with native GGUF support and dynamic CPU/GPU offloading – built in Mojo on the MAX platform.**
+**High‑throughput LLM serving engine** with GGUF support, continuous batching, and a full Studio suite for training, export, dataset management, and chat.
 
-![Mojo](https://img.shields.io/badge/Mojo-🔥-orange?style=flat-square)  ![MAX](https://img.shields.io/badge/MAX-Serve-blue?style=flat-square)  ![GGUF](https://img.shields.io/badge/Format-GGUF-green?style=flat-square)  ![License](https://img.shields.io/badge/License-Apache%202.0-lightgrey?style=flat-square)
+![Python](https://img.shields.io/badge/Python-3.11-blue?style=flat-square) ![Mojo](https://img.shields.io/badge/Mojo-🔥-orange?style=flat-square) ![MAX](https://img.shields.io/badge/MAX-Serve-blue?style=flat-square) ![GGUF](https://img.shields.io/badge/Format-GGUF-green?style=flat-square) ![License](https://img.shields.io/badge/License-Apache%202.0-lightgrey?style=flat-square)
 
 ---
 
 ## ✨ Overview
 
-MojoLlama is a production‑ready inference server that combines the ease of `llama.cpp` with the throughput of `vLLM`.  
-It loads **GGUF** models directly, runs them on **CPU**, **GPU**, or a **hybrid mix** (layer offloading), and handles massive concurrency thanks to MAX's built‑in continuous batching, RadixAttention, and PagedAttention.
+MojoLlama is a production-ready inference server and model development studio. It loads **GGUF** models directly, runs them on CPU (with optional GPU via MAX), and provides:
 
-No rewrites. No glue scripts. One binary that speaks OpenAI's API.
-
----
-
-## 🎯 Key Features
-
-- ✅ **Native GGUF support** – load any quantized model without conversion.
-- ⚡ **High concurrency** – powered by MAX's continuous batching, RadixAttention, and PagedAttention.
-- 🧠 **Dynamic hybrid execution** – offload layers to GPU when available, fall back to CPU automatically.
-- 🔌 **OpenAI‑compatible API** – drop‑in replacement for any client using `/v1/chat/completions`.
-- 🦀 **Blazing fast** – compiled to native code via Mojo; outperforms vLLM on dense models by **12‑70%** (source: Modular benchmarks).
-- 📦 **Single binary** – no Python, no Docker. Distribute a statically linked executable.
-
----
-
-## 🖥️ Hybrid Execution
-
-MojoLlama runs on any combination of:
-
-| Backend | Target | Status |
-|---|---|---|
-| **CPU** (AVX2/AVX512/NEON) | Any x86/ARM server | ✅ Working |
-| **NVIDIA CUDA** | GPU clusters | 🚧 MAX integration (Q2 2026) |
-| **Intel Arc (SYCL)** | Intel GPU workstations | 🚧 MAX integration |
-| **Vulkan** | Cross-platform GPU | 🚧 MAX integration |
-
-The device abstraction layer auto-detects available hardware and offloads layers to GPU when beneficial. When no GPU is available, every layer runs on CPU using Mojo's SIMD kernels.
-
----
-
-## 📐 Architecture
-
-```
-┌──────────────────────────────────────────────────┐
-│  graph/ops.mojo           Architecture definition│
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐        │
-│  │MatmulOp  │ │AttnOp    │ │RMSNormOp │ ...      │
-│  └──────────┘ └──────────┘ └──────────┘        │
-├──────────────────────────────────────────────────┤
-│  kernels/                  Mojo SIMD impl       │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐        │
-│  │q4_matmul │ │attention │ │norms     │ ...      │
-│  └──────────┘ └──────────┘ └──────────┘        │
-├──────────────────────────────────────────────────┤
-│  bridge.py                 Python backend        │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐        │
-│  │GGUF load │ │numpy exec│ │tokenizer │          │
-│  └──────────┘ └──────────┘ └──────────┘        │
-├──────────────────────────────────────────────────┤
-│  MAX Serve (future)       Production serving    │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐        │
-│  │batch     │ │RadixAttn │ │PagedAttn │          │
-│  └──────────┘ └──────────┘ └──────────┘        │
-└──────────────────────────────────────────────────┘
-```
-
-The op graph (`ops.mojo`) is the invariant. Backends are swappable:
-- **Python** (works now) – numpy + C Q4_0 kernel
-- **Mojo SIMD** (kernels ready) – native AVX2/AVX512/NEON
-- **MAX GPU** (when available) – CUDA/SYCL/Vulkan
-
-New architectures (AttnRes, MLA) = new graph wiring. No kernel changes.
+- **MojoLlama Studio** — web UI + CLI for training, export, dataset creation, and chat
+- **Inference server** — OpenAI-compatible API with SSE streaming
+- **AutoBackend** — auto-selects fastest backend (llama.cpp CPU, MAX GPU, numpy fallback)
+- **Bridge** — Python-native forward pass with GGUF loading, KV cache, tokenizer
+- **Mojo SIMD kernels** — AVX2-optimized Q4_0 matmul, attention, norms (R&D)
 
 ---
 
 ## 🚀 Quick Start
 
 ```bash
-# Python backend (works now)
-git clone https://git.bamse.cloud/a730/MojoLlama.git
+# Clone
+git clone https://git.bamseqoud/a730/MojoLlama.git
 cd MojoLlama
-pip install -r requirements.txt
-python -m mojollama.bridge --model model.gguf
 
-# Forward pass benchmark
-python -c "
-from mojollama.bridge import MojoLlamaBridge
-m = MojoLlamaBridge('model.gguf')
-logits = m.forward([128000, 9906, 1492, 12, 7888, 0])
-print(f'Forward: {logits.shape} ✓')
-"
+# Start the inference server
+python3 -m mojollama.server --model model.gguf --port 8080
+
+# Or use the Studio
+python3 -m mojollama.studio info
+python3 -m mojollama.studio chat --model model.gguf --port 8080
+
+# Open the web UI
+# → http://localhost:8080/studio.html  (full Studio SPA)
+# → http://localhost:8080/chat.html     (standalone streaming chat)
 ```
 
 ---
 
-## 🧪 Benchmarks
+## 🎯 Features
 
-| Metric | Baseline (Python) | After Phase 3 (C kernel) | Target (Mojo/MAX) |
-|---|---|---|---|
-| Prefill (6 tok) | 14.2 s | 1.24 s | <0.1 s |
-| Generation (1 tok) | 4.05 s | 0.63 s | <0.01 s |
-| Throughput | 0.25 tok/s | 1.6 tok/s | 82+ tok/s |
+### Inference Server (`server.py`)
+- **OpenAI-compatible API** — `/v1/chat/completions`, `/v1/completions`, `/v1/models`
+- **SSE streaming** — token-by-token response via EventSource
+- **Threaded concurrency** — handles multiple requests in parallel
+- **Connection pooling** — persistent HTTP connections to llama.cpp backend
+- **CORS support** — works with browser-based clients
+- **Health checks** — `/health`, `/backend`, `/api/backend`
+
+### MojoLlama Studio (`studio.py`)
+| Command | Description |
+|---------|-------------|
+| `info` | System info, backends, available models |
+| `chat` | Interactive chat with streaming |
+| `serve` | Full API server with AutoBackend |
+| `train` | LoRA fine-tuning via llama.cpp |
+| `export` | HF model → GGUF conversion (supports Q4_0+ via two-step) |
+| `dataset create` | Create training datasets interactively |
+| `dataset view` | Browse dataset contents |
+| `dataset auto-label` | Auto-generate completions using loaded model |
+| `merge` | Merge LoRA adapter into base GGUF model |
+| `benchmark` | Measure tok/s for prompt processing and generation |
+
+### Web UI (`www/`)
+- **`studio.html`** — Full dark-theme SPA with 6 tabs:
+  - 💬 Chat (token-by-token streaming via SSE)
+  - 🎓 Train (Live loss chart via Chart.js + SSE metrics)
+  - 📊 Dataset (Create, browse, auto-label)
+  - 📤 Export (Async HF→GGUF with live log)
+  - ⚡ Benchmark (tok/s results table)
+  - 🔗 Merge (LoRA→base model)
+- **`chat.html`** — Standalone streaming chat with quick prompts
+- **`index.html`** — Landing page with performance benchmarks
+
+### AutoBackend (`backends.py`)
+Auto-detects best available hardware and routes inference accordingly:
+
+```
+Priority: MAX GPU (when available) > llama.cpp CPU (85 tok/s) > MAX CPU > numpy fallback
+```
+
+On Threadripper 3970X (64 cores): llama.cpp backend achieves **85 tok/s** sequential,
+**272 tok/s** with 4 concurrent users.
+
+### Bridge (`bridge.py`)
+Pure Python forward pass engine:
+- Loads GGUF models with full KV cache
+- Supports Q4_0, Q8_0, F16, and other quantizations (via gguf library)
+- Full op graph: RMSNorm, RoPE, SiLU, Multi-Head Attention, SwiGLU FFN
+- Tokenizer integration with BPE encoding/decoding
+
+```python
+from mojollama.bridge import MojoLlamaBridge
+m = MojoLlamaBridge('model.gguf')
+logits = m.forward([128000, 9906, 1492, 12, 7888, 0])
+print(f'Forward: {logits.shape} ✓')
+```
+
+### Parallel Inference (`kernels/`)
+- **numpy + multiprocessing** — 13.6× speedup on 64-core CPU via shared memory
+- **Mojo SIMD** — AVX2 Q4_0 matmul kernels (R&D, ~1 tok/s single-threaded)
+- **llama-quantize** — benchmark and compare quantization levels
+
+---
+
+## 📊 Quantization Benchmarks
+
+TinyLlama 1.1B on Threadripper 3970X (64 cores, AVX2+FMA):
+
+| Quant | Size | Prompt (tok/s) | Gen (tok/s) | BPW |
+|-------|------|---------------|-------------|-----|
+| TQ2_0 | 325 MB | 623 | 48 | 2.06 |
+| Q2_K | 411 MB | 526 | **71** | 3.14 |
+| Q3_K | 522 MB | 497 | 55 | 3.98 |
+| **Q4_0** | **607 MB** | **595** | **66** | **4.63** |
+| Q5_0 | 730 MB | 516 | 55 | 5.57 |
+| Q6_K | 861 MB | 449 | 39 | 6.56 |
+| Q8_0 | 1.09 GB | 525 | 44 | 8.50 |
+| F16 | 2.05 GB | 564 | 23 | 16.00 |
+
+**Insights:**
+- Q4_0 is the size/speed sweet spot (66 tok/s gen, 607 MB)
+- Q2_K has the fastest generation (71 tok/s) but lowest quality
+- All quants are 2–3× faster than F16 (memory-bandwidth bound)
+- Gemma 3 12B at Q4_K_M: 230 tok/s prompt, 15 tok/s generation
+
+---
+
+## 📐 Architecture
+
+```
+┌──────────────────────────────────────────────────────┐
+│  www/       Web UI (studio.html, chat.html, index)   │
+├──────────────────────────────────────────────────────┤
+│  server.py  OpenAI API + SSE streaming + REST API    │
+├──────────────────────────────────────────────────────┤
+│  studio.py  CLI: train, export, dataset, merge, chat │
+├──────────────────────────────────────────────────────┤
+│  backends.py  AutoBackend (llama.cpp, MAX, numpy)    │
+├──────────────────────────────────────────────────────┤
+│  bridge.py     Python forward pass + GGUF loading    │
+│  kernels/      Mojo SIMD + numpy parallel matmul     │
+│  model/        C kernel + Python inference scaffold  │
+└──────────────────────────────────────────────────────┘
+```
+
+New architectures (AttnRes, MLA) = new graph wiring in `graph/ops.mojo`.
+Backends are swappable: Python (works now) → Mojo SIMD (kernels ready) → MAX GPU (future).
+
+---
+
+## 🖥️ Performance Benchmarks
+
+| Model | Backend | Prompt | Generation | Concurrent |
+|-------|---------|--------|-----------|------------|
+| Llama 3.2 1B (Q4_0) | llama.cpp | 1,514 tok/s | 162 tok/s | 272 tok/s (4×) |
+| Qwen3-30B-A3B (Q4_K_M) | llama.cpp | 150 tok/s | 28.5 tok/s | — |
+| MAX CPU | MAX | — | 14.5 tok/s | — |
+| Mojo SIMD Q4_0 | Mojo | 172 matmul/s | ~1 tok/s | — |
+| Numpy parallel (64-core) | Python | 8.7 matmul/s | 0.3 tok/s | — |
+
+---
+
+## 🧪 Test Commands
+
+```bash
+# Start server
+python3 -m mojollama.server --model model.gguf --port 8080 --llama-port 8081
+
+# Chat via curl
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":50}'
+
+# Streaming chat (SSE)
+curl -N -X POST http://localhost:8080/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Count to 5","max_tokens":30,"stream":true}'
+
+# Benchmark quants
+./llama-bench -m model.gguf -p 512 -n 128 -t 64
+
+# Parallel matmul benchmark
+python3 src/mojollama/kernels/parallel_q4.py --rows 2048 --cols 2048
+```
 
 ---
 
@@ -110,19 +192,27 @@ print(f'Forward: {logits.shape} ✓')
 
 ```
 src/mojollama/
-├── graph/             Op graph definitions (pure Mojo)
-│   └── ops.mojo       MatmulOp, AttentionOp, RMSNormOp, ...
-├── kernels/           Mojo SIMD implementations
-│   ├── q4_matmul.mojo Q4_0 dot product (AVX2/F16C)
-│   ├── attention.mojo Softmax + MHA attention
-│   └── norms.mojo     RMSNorm + RoPE + SiLU
-├── model/             C kernels and Python bridge
-│   ├── q4_matmul_c.c  Multi-threaded C Q4_0 kernel
-│   ├── cq4_matmul.py  C kernel wrapper
-│   └── inference.py   Original Python inference
-├── bridge.py          Python backend (GGUF, tokenizer, ops)
-└── __init__.py
-CODING-SOUL.md         Project philosophy
+├── server.py           OpenAI API server (SSE streaming, REST API)
+├── backends.py         AutoBackend (llama.cpp, MAX, numpy)
+├── studio.py           CLI Studio (train, export, dataset, merge, chat)
+├── bridge.py           Python forward pass + GGUF loader
+├── llama_backend.py    llama.cpp server bridge
+├── graph/ops.mojo      Op graph definitions (Mojo)
+├── kernels/
+│   ├── q4_matmul.mojo     Q4_0 AVX2 dot product
+│   ├── parallel_q4.py     Parallel Q4_0 matmul (Python+multiprocessing)
+│   ├── parallel_matmul.mojo  Mojo SIMD matmul CLI (blocked on unsafe_from_address)
+│   ├── moe.mojo           MoE SIMD ops (router, expert matmul)
+│   ├── attention.mojo     Softmax + MHA
+│   └── norms.mojo         RMSNorm + RoPE + SiLU
+├── model/
+│   ├── inference.py    Original Python inference
+│   └── q4_matmul_c.c   C Q4_0 kernel (broken nibble order — use gguf.dequantize)
+├── mojollama_studio    CLI entry point for Studio
+www/
+├── studio.html         Full Studio SPA (6 tabs, streaming chat, charts)
+├── chat.html           Standalone streaming chat
+└── index.html          Landing page with benchmarks
 ```
 
 ---
