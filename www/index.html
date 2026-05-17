@@ -3,664 +3,156 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MojoLlama — High‑Concurrency LLM Serving Engine</title>
+<title>MojoLlama — High-Performance LLM Inference</title>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    background: #0d1117;
-    color: #c9d1d9;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    line-height: 1.6;
-  }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+:root {
+  --bg: #0a0d14; --surface: #11161e; --border: #1e2533;
+  --text: #e4e8ee; --dim: #7a8395; --accent: #5b8def;
+  --green: #3fb950; --purple: #a37cf0; --orange: #f0883e;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Inter', -apple-system, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
 
-  /* ─── Hero ─────────────────────────────────────────────── */
-  .hero {
-    text-align: center;
-    padding: 64px 24px 48px;
-    background: linear-gradient(180deg, #161b22 0%, #0d1117 100%);
-    border-bottom: 1px solid #30363d;
-  }
-  .hero .logo { font-size: 56px; margin-bottom: 12px; }
-  .hero h1 {
-    font-size: 36px;
-    font-weight: 800;
-    background: linear-gradient(135deg, #00d4ff, #7c3aed);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    margin-bottom: 8px;
-  }
-  .hero .tagline {
-    font-size: 16px;
-    color: #8b949e;
-    max-width: 600px;
-    margin: 0 auto 24px;
-  }
-  .badge-row { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
-  .badge {
-    display: inline-block;
-    padding: 4px 14px;
-    border-radius: 999px;
-    font-size: 12px;
-    font-weight: 600;
-    border: 1px solid #30363d;
-    background: #161b22;
-    color: #8b949e;
-  }
-  .badge.python { border-color: #3572A5; color: #58a6ff; }
-  .badge.kernel { border-color: #555; color: #f0e68c; }
-  .badge.api { border-color: #238636; color: #3fb950; }
+/* Nav */
+nav { display: flex; align-items: center; gap: 24px; padding: 16px 40px; border-bottom: 1px solid var(--border); background: var(--surface); }
+nav .logo { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; }
+nav .logo span { color: var(--accent); }
+nav .nav-links { display: flex; gap: 16px; margin-left: auto; align-items: center; }
+nav .nav-links a { font-size: 14px; font-weight: 500; color: var(--dim); transition: color .2s; }
+nav .nav-links a:hover { color: var(--text); text-decoration: none; }
+.btn-nav { padding: 7px 18px; border-radius: 8px; background: var(--accent); color: #fff !important; font-weight: 600 !important; }
+.btn-nav:hover { filter: brightness(1.15); text-decoration: none !important; }
 
-  /* ─── Container ────────────────────────────────────────── */
-  .container { max-width: 860px; margin: 0 auto; padding: 0 24px; }
+/* Hero */
+.hero { padding: 80px 40px 60px; text-align: center; max-width: 800px; margin: 0 auto; }
+.hero h1 { font-size: 52px; font-weight: 800; letter-spacing: -1.5px; line-height: 1.1; margin-bottom: 16px; }
+.hero h1 span { background: linear-gradient(135deg, var(--accent), var(--purple)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.hero p { font-size: 18px; color: var(--dim); line-height: 1.6; margin-bottom: 32px; }
+.hero-btns { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.btn-lg { padding: 14px 32px; border-radius: 10px; font-size: 16px; font-weight: 600; border: none; cursor: pointer; transition: all .2s; display: inline-flex; align-items: center; gap: 8px; }
+.btn-primary-lg { background: var(--accent); color: #fff; }
+.btn-primary-lg:hover { filter: brightness(1.15); transform: translateY(-1px); }
+.btn-outline-lg { background: transparent; border: 1px solid var(--border); color: var(--text); }
+.btn-outline-lg:hover { border-color: var(--accent); transform: translateY(-1px); }
 
-  /* ─── Sections ─────────────────────────────────────────── */
-  section { padding: 48px 0; border-bottom: 1px solid #21262d; }
-  section:last-child { border-bottom: none; }
-  h2 {
-    font-size: 20px;
-    font-weight: 700;
-    margin-bottom: 20px;
-    color: #f0f6fc;
-  }
-  h2 .icon { margin-right: 8px; }
+/* Features */
+.features { max-width: 1200px; margin: 0 auto; padding: 40px; }
+.features h2 { font-size: 28px; font-weight: 700; text-align: center; margin-bottom: 40px; }
+.feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+.feature-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 28px; transition: all .2s; }
+.feature-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+.feature-icon { font-size: 32px; margin-bottom: 12px; }
+.feature-card h3 { font-size: 17px; font-weight: 600; margin-bottom: 8px; }
+.feature-card p { font-size: 14px; color: var(--dim); line-height: 1.6; }
+.feature-badge { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 6px; margin-top: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+.badge-new { background: #1f3f2a; color: var(--green); }
+.badge-pro { background: #2a1f3f; color: var(--purple); }
 
-  /* ─── Cards ────────────────────────────────────────────── */
-  .card-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-    gap: 16px;
-  }
-  .card {
-    background: #161b22;
-    border: 1px solid #30363d;
-    border-radius: 10px;
-    padding: 20px;
-    transition: border-color 0.2s;
-  }
-  .card:hover { border-color: #58a6ff; }
-  .card h3 { font-size: 15px; margin-bottom: 8px; color: #f0f6fc; }
-  .card p { font-size: 13px; color: #8b949e; line-height: 1.5; }
-  .card .emoji { font-size: 24px; margin-bottom: 8px; display: block; }
+/* Benchmarks */
+.benchmarks { max-width: 1000px; margin: 40px auto; padding: 0 40px; }
+.benchmarks h2 { font-size: 28px; font-weight: 700; text-align: center; margin-bottom: 24px; }
+.bench-table { width: 100%; border-collapse: separate; border-spacing: 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--border); }
+.bench-table th { background: var(--surface); padding: 14px 18px; text-align: left; font-size: 13px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
+.bench-table td { padding: 14px 18px; font-size: 14px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.bench-table tr:last-child td { border-bottom: none; }
+.bench-table .highlight { color: var(--green); font-weight: 700; }
 
-  /* ─── API Docs ─────────────────────────────────────────── */
-  .endpoint {
-    background: #161b22;
-    border: 1px solid #30363d;
-    border-radius: 8px;
-    margin-bottom: 12px;
-    overflow: hidden;
-  }
-  .endpoint-header {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 12px 16px;
-    cursor: pointer;
-    user-select: none;
-  }
-  .endpoint-header:hover { background: #1c2128; }
-  .method {
-    display: inline-block;
-    padding: 2px 10px;
-    border-radius: 4px;
-    font-size: 12px;
-    font-weight: 700;
-    font-family: 'SF Mono', Monaco, monospace;
-    min-width: 50px;
-    text-align: center;
-  }
-  .method.get { background: #1f6feb33; color: #58a6ff; border: 1px solid #1f6feb44; }
-  .method.post { background: #23863633; color: #3fb950; border: 1px solid #23863644; }
-  .endpoint-path {
-    font-family: 'SF Mono', Monaco, monospace;
-    font-size: 13px;
-    color: #c9d1d9;
-    flex: 1;
-  }
-  .endpoint-desc { font-size: 12px; color: #8b949e; }
-  .endpoint-body {
-    padding: 0 16px 16px;
-    display: none;
-  }
-  .endpoint-body pre {
-    background: #0d1117;
-    border: 1px solid #21262d;
-    border-radius: 6px;
-    padding: 12px;
-    font-size: 12px;
-    overflow-x: auto;
-    color: #8b949e;
-  }
-  .endpoint-body.show { display: block; }
-  .endpoint .arrow {
-    font-size: 10px;
-    color: #484f58;
-    transition: transform 0.2s;
-  }
-  .endpoint-header.open .arrow { transform: rotate(90deg); }
+/* Footer */
+footer { text-align: center; padding: 40px; color: var(--dim); font-size: 13px; border-top: 1px solid var(--border); margin-top: 60px; }
+footer a { color: var(--accent); }
 
-  /* ─── Chat Playground ──────────────────────────────────── */
-  #playground {
-    background: #161b22;
-    border: 1px solid #30363d;
-    border-radius: 10px;
-    overflow: hidden;
-    margin-top: 8px;
-  }
-  #playground .chat-header {
-    padding: 12px 16px;
-    border-bottom: 1px solid #30363d;
-    font-size: 13px;
-    font-weight: 600;
-    color: #8b949e;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  #playground .chat-header .status {
-    margin-left: auto;
-    font-weight: 400;
-    font-size: 12px;
-  }
-  #playground .chat-header .status.online { color: #3fb950; }
-  #playground .chat-header .status.offline { color: #f85149; }
-  #chat-messages {
-    height: 300px;
-    overflow-y: auto;
-    padding: 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-  #chat-messages .msg {
-    max-width: 80%;
-    padding: 10px 14px;
-    border-radius: 8px;
-    font-size: 13px;
-    line-height: 1.5;
-    white-space: pre-wrap;
-  }
-  #chat-messages .msg.user {
-    align-self: flex-end;
-    background: #1f6feb;
-    color: #fff;
-  }
-  #chat-messages .msg.assistant {
-    align-self: flex-start;
-    background: #21262d;
-    border: 1px solid #30363d;
-    color: #c9d1d9;
-  }
-  #chat-messages .msg.system {
-    align-self: center;
-    background: #1c2128;
-    border: 1px solid #30363d;
-    color: #8b949e;
-    font-style: italic;
-    font-size: 12px;
-  }
-  #chat-messages .msg .meta {
-    font-size: 10px;
-    color: #484f58;
-    margin-top: 4px;
-  }
-  #chat-input-area {
-    display: flex;
-    gap: 8px;
-    padding: 12px 16px;
-    border-top: 1px solid #30363d;
-  }
-  #chat-input-area textarea {
-    flex: 1;
-    background: #0d1117;
-    border: 1px solid #30363d;
-    border-radius: 6px;
-    color: #c9d1d9;
-    padding: 8px 12px;
-    font-size: 13px;
-    resize: none;
-    min-height: 36px;
-    font-family: inherit;
-    outline: none;
-  }
-  #chat-input-area textarea:focus { border-color: #1f6feb; }
-  #chat-input-area button {
-    background: #238636;
-    color: #fff;
-    border: none;
-    border-radius: 6px;
-    padding: 0 18px;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  #chat-input-area button:hover { background: #2ea043; }
-  #chat-input-area button:disabled { opacity: 0.4; cursor: not-allowed; }
-  .spinner {
-    display: inline-block;
-    width: 14px; height: 14px;
-    border: 2px solid #30363d;
-    border-top-color: #58a6ff;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-    vertical-align: middle;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  /* ─── Build Status ──────────────────────────────────── */
-  .build-info {
-    background: #161b22;
-    border: 1px solid #30363d;
-    border-radius: 8px;
-    padding: 20px;
-    font-size: 13px;
-    line-height: 1.8;
-  }
-  .build-info dt { color: #8b949e; float: left; min-width: 120px; }
-  .build-info dd { color: #c9d1d9; margin-left: 120px; }
-  .build-info .commit { font-family: 'SF Mono', Monaco, monospace; color: #58a6ff; }
-
-  /* ─── Footer ──────────────────────────────────────────── */
-  footer {
-    text-align: center;
-    padding: 32px 24px;
-    color: #484f58;
-    font-size: 12px;
-  }
-  footer a { color: #58a6ff; text-decoration: none; }
-  footer a:hover { text-decoration: underline; }
-
-  /* ─── Responsive ──────────────────────────────────────── */
-  @media (max-width: 640px) {
-    .hero h1 { font-size: 26px; }
-    .card-grid { grid-template-columns: 1fr; }
-    #chat-messages .msg { max-width: 90%; }
-    .build-info dt { float: none; min-width: auto; }
-    .build-info dd { margin-left: 0; }
-  }
-
-  /* ─── Status bar ──────────────────────────────────────── */
-  #conn-status {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 12px;
-    border-radius: 999px;
-    font-size: 12px;
-  }
-  #conn-status.connected { background: #23863622; color: #3fb950; border: 1px solid #23863644; }
-  #conn-status.disconnected { background: #f8514922; color: #f85149; border: 1px solid #f8514944; }
-  #conn-status .dot {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    display: inline-block;
-  }
-  #conn-status.connected .dot { background: #3fb950; }
-  #conn-status.disconnected .dot { background: #f85149; }
-
-  #server-url-input {
-    background: #0d1117;
-    border: 1px solid #30363d;
-    border-radius: 6px;
-    color: #c9d1d9;
-    padding: 6px 10px;
-    font-size: 12px;
-    font-family: 'SF Mono', Monaco, monospace;
-    width: 300px;
-    max-width: 100%;
-    outline: none;
-  }
-  #server-url-input:focus { border-color: #1f6feb; }
+@media (max-width: 768px) {
+  .hero h1 { font-size: 32px; }
+  .feature-grid { grid-template-columns: 1fr; }
+  .feature-card { padding: 20px; }
+  nav { padding: 12px 16px; flex-wrap: wrap; }
+  .benchmarks { padding: 0 16px; }
+  .features { padding: 20px; }
+}
 </style>
 </head>
 <body>
-
-<!-- ═══════════ HERO ═══════════ -->
-<div class="hero">
-  <div class="logo">🔥</div>
-  <h1>MojoLlama</h1>
-  <p class="tagline">
-    High‑concurrency LLM serving engine with native GGUF support and dynamic CPU/GPU offloading — built in Mojo on the MAX platform.
-  </p>
-  <div class="badge-row">
-    <span class="badge python">Python Backend</span>
-    <span class="badge kernel">C Q4_0 Kernel</span>
-    <span class="badge api">OpenAI API</span>
-    <span class="badge">GGUF</span>
-    <span class="badge">Mojo 🔥</span>
-    <span class="badge">Apache 2.0</span>
+<nav>
+  <div class="logo"><span>▲</span> MojoLlama</div>
+  <div class="nav-links">
+    <a href="chat.html">Chat</a>
+    <a href="studio.html">Studio</a>
+    <a href="https://github.com/mojollama">GitHub</a>
+    <a href="studio.html" class="btn-nav">Launch Studio</a>
   </div>
-</div>
+</nav>
 
-<div class="container">
+<section class="hero">
+  <h1>Inference <span>at the speed</span> of Mojo</h1>
+  <p>MojoLlama is a high-performance LLM inference engine combining GGUF support, continuous batching, and PagedAttention. Built in Mojo/MAX to exceed llama.cpp speed while being simpler to deploy.</p>
+  <div class="hero-btns">
+    <a href="studio.html" class="btn-lg btn-primary-lg">▲ Launch Studio</a>
+    <a href="chat.html" class="btn-lg btn-outline-lg">💬 Try Chat</a>
+  </div>
+</section>
 
-<!-- ═══════════ ABOUT ═══════════ -->
-<section>
-  <h2><span class="icon">⚡</span>About MojoLlama</h2>
-  <div class="card-grid">
-    <div class="card">
-      <span class="emoji">🧠</span>
-      <h3>Native GGUF</h3>
-      <p>Load any quantized GGUF model directly — no conversion or glue code needed. Drop‑in replacement for llama.cpp.</p>
+<section class="features">
+  <h2>Why MojoLlama?</h2>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <div class="feature-icon">⚡</div>
+      <h3>Multi-Backend</h3>
+      <p>Auto-selects the fastest backend — llama.cpp (85 tok/s CPU), MAX GPU, or Mojo SIMD. No configuration needed.</p>
+      <span class="feature-badge badge-pro">AutoBackend</span>
     </div>
-    <div class="card">
-      <span class="emoji">⚡</span>
-      <h3>High Throughput</h3>
-      <p>Powered by MAX's continuous batching, RadixAttention, and PagedAttention. Targets 82+ tok/s on dense models.</p>
+    <div class="feature-card">
+      <div class="feature-icon">💬</div>
+      <h3>Streaming Chat</h3>
+      <p>Real-time token-by-token streaming via SSE. OpenAI-compatible API so it works with any client.</p>
+      <span class="feature-badge badge-new">Streaming</span>
     </div>
-    <div class="card">
-      <span class="emoji">🔄</span>
-      <h3>Hybrid Execution</h3>
-      <p>Dynamic CPU / GPU / Intel Arc offloading. Auto‑detects hardware and offloads layers when beneficial.</p>
+    <div class="feature-card">
+      <div class="feature-icon">🎓</div>
+      <h3>LoRA Fine-Tuning</h3>
+      <p>Fine-tune models with LoRA adapters. Merge adapters back into base models for deployment.</p>
+      <span class="feature-badge badge-new">Merge</span>
     </div>
-    <div class="card">
-      <span class="emoji">🔌</span>
-      <h3>OpenAI API</h3>
-      <p>Drop‑in replacement for any client using <code>/v1/chat/completions</code> and <code>/v1/completions</code>.</p>
+    <div class="feature-card">
+      <div class="feature-icon">📤</div>
+      <h3>HF → GGUF Export</h3>
+      <p>Convert any HuggingFace model to GGUF with one command. Supports all quantization types (Q4_0 through Q8_0).</p>
     </div>
-    <div class="card">
-      <span class="emoji">🦀</span>
-      <h3>Mojo SIMD Kernels</h3>
-      <p>Native AVX2/AVX512/NEON kernels via Mojo — compiled to native code, outperforming Python baselines by 10–60×.</p>
+    <div class="feature-card">
+      <div class="feature-icon">📊</div>
+      <h3>Dataset Studio</h3>
+      <p>Create, view, and auto-label datasets. Use the running model to generate completions for unlabeled prompts.</p>
+      <span class="feature-badge badge-new">Auto-Label</span>
     </div>
-    <div class="card">
-      <span class="emoji">📦</span>
-      <h3>Single Binary</h3>
-      <p>No Python, no Docker. Distribute a statically linked executable powered by Mojo + MAX (future target).</p>
+    <div class="feature-card">
+      <div class="feature-icon">🔬</div>
+      <h3>Benchmark Suite</h3>
+      <p>Compare models and quantization levels. Real tok/s metrics for prompt processing and text generation.</p>
     </div>
   </div>
 </section>
 
-<!-- ═══════════ API ═══════════ -->
-<section>
-  <h2><span class="icon">🔌</span>API Reference</h2>
-  <p style="font-size:13px;color:#8b949e;margin-bottom:16px;">
-    MojoLlama speaks the OpenAI API. Point any OpenAI client at the server URL.
-  </p>
-
-  <div class="endpoint">
-    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-      <span class="arrow">▶</span>
-      <span class="method get">GET</span>
-      <span class="endpoint-path">/v1/models</span>
-      <span class="endpoint-desc">List loaded models</span>
-    </div>
-    <div class="endpoint-body">
-      <pre>curl http://localhost:8080/v1/models
-
-{
-  "object": "list",
-  "data": [{
-    "id": "Llama-3.2-1B-Instruct-Q4_0",
-    "object": "model",
-    "created": 1747500000,
-    "owned_by": "mojollama"
-  }]
-}</pre>
-    </div>
-  </div>
-
-  <div class="endpoint">
-    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-      <span class="arrow">▶</span>
-      <span class="method post">POST</span>
-      <span class="endpoint-path">/v1/chat/completions</span>
-      <span class="endpoint-desc">Chat completion (multi‑turn)</span>
-    </div>
-    <div class="endpoint-body">
-      <pre>curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {"role": "system", "content": "You are a helpful assistant."},
-      {"role": "user", "content": "What is Mojo?"}
-    ],
-    "max_tokens": 128,
-    "temperature": 0.7
-  }'</pre>
-    </div>
-  </div>
-
-  <div class="endpoint">
-    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-      <span class="arrow">▶</span>
-      <span class="method post">POST</span>
-      <span class="endpoint-path">/v1/completions</span>
-      <span class="endpoint-desc">Text completion (simple prompt)</span>
-    </div>
-    <div class="endpoint-body">
-      <pre>curl -X POST http://localhost:8080/v1/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "prompt": "Once upon a time,",
-    "max_tokens": 64
-  }'</pre>
-    </div>
-  </div>
-
-  <div class="endpoint">
-    <div class="endpoint-header" onclick="toggleEndpoint(this)">
-      <span class="arrow">▶</span>
-      <span class="method get">GET</span>
-      <span class="endpoint-path">/health</span>
-      <span class="endpoint-desc">Health check</span>
-    </div>
-    <div class="endpoint-body">
-      <pre>curl http://localhost:8080/health
-
-{"status": "ok"}</pre>
-    </div>
-  </div>
+<section class="benchmarks">
+  <h2>Performance Benchmarks</h2>
+  <table class="bench-table">
+    <thead>
+      <tr><th>Model</th><th>Backend</th><th>Prompt</th><th>Generation</th><th>Concurrent</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Llama 3.2 1B (Q4_0)</td><td>llama.cpp</td><td class="highlight">1,514 tok/s</td><td class="highlight">162 tok/s</td><td>272 tok/s (4x)</td></tr>
+      <tr><td>Qwen3-30B-A3B (Q4_K_M)</td><td>llama.cpp</td><td>150 tok/s</td><td>28.5 tok/s</td><td>—</td></tr>
+      <tr><td>Llama 3.2 1B (Q4_0)</td><td>MAX CPU</td><td>—</td><td>14.5 tok/s</td><td>—</td></tr>
+      <tr><td>Mojo SIMD Q4_0 (2048×2048)</td><td>Mojo</td><td>—</td><td>172 tok/s (matmul)</td><td>—</td></tr>
+      <tr><td>Custom — Q4_0 @ 1024×4096</td><td>Mojo SIMD</td><td>—</td><td>86 tok/s (matmul)</td><td>—</td></tr>
+    </tbody>
+  </table>
 </section>
-
-<!-- ═══════════ CHAT PLAYGROUND ═══════════ -->
-<section>
-  <h2><span class="icon">💬</span>Playground</h2>
-  <p style="font-size:13px;color:#8b949e;margin-bottom:12px;">
-    Connect to a running MojoLlama server to test the model live.
-  </p>
-
-  <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
-    <input id="server-url-input" type="text" value="http://localhost:8080"
-           placeholder="http://localhost:8080" spellcheck="false">
-    <button onclick="checkConnection()" style="background:#21262d;border:1px solid #30363d;color:#c9d1d9;padding:6px 14px;border-radius:6px;font-size:12px;cursor:pointer;">Connect</button>
-    <span id="conn-status" class="disconnected"><span class="dot"></span> Disconnected</span>
-  </div>
-
-  <div id="playground">
-    <div class="chat-header">
-      <span>💬 MojoLlama Chat</span>
-      <span class="status offline" id="playground-status">Server offline</span>
-    </div>
-    <div id="chat-messages">
-      <div class="msg system">Connect to a server to start chatting.</div>
-    </div>
-    <div id="chat-input-area">
-      <textarea id="chat-input" placeholder="Type a message..." rows="1"
-        onkeydown="if(event.key=='Enter'&&!event.shiftKey){event.preventDefault();sendChat()}" disabled></textarea>
-      <button id="chat-send" onclick="sendChat()" disabled>Send</button>
-    </div>
-  </div>
-</section>
-
-<!-- ═══════════ BUILD INFO ═══════════ -->
-<section>
-  <h2><span class="icon">📋</span>Build Info</h2>
-  <div class="build-info" id="build-info">
-    <dl>
-      <dt>Project</dt>
-      <dd>MojoLlama</dd>
-      <dt>Commit</dt>
-      <dd class="commit" id="build-commit">—</dd>
-      <dt>Branch</dt>
-      <dd id="build-branch">main</dd>
-      <dt>Built</dt>
-      <dd id="build-date">—</dd>
-      <dt>Model</dt>
-      <dd>Llama 3.2 1B · Q4_0</dd>
-      <dt>Backend</dt>
-      <dd>Python + C Q4_0 Kernel (AVX2)</dd>
-    </dl>
-  </div>
-</section>
-
-</div>
 
 <footer>
-  <p>
-    <a href="https://git.bamse.cloud/a730/MojoLlama">git.bamse.cloud/a730/MojoLlama</a>
-    &nbsp;·&nbsp; Apache 2.0 License
-    &nbsp;·&nbsp; Built with 🔥 Mojo + MAX
-  </p>
+  <p>Built with <a href="https://www.modular.com/max">MAX</a> + <a href="https://github.com/ggml-org/llama.cpp">llama.cpp</a> + <a href="https://www.modular.com/mojo">Mojo</a> 🔥</p>
+  <p style="margin-top:8px">MojoLlama Studio v0.2.0 — Train · Export · Dataset · Chat · Benchmark · Merge</p>
 </footer>
-
-<script>
-// ─── API endpoint expand/collapse ─────────────────────────
-function toggleEndpoint(header) {
-  header.classList.toggle('open');
-  const body = header.nextElementSibling;
-  body.classList.toggle('show');
-}
-
-// ─── Connection check ─────────────────────────────────────
-let API_BASE = 'http://localhost:8080';
-let chatHistory = [{role: 'system', content: 'You are a helpful AI assistant.'}];
-let isGenerating = false;
-
-function getApiUrl() {
-  return document.getElementById('server-url-input').value.replace(/\/+$/, '');
-}
-
-function updateConnection(status, text) {
-  const el = document.getElementById('conn-status');
-  const pgStatus = document.getElementById('playground-status');
-  const input = document.getElementById('chat-input');
-  const sendBtn = document.getElementById('chat-send');
-
-  if (status === 'connected') {
-    el.className = 'connected';
-    el.innerHTML = '<span class="dot"></span> Connected';
-    pgStatus.className = 'status online';
-    pgStatus.textContent = 'API online';
-    input.disabled = false;
-    sendBtn.disabled = false;
-  } else {
-    el.className = 'disconnected';
-    el.innerHTML = '<span class="dot"></span> Disconnected';
-    pgStatus.className = 'status offline';
-    pgStatus.textContent = 'Server offline';
-    input.disabled = true;
-    sendBtn.disabled = true;
-  }
-}
-
-async function checkConnection() {
-  const url = getApiUrl();
-  const status = document.getElementById('conn-status');
-  status.className = 'disconnected';
-  status.innerHTML = '<span class="dot"></span> Checking...';
-
-  try {
-    const r = await fetch(url + '/v1/models', { signal: AbortSignal.timeout(5000) });
-    if (r.ok) {
-      const data = await r.json();
-      updateConnection('connected', 'Connected');
-      const modelName = data.data?.[0]?.id || 'unknown';
-      addSystemMsg('Connected to MojoLlama server. Model: ' + modelName);
-      document.querySelector('#build-info dd.commit').textContent = modelName;
-    } else {
-      throw new Error('HTTP ' + r.status);
-    }
-  } catch(e) {
-    updateConnection('disconnected', 'Connection failed');
-    addSystemMsg('Could not connect to ' + url + '. Start the server and try again.');
-  }
-}
-
-function addMsg(role, content) {
-  const container = document.getElementById('chat-messages');
-  const div = document.createElement('div');
-  div.className = 'msg ' + role;
-  div.textContent = content;
-  container.appendChild(div);
-  container.scrollTop = container.scrollHeight;
-  return div;
-}
-
-function addSystemMsg(text) {
-  const container = document.getElementById('chat-messages');
-  // Remove "Connect to a server" placeholder
-  const first = container.querySelector('.msg.system');
-  if (first && first.textContent === 'Connect to a server to start chatting.') first.remove();
-  return addMsg('system', text);
-}
-
-function showTyping() {
-  const container = document.getElementById('chat-messages');
-  const div = document.createElement('div');
-  div.className = 'msg system';
-  div.id = 'typing-indicator';
-  div.innerHTML = '<span class="spinner"></span> Thinking...';
-  container.appendChild(div);
-  container.scrollTop = container.scrollHeight;
-}
-
-function hideTyping() {
-  const el = document.getElementById('typing-indicator');
-  if (el) el.remove();
-}
-
-async function sendChat() {
-  if (isGenerating) return;
-  const input = document.getElementById('chat-input');
-  const text = input.value.trim();
-  if (!text) return;
-  input.value = '';
-  isGenerating = true;
-  document.getElementById('chat-send').disabled = true;
-
-  chatHistory.push({role: 'user', content: text});
-  addMsg('user', text);
-  showTyping();
-
-  try {
-    const url = getApiUrl();
-    const r = await fetch(url + '/v1/chat/completions', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({messages: chatHistory, max_tokens: 128, temperature: 0.7})
-    });
-    hideTyping();
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const data = await r.json();
-    const reply = data.choices?.[0]?.message?.content || '[empty response]';
-    chatHistory.push({role: 'assistant', content: reply});
-    addMsg('assistant', reply);
-  } catch(e) {
-    hideTyping();
-    addSystemMsg('Error: ' + e.message);
-  }
-
-  isGenerating = false;
-  document.getElementById('chat-send').disabled = false;
-  input.focus();
-}
-
-// ─── Fill build info from URL params ──────────────────────
-const params = new URLSearchParams(window.location.search);
-if (params.get('commit')) {
-  document.getElementById('build-commit').textContent = params.get('commit').slice(0, 12);
-}
-if (params.get('branch')) {
-  document.getElementById('build-branch').textContent = params.get('branch');
-}
-if (params.get('date')) {
-  document.getElementById('build-date').textContent = params.get('date');
-}
-
-// Auto-try connection on load
-setTimeout(checkConnection, 500);
-</script>
 </body>
 </html>

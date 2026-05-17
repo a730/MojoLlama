@@ -49,7 +49,7 @@ class LlamaCppBackend(BackendBase):
     """llama.cpp server backend — optimized for CPU."""
     name = "llama.cpp"
     
-    def __init__(self, model_path: str = "", port: int = 8080):
+    def __init__(self, model_path: str = "", port: int = 8081):
         self.port = port
         self.base_url = f"http://127.0.0.1:{port}"
         self.model_path = model_path or "/onedev-workspace/work/Llama-3.2-1B-Instruct-Q4_0.gguf"
@@ -233,9 +233,11 @@ class NumpyBackend(BackendBase):
 class AutoBackend:
     """Auto-selects best available backend."""
     
-    def __init__(self, model_path: str = "", weight_path: str = ""):
+    def __init__(self, model_path: str = "", weight_path: str = "",
+                 llama_port: int = 8081):
         self.model_path = model_path
         self.weight_path = weight_path
+        self._llama_port = llama_port
         self._backend: Optional[BackendBase] = None
         self._lock = threading.Lock()
     
@@ -259,7 +261,7 @@ class AutoBackend:
         
         # 2. CPU-only: llama.cpp is 5.7x faster than MAX on CPU
         try:
-            llama = LlamaCppBackend(self.model_path)
+            llama = LlamaCppBackend(self.model_path, port=self._llama_port)
             if llama._check_server() or os.path.exists(llama._server_path):
                 # Start server in background
                 if not llama._check_server():
