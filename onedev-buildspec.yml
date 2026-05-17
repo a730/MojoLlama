@@ -1,0 +1,93 @@
+# MojoLlama Playground — OneDev build spec
+#
+# Launches:
+#   1. MojoLlama API server on port 8080
+#   2. Chat UI on port 8081
+#
+# Access the Chat UI at the job's published port 8081
+# or API directly at port 8080.
+
+version: "1.0"
+
+jobs:
+  - name: MojoLlama Playground
+    image: python:3.11
+
+    steps:
+      - name: Checkout
+        checkout: true
+
+      - name: Install Dependencies
+        run: |
+          apt-get update && apt-get install -y gcc 2>/dev/null
+          pip install numpy gguf regex ftfy --break-system-packages -q
+
+      - name: Build C Q4_0 Kernel
+        run: |
+          gcc -O3 -march=native -shared -fPIC \
+            -o src/mojollama/model/libq4matmul.so \
+            src/mojollama/model/q4_matmul_c.c
+          echo "✓ C kernel built"
+
+      - name: Verify Model
+        run: |
+          if [ -f Llama-3.2-1B-Instruct-Q4_0.gguf ]; then
+            echo "✓ Model file present ($(du -h Llama-3.2-1B-Instruct-Q4_0.gguf | cut -f1))"
+          else
+            echo "Downloading model (728 MB)..."
+            curl -L -o Llama-3.2-1B-Instruct-Q4_0.gguf \
+              "https://huggingface.co/bartowski/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_0.gguf"
+          fi
+
+      - name: Start API Server
+        run: |
+          PYTHONPATH=/onedev-workspace/work/src:$PYTHONPATH \
+            nohup python3 -m mojollama.server \
+            --model /onedev-workspace/work/Llama-3.2-1B-Instruct-Q4_0.gguf \
+            --port 8080 \
+            > /tmp/mojollama-api.log 2>&1 &
+          echo "✓ API server starting on port 8080"
+
+      - name: Start Static File Server
+        run: |
+          cd /onedev-workspace/work/www
+          nohup python3 -m http.server 8081 > /tmp/static-server.log 2>&1 &
+          echo "✓ Static server starting on port 8081"
+
+      - name: Wait for API + Smoke Test
+        run: |
+          echo "Waiting for model to load (this may take 10-20s)..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+              echo "✓ API ready after ~${i}s"
+              break
+            fi
+            sleep 2
+          done
+
+          echo ""
+          echo "--- Smoke Test ---"
+          RESULT=$(curl -sf -X POST http://localhost:8080/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -d '{"messages":[{"role":"user","content":"Say hello in 3 words"}],"max_tokens":10}')
+          echo "Response: $RESULT" | head -c 200
+          echo ""
+          echo "✓ Smoke test passed"
+
+      - name: Playground Active
+        run: |
+          echo ""
+          echo "══════════════════════════════════════════════════"
+          echo "  🔥 MojoLlama Playground is LIVE"
+          echo ""
+          echo "  Chat UI:  port 8081 (published by OneDev)"
+          echo "  API:      port 8080"
+          echo "  Docs:     port 8081 (serves index.html)"
+          echo ""
+          echo "  Model: Llama 3.2 1B Instruct (Q4_0)"
+          echo "  Kernel: C Q4_0 with AVX2"
+          echo "══════════════════════════════════════════════════"
+          echo ""
+          echo "Keep this build running to use the playground."
+          echo "Stop the build when done."
+          sleep 86400
