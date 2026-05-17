@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.mojopkg
+build/
+.magic/
+env/
+.venv/

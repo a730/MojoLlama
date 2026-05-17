@@ -1,0 +1,8 @@
+[project]
+name = "mojollama"
+version = "0.1.0"
+description = "Mojo Hybrid Serve — LLM inference engine with native GGUF support"
+authors = ["MojoLlama Contributors"]
+
+[dependencies]
+max = ">=26.2.0"
