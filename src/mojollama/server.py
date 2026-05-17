@@ -89,6 +89,7 @@ class ThreadPoolHTTPServer(HTTPServer):
     
     def __init__(self, server_address, RequestHandlerClass,
                  max_workers=32, queue_size=64):
+        self.allow_reuse_address = True
         self._executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=max_workers
         )
