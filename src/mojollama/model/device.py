@@ -126,9 +126,8 @@ class CpuBackend(DeviceBackend):
         return a @ b
 
     def rms_norm(self, x, weight, eps=1e-6):
-        x64 = x.astype(self.np.float64)
-        variance = self.np.mean(x64 ** 2, axis=-1, keepdims=True)
-        return x / self.np.sqrt(variance + eps) * weight.astype(self.np.float32)
+        variance = self.np.mean(x.astype(self.np.float32) ** 2, axis=-1, keepdims=True)
+        return x / self.np.sqrt(variance + self.np.float32(eps)) * weight.astype(self.np.float32)
 
     def silu(self, x):
         return x / (1 + self.np.exp(-x))
