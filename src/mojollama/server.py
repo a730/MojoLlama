@@ -1,201 +1,158 @@
-"""
-MojoLlama — OpenAI-compatible API server (stdlib only).
+#!/usr/bin/env python3
+"""MojoLlama server — unified API server with auto-backend selection.
 
-Endpoints:
-  GET  /v1/models           List loaded models
-  POST /v1/chat/completions  Chat completion
-  POST /v1/completions       Text completion
+Starts an OpenAI-compatible API server that routes inference through:
+  - MAX GPU (if GPU available)
+  - llama.cpp (if CPU only)
+  - MAX CPU (fallback)
 
-Usage:
-  python -m mojollama.server --model /path/to/model.gguf --port 8080
+Usage: python3 server.py
+  # Starts on port 8080 with auto-detected backend
 """
-import argparse
+
+import os
+import sys
 import json
 import time
-import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from mojollama.bridge import MojoLlamaBridge
 
+# Add project to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# ─── Engine ──────────────────────────────────────────────────────────────────
+from mojollama.backends import AutoBackend
 
-class MojoLlamaEngine:
-    """Generation engine wrapping MojoLlamaBridge."""
+backend = None
+prompts_served = 0
+start_time = time.time()
 
-    def __init__(self, model_path: str):
-        self.model = MojoLlamaBridge(model_path)
-        self.eos_id = self.model._eos_id()
-
-    def tokenize(self, text: str) -> list[int]:
-        return self.model.tokenize(text)
-
-    def detokenize(self, ids: list[int]) -> str:
-        return self.model.detokenize(ids)
-
-    def generate(self, prompt: str, max_tokens: int = 128) -> str:
-        ids = self.tokenize(prompt)
-        out = []
-        self.model._kv_cache = None
-        self.model._cached_len = 0
-        for _ in range(max_tokens):
-            logits = self.model.forward(ids)
-            if logits is None:
-                break
-            nid = int(logits[-1].argmax())
-            if nid == self.eos_id:
-                break
-            out.append(nid)
-            ids.append(nid)
-        return self.detokenize(out)
-
-    def chat_template(self, messages: list[dict]) -> str:
-        parts = []
-        for msg in messages:
-            if msg["role"] == "system":
-                parts.append(f"System: {msg['content']}")
-            elif msg["role"] == "user":
-                parts.append(f"User: {msg['content']}")
-            elif msg["role"] == "assistant":
-                parts.append(f"Assistant: {msg['content']}")
-        parts.append("Assistant: ")
-        return "\n".join(parts)
-
-
-# ─── HTTP Handler ────────────────────────────────────────────────────────────
 
 class MojoLlamaHandler(BaseHTTPRequestHandler):
-    """HTTP request handler for OpenAI-compatible API."""
-
-    engine: MojoLlamaEngine = None  # set by server
-    model_path: str = ""
-
-    def _json(self, data: dict, status: int = 200):
+    """OpenAI-compatible API handler."""
+    
+    def log_message(self, format, *args):
+        sys.stderr.write(f"[{time.strftime('%H:%M:%S')}] {args[0]} {args[1]} {args[2]}\n")
+    
+    def _send_json(self, data, status=200):
+        body = json.dumps(data).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(json.dumps(data).encode())
-
-    def _read_body(self) -> dict:
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length) if length > 0 else b"{}"
-        return json.loads(body)
-
+        self.wfile.write(body)
+    
     def do_GET(self):
         if self.path == "/v1/models":
-            self._json({
+            self._send_json({
                 "object": "list",
                 "data": [{
-                    "id": self.model_path.split("/")[-1].replace(".gguf", ""),
+                    "id": "mojollama-llama-3.2-1b",
                     "object": "model",
-                    "created": int(time.time()),
+                    "created": int(start_time),
                     "owned_by": "mojollama",
-                }],
+                    "backend": backend.info["active"],
+                }]
             })
         elif self.path == "/health":
-            self._json({"status": "ok"})
+            self._send_json({
+                "status": "ok",
+                "backend": backend.info["active"],
+                "uptime": f"{time.time() - start_time:.0f}s",
+            })
+        elif self.path == "/backend":
+            self._send_json(backend.info)
         else:
-            self._json({"error": "Not found"}, 404)
-
+            self._send_json({"error": "not found"}, 404)
+    
     def do_POST(self):
-        try:
-            body = self._read_body()
-        except Exception:
-            self._json({"error": "Invalid JSON"}, 400)
-            return
-
-        if self.path == "/v1/chat/completions":
-            self._handle_chat(body)
-        elif self.path == "/v1/completions":
-            self._handle_completion(body)
+        global prompts_served
+        if self.path in ("/v1/completions", "/completion"):
+            content_len = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(content_len))
+            prompt = body.get("prompt", "")
+            max_tokens = body.get("max_tokens", body.get("n_predict", 128))
+            
+            t0 = time.time()
+            result = backend.generate(prompt, max_tokens=max_tokens)
+            elapsed = time.time() - t0
+            prompts_served += 1
+            
+            self._send_json({
+                "id": f"cmpl-{prompts_served}",
+                "object": "text_completion",
+                "created": int(time.time()),
+                "model": "mojollama-llama-3.2-1b",
+                "choices": [{"text": result.get("text", ""), "index": 0}],
+                "usage": {
+                    "completion_tokens": result.get("tokens", 0),
+                    "total_tokens": result.get("tokens", 0),
+                },
+                "backend": result.get("backend"),
+                "timings": {"total": f"{elapsed:.2f}s"},
+            })
+        
+        elif self.path == "/v1/chat/completions":
+            content_len = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(content_len))
+            messages = body.get("messages", [])
+            max_tokens = body.get("max_tokens", 256)
+            
+            t0 = time.time()
+            result = backend.chat(messages, max_tokens=max_tokens)
+            elapsed = time.time() - t0
+            prompts_served += 1
+            
+            self._send_json({
+                "id": f"chatcmpl-{prompts_served}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": "mojollama-llama-3.2-1b",
+                "choices": [{
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": result.get("text", ""),
+                    },
+                }],
+                "usage": {
+                    "completion_tokens": result.get("tokens", 0),
+                    "total_tokens": result.get("tokens", 0),
+                },
+                "backend": result.get("backend"),
+            })
+        
         else:
-            self._json({"error": "Not found"}, 404)
+            self._send_json({"error": "not found"}, 404)
 
-    def _handle_chat(self, body: dict):
-        messages = body.get("messages", [])
-        max_tokens = body.get("max_tokens", 128)
-        stream = body.get("stream", False)
-
-        prompt = self.engine.chat_template(messages)
-        t0 = time.time()
-        text = self.engine.generate(prompt, max_tokens)
-        elapsed = time.time() - t0
-
-        prompt_ids = self.engine.tokenize(prompt)
-        completion_ids = self.engine.tokenize(text)
-
-        if stream:
-            # Simplified streaming (single response for now)
-            pass
-
-        self._json({
-            "id": f"cmpl-{uuid.uuid4().hex[:12]}",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": self.model_path.split("/")[-1].replace(".gguf", ""),
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": text},
-                "finish_reason": "stop",
-            }],
-            "usage": {
-                "prompt_tokens": len(prompt_ids),
-                "completion_tokens": len(completion_ids),
-                "total_tokens": len(prompt_ids) + len(completion_ids),
-            },
-        })
-        print(f"[MojoLlama] Chat: {len(prompt_ids)} prompt → {len(completion_ids)} tokens ({elapsed:.1f}s)")
-
-    def _handle_completion(self, body: dict):
-        prompt = body.get("prompt", "")
-        max_tokens = body.get("max_tokens", 128)
-
-        t0 = time.time()
-        text = self.engine.generate(prompt, max_tokens)
-        elapsed = time.time() - t0
-
-        self._json({
-            "id": f"cmpl-{uuid.uuid4().hex[:12]}",
-            "object": "text_completion",
-            "created": int(time.time()),
-            "model": self.model_path.split("/")[-1].replace(".gguf", ""),
-            "choices": [{
-                "index": 0,
-                "text": text,
-                "finish_reason": "stop",
-            }],
-        })
-        print(f"[MojoLlama] Completion: {len(prompt)} chars → {elapsed:.1f}s")
-
-    def log_message(self, format, *args):
-        pass  # Quiet
-
-
-# ─── Server ──────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="MojoLlama API Server")
-    parser.add_argument("--model", required=True, help="Path to GGUF model")
-    parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--host", default="0.0.0.0")
-    args = parser.parse_args()
-
-    print(f"[MojoLlama] Loading model: {args.model}")
-    t0 = time.time()
-    MojoLlamaHandler.engine = MojoLlamaEngine(args.model)
-    MojoLlamaHandler.model_path = args.model
-    print(f"[MojoLlama] Model loaded in {time.time() - t0:.1f}s")
-    print(f"[MojoLlama] Server: http://{args.host}:{args.port}")
-    print(f"[MojoLlama] Endpoints:")
-    print(f"  GET  /v1/models")
-    print(f"  POST /v1/chat/completions")
-    print(f"  POST /v1/completions")
-
-    server = HTTPServer((args.host, args.port), MojoLlamaHandler)
+    global backend
+    port = int(os.environ.get("PORT", 8080))
+    model_path = os.environ.get("MODEL_PATH", "")
+    weight_path = os.environ.get("WEIGHT_PATH", "")
+    
+    print("╔══════════════════════════════════════════════╗")
+    print("║         MojoLlama — Inference Server         ║")
+    print("╚══════════════════════════════════════════════╝")
+    print()
+    
+    backend = AutoBackend(model_path=model_path, weight_path=weight_path)
+    print(f"\nBackend: {backend.info['active']}\n")
+    
+    server = HTTPServer(("0.0.0.0", port), MojoLlamaHandler)
+    print(f"Serving on http://0.0.0.0:{port}")
+    print(f"  /v1/models        — list models")
+    print(f"  /v1/completions   — text completion")
+    print(f"  /v1/chat/completions — chat completion")
+    print(f"  /health           — health check")
+    print(f"  /backend          — backend info")
+    print()
+    
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n[MojoLlama] Shutting down...")
-        server.shutdown()
+        print("\nShutting down...")
+        backend.stop()
+        server.server_close()
 
 
 if __name__ == "__main__":
