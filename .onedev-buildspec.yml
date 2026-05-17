@@ -5,6 +5,8 @@ jobs:
     steps:
       - type: CommandStep
         name: install dependencies
+        condition: SUCCESSFUL
+        optional: false
         runInContainer: true
         image: python:3.11
         interpreter:
@@ -25,6 +27,8 @@ jobs:
 
       - type: CommandStep
         name: verify model
+        condition: SUCCESSFUL
+        optional: false
         runInContainer: true
         image: python:3.11
         interpreter:
@@ -41,6 +45,8 @@ jobs:
 
       - type: CommandStep
         name: start servers
+        condition: SUCCESSFUL
+        optional: false
         runInContainer: true
         image: python:3.11
         interpreter:
@@ -62,6 +68,8 @@ jobs:
 
       - type: CommandStep
         name: smoke test
+        condition: SUCCESSFUL
+        optional: false
         runInContainer: true
         image: python:3.11
         interpreter:
