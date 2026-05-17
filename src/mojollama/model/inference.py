@@ -345,35 +345,35 @@ class LLMInference:
     # ─── Attention helper (device-aware) ───────────────────────────────────
 
     def _attention_scores(self, q, k, head_dim: float):
-        """Compute attention scores using device-aware batch matmul.
-        
-        Args:
-            q: (seq_len, n_head, head_dim)
-            k: (seq_len, n_kv_head or n_head, head_dim)
-            
-        Returns:
-            att: (n_head, seq_len, seq_len) OR (n_kv_head, seq_len, seq_len)
-        """
-        # Transpose to (n_head, seq_len, head_dim) for batch matmul
-        q_t = q.transpose(1, 0, 2) if hasattr(q, 'transpose') else q
-        k_t = k.transpose(1, 0, 2) if hasattr(k, 'transpose') else k
-        # (n_head, seq_len, seq_len) = (n_head, seq_len, hd) @ (n_head, hd, seq_len)
+        """Compute attention scores using device-aware batch matmul."""
+        # For single-query (cached step), use simple loop to avoid einsum overhead
+        if q.shape[0] == 1 and k.shape[0] <= 128:
+            # Simple dot product: (1, n_head, d) · (n_keys, n_head, d) for each head
+            q_t = q[0]  # (n_head, d)
+            k_t = k      # (n_keys, n_head, d)
+            # (n_head, 1, n_keys) = (n_head, d) · (n_head, d, n_keys)
+            scores = np.matmul(q_t[:, np.newaxis, :], k_t.transpose(1, 2, 0)) / head_dim
+            return scores.squeeze(1)  # (n_head, n_keys)
+        q_t = q.transpose(1, 0, 2)
+        k_t = k.transpose(1, 0, 2)
         return self.device.matmul(q_t, k_t.swapaxes(-1, -2)) / head_dim
 
     def _attention_apply(self, att, v):
-        """Apply attention weights to values using device-aware batch matmul.
-        
-        Args:
-            att: (n_head, seq_len, seq_len) 
-            v: (seq_len, n_kv_head or n_head, head_dim)
-            
-        Returns:
-            out: (seq_len, n_head, head_dim)
-        """
-        v_t = v.transpose(1, 0, 2) if hasattr(v, 'transpose') else v
-        # (n_head, seq_len, head_dim) = (n_head, seq_len, seq_len) @ (n_head, seq_len, hd)
+        """Apply attention weights to values."""
+        if att.ndim == 2:
+            # Single-query: att is (n_head, n_keys), v is (n_keys, n_kv_head, d)
+            # (n_head, d) = (n_head, n_keys) · (n_keys, n_head, d) for each head
+            # Or simpler: v_rep shape is (n_keys, n_head, d)
+            # (n_head, d) = einsum('hk,khd->hd', att, v)
+            n_head = att.shape[0]
+            d = v.shape[2]
+            out = np.zeros((n_head, d), dtype=np.float32)
+            for h in range(n_head):
+                out[h] = att[h] @ v[:, h]
+            return out[np.newaxis, :, :]  # (1, n_head, d)
+        v_t = v.transpose(1, 0, 2)
         out = self.device.matmul(att, v_t)
-        return out.transpose(1, 0, 2) if hasattr(out, 'transpose') else out
+        return out.transpose(1, 0, 2)
 
     # ─── Forward passes ────────────────────────────────────────────────────
 
