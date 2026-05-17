@@ -54,7 +54,7 @@ jobs:
             fi
 
       - type: CommandStep
-        name: start servers
+        name: start servers + smoke test
         condition: SUCCESSFUL
         optional: false
         runInContainer: true
@@ -63,7 +63,9 @@ jobs:
           type: DefaultInterpreter
           commands: |
             set -e
+
             echo "=== Start API Server ==="
+            cd /onedev-build/work
             nohup /usr/bin/python3 server.py \
               --model Llama-3.2-1B-Instruct-Q4_0.gguf \
               --port 8080 \
@@ -71,20 +73,11 @@ jobs:
             echo "✓ API server starting on port 8080"
 
             echo "=== Start Static File Server ==="
-            cd www
+            cd /onedev-build/work/www
             nohup python3 -m http.server 8081 > /tmp/static-server.log 2>&1 &
             echo "✓ Static server starting on port 8081"
 
-      - type: CommandStep
-        name: smoke test
-        condition: SUCCESSFUL
-        optional: false
-        runInContainer: true
-        image: python:3.11
-        interpreter:
-          type: DefaultInterpreter
-          commands: |
-            set -e
+            echo ""
             echo "=== Wait for API + Smoke Test ==="
             echo "Waiting for model to load..."
             for i in $(seq 1 60); do
@@ -99,7 +92,7 @@ jobs:
             echo "--- Smoke Test ---"
             RESULT=$(curl -sf -X POST http://localhost:8080/v1/chat/completions \
               -H "Content-Type: application/json" \
-              -d '{"messages":[{"role":"user","content":"Say hello in 3 words"}],"max_tokens":10}')
+              -d '{"messages":[{"role":"user","content":"Say hello in 3 words"}], "max_tokens":10}')
             echo "Response: $RESULT" | head -c 200
             echo ""
             echo "✓ Smoke test passed"
