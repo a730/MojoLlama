@@ -11,7 +11,12 @@ import gguf
 # pyrefly: ignore [untyped-import]
 import regex as re
 
-from mojollama.model.device import get_device, DeviceBackend, DeviceType
+try:
+    from mojollama.model.device import get_device, DeviceBackend, DeviceType
+except ImportError:
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+    from mojollama.model.device import get_device, DeviceBackend, DeviceType
 
 logger = logging.getLogger(__name__)
 
