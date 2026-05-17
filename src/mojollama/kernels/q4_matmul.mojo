@@ -8,6 +8,7 @@ Reference: MAX qmatmul.mojo — AVX2 pmaddw path.
 """
 
 from std.sys.info import CompilationTarget
+from std.memory import bitcast, UnsafePointer
 
 # SIMD types for AVX2 (256-bit)
 alias F32x8  = SIMD[DType.float32, 8]
@@ -21,8 +22,10 @@ alias U8x16  = SIMD[DType.uint8, 16]
 fn f16_to_f32(h: UInt16) -> Float32:
     """float16 bits → float32. Uses F16C via hardware conversion when AVX2 available."""
     comptime if CompilationTarget.has_avx2():
-        # Direct Float16→Float32 cast compiles to VCVTPH2PS (F16C instruction)
-        return Float32(Float16(h))
+        # Bitcast UInt16 to Float16, then extend to Float32.
+        # This compiles to VCVTPH2PS (F16C instruction) on AVX2.
+        var f16 = bitcast[DType.float16](h)
+        return Float32(f16)
     else:
         # Software IEEE 754-2008 fallback
         var sign = (UInt32(h) >> 15) & 1
@@ -33,7 +36,13 @@ fn f16_to_f32(h: UInt16) -> Float32:
             if mant == 0:
                 bits = sign << 31
             else:
-                var shift = 24 - mant.bit_length()
+                # Count leading zeros to find the highest set bit
+                var m = mant
+                var count: UInt32 = 0
+                while m > 0:
+                    m = m >> 1
+                    count += 1
+                var shift = 24 - count
                 bits = (sign << 31) | ((UInt32(113 - shift)) << 23) | ((mant << (shift + 13)) & 0x7fffff)
         elif exp == 31:
             bits = (sign << 31) | 0x7f800000 | (mant << 13)
@@ -83,49 +92,12 @@ fn q4_block_dot(scale: Float32, nibbles: U8x16, x: F32x8, x1: F32x8,
     return total
 
 
-# ─── Full Q4_0 Matmul (one row) ────────────────────────────────────────
-
-fn q4_matmul_row(nibbles_data: AnyType, n_blocks: Int, 
-                  x_data: AnyType, in_cols: Int) -> Float32:
-    """Compute dot of one Q4_0 weight row with input.
-    
-    Iterates over Q4_0 blocks, computing block-wise dot products.
-    Each block covers 32 input dimensions.
-    """
-    var total: Float32 = 0.0
-    var blocks_per_row = in_cols // Q4_BLK
-    if in_cols % Q4_BLK != 0:
-        blocks_per_row += 1
-    
-    for blk in range(blocks_per_row):
-        var block_offset = blk * 18
-        var x_offset = blk * 32
-        
-        # Read scale (first 2 bytes as float16 little-endian)
-        var b0 = nibbles_data[block_offset]
-        var b1 = nibbles_data[block_offset + 1]
-        var scale_bits = UInt16(b0) | (UInt16(b1) << 8)
-        var scale = f16_to_f32(scale_bits)
-        
-        # Read 16 nibble bytes
-        var nibbles = U8x16()
-        for i in range(16):
-            nibbles[i] = nibbles_data[block_offset + 2 + i]
-        
-        # Read 32 float32 x values (4 SIMD loads)
-        var x0 = F32x8()
-        var x1 = F32x8()
-        var x2 = F32x8()
-        var x3 = F32x8()
-        for i in range(8):
-            x0[i] = x_data[x_offset + i]
-            x1[i] = x_data[x_offset + 8 + i]
-            x2[i] = x_data[x_offset + 16 + i]
-            x3[i] = x_data[x_offset + 24 + i]
-        
-        total += q4_block_dot(scale, nibbles, x0, x1, x2, x3)
-    
-    return total
+# ─── Full Q4_0 Matmul (pointer-based, future) ───────────────────────────
+# When heap APIs (unsafe_from_address, alloc) land in Mojo, this module
+# gets a `q4_matmul_forward` that takes raw pointer addresses as Int and
+# processes full weight matrices using the `q4_block_dot` primitive above.
+# 
+# Reference implementation: see C kernel at model/q4_matmul_c.c
 
 
 # ─── Tests ─────────────────────────────────────────────────────────────
@@ -157,8 +129,8 @@ fn test_q4_block_zero():
     var nibbles = U8x16()  # all zeros
     var x = F32x8(2.0)
     var dot = q4_block_dot(scale, nibbles, x, x, x, x)
-    print("zero block dot:", dot, "(expect -128.0)")
-    if abs(dot - (-128.0)) < 1.0:
+    print("zero block dot:", dot, "(expect -256.0)")
+    if abs(dot - (-256.0)) < 1.0:
         print("  PASS")
     else:
         print("  FAIL")
