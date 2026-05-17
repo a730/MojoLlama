@@ -23,6 +23,9 @@ from pathlib import Path
 
 import numpy as np
 
+# Auto-tuner for server optimization
+from mojollama.autotune import autotune, save_config, print_config, load_config
+
 STUDIO_VERSION = "0.1.0"
 BASE_DIR = Path(__file__).parent.parent.parent.resolve()
 LLAMA_CPP = "/tmp/llama.cpp"
@@ -728,6 +731,37 @@ def cmd_benchmark(args):
     print(f"\n✅ Benchmark complete")
 
 
+# ─── Auto-tune ─────────────────────────────────────────────────────────
+
+def cmd_autotune(args):
+    """Auto-tune server settings for this hardware."""
+    print("╔══════════════════════════════════════════════╗")
+    print("║      MojoLlama AutoTuner v0.1.0              ║")
+    print("╚══════════════════════════════════════════════╝")
+    print()
+
+    config = autotune(args.model or 
+                      "/tmp/tl-Q4_0.gguf",
+                      quick=args.quick)
+
+    if config:
+        save_config(config)
+        print_config(config)
+
+        # Also show the generated server config
+        from mojollama.backends import build_server_cmd
+        cmd = build_server_cmd(
+            "/tmp/llama.cpp/build/bin/llama-server",
+            args.model or "model.gguf",
+            8081
+        )
+        print()
+        print("Recommended llama-server command:")
+        print(f"  {' '.join(cmd)}")
+    else:
+        print("❌ Auto-tuning failed")
+
+
 # ─── Info ──────────────────────────────────────────────────────────────
 
 def cmd_info(args):
@@ -839,6 +873,11 @@ def main():
     p_bench.add_argument("--prompt", default="The meaning of life is", help="Test prompt")
     p_bench.add_argument("--n-predict", type=int, default=128, help="Tokens to generate")
     
+    # autotune
+    p_tune = sub.add_parser("autotune", help="Auto-tune server settings for this hardware")
+    p_tune.add_argument("--model", "-m", help="Model to benchmark with (default: TinyLlama Q4_0)")
+    p_tune.add_argument("--quick", "-q", action="store_true", help="Faster sweep (fewer combos)")
+    
     # info
     sub.add_parser("info", help="System info")
     
@@ -858,6 +897,7 @@ def main():
         print("  chat      Interactive chat with a model")
         print("  serve     Start the full MojoLlama API server")
         print("  benchmark Benchmark model inference speed")
+        print("  autotune  Auto-tune server settings for this hardware")
         print("  info      Show system info")
         return
     
@@ -869,6 +909,7 @@ def main():
         "chat": cmd_chat,
         "serve": cmd_serve,
         "benchmark": cmd_benchmark,
+        "autotune": cmd_autotune,
         "info": cmd_info,
     }
     commands[args.command](args)

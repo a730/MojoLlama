@@ -24,7 +24,48 @@ import time
 import subprocess
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
+
+# ─── Auto-tuned config loader ─────────────────────────────────────────
+
+CONFIG_PATH = Path.home() / ".mojollama" / "config.json"
+
+def load_tuned_config() -> Optional[Dict[str, Any]]:
+    """Load auto-tuned server config, or None."""
+    try:
+        if CONFIG_PATH.exists():
+            with open(CONFIG_PATH) as f:
+                cfg = json.load(f)
+            return cfg.get("llama_server")
+    except Exception:
+        pass
+    return None
+
+
+def build_server_cmd(server_path: str, model_path: str, port: int,
+                     config: Optional[Dict[str, Any]] = None) -> list:
+    """Build llama-server command from config (with fallbacks)."""
+    if config is None:
+        config = load_tuned_config() or {}
+
+    n_cores = os.cpu_count() or 64
+
+    cmd = [
+        server_path, "-m", model_path, "-c", "4096",
+        "-t", str(config.get("threads", n_cores)),
+        "-tb", str(config.get("threads_batch", max(1, n_cores // 2))),
+        "-b", str(config.get("batch_size", 2048)),
+        "-ub", str(config.get("ubatch_size", 512)),
+        "-np", str(config.get("n_parallel", 4)),
+        "--port", str(port), "--host", "127.0.0.1", "--no-webui",
+    ]
+
+    if config.get("mlock", True):
+        cmd.append("--mlock")
+    if config.get("cont_batching", True):
+        cmd.append("--cont-batching")
+
+    return cmd
 
 
 class BackendBase:
@@ -64,14 +105,9 @@ class LlamaCppBackend(BackendBase):
         if self._check_server():
             self._started = True
             return
-        # Start server with optimized settings for Threadripper 3970X
-        # -t 64: use all cores, -np 8: 8 parallel slots, -b 4096: batch size
-        # -ub 4096: batch for generation, --mlock: lock in RAM, --cont-batching
-        self._process = subprocess.Popen(
-            [self._server_path, "-m", self.model_path, "-c", "4096",
-             "-t", "64", "-tb", "32", "-b", "4096", "-ub", "4096",
-             "-np", "8", "--mlock", "--cont-batching",
-             "--port", str(self.port), "--host", "127.0.0.1", "--no-webui"],
+        # Start server with optimized settings from auto-tuner (or defaults)
+        cmd = build_server_cmd(self._server_path, self.model_path, self.port)
+        self._process = subprocess.Popen(cmd,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
         # Wait for it to be ready
