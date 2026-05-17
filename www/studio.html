@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MojoLlama Studio</title>
+<style>
+:root {
+  --bg: #0d1117; --surface: #161b22; --border: #30363d;
+  --text: #e6edf3; --dim: #8b949e; --accent: #58a6ff;
+  --green: #3fb950; --yellow: #d29922; --red: #f85149;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+       background: var(--bg); color: var(--text); }
+.container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+.header { display: flex; align-items: center; gap: 12px; padding: 20px 0; border-bottom: 1px solid var(--border); margin-bottom: 24px; }
+.header h1 { font-size: 24px; font-weight: 600; }
+.header span { color: var(--dim); font-size: 14px; }
+.tabs { display: flex; gap: 4px; margin-bottom: 24px; }
+.tab { padding: 10px 20px; border: 1px solid var(--border); border-radius: 6px;
+       cursor: pointer; color: var(--dim); background: var(--surface);
+       font-size: 14px; transition: all .2s; }
+.tab:hover { border-color: var(--accent); color: var(--text); }
+.tab.active { border-color: var(--accent); color: var(--accent); background: #0c2d6b40; }
+.panel { display: none; }
+.panel.active { display: block; }
+.card { background: var(--surface); border: 1px solid var(--border);
+        border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+.card h3 { font-size: 16px; margin-bottom: 12px; }
+label { display: block; font-size: 13px; color: var(--dim); margin-bottom: 4px; }
+input, select, textarea { width: 100%; padding: 8px 12px; background: var(--bg);
+       border: 1px solid var(--border); border-radius: 6px; color: var(--text);
+       font-size: 14px; margin-bottom: 12px; }
+textarea { font-family: 'Monaco','Menlo',monospace; font-size: 13px; resize: vertical; }
+button { padding: 8px 20px; border: none; border-radius: 6px; cursor: pointer;
+         font-size: 14px; font-weight: 500; transition: all .2s; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { filter: brightness(1.2); }
+.btn-green { background: var(--green); color: #fff; }
+.btn-green:hover { filter: brightness(1.2); }
+.btn-sm { padding: 4px 12px; font-size: 12px; background: var(--border); color: var(--text); }
+.btn-sm:hover { background: var(--accent); }
+pre { background: var(--bg); padding: 12px; border-radius: 6px; 
+      font-size: 13px; overflow-x: auto; white-space: pre-wrap; }
+.log { max-height: 200px; overflow-y: auto; font-family: 'Monaco',monospace; font-size: 12px; }
+.row { display: flex; gap: 12px; }
+.row > * { flex: 1; }
+.status { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.status.online { background: var(--green); }
+.status.offline { background: var(--red); }
+.model-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.model-card { background: var(--surface); border: 1px solid var(--border);
+              border-radius: 8px; padding: 16px; cursor: pointer; transition: all .2s; }
+.model-card:hover { border-color: var(--accent); }
+.model-card h4 { font-size: 14px; margin-bottom: 4px; }
+.model-card p { font-size: 12px; color: var(--dim); }
+.chat-messages { height: 400px; overflow-y: auto; border: 1px solid var(--border);
+                 border-radius: 8px; padding: 16px; margin-bottom: 12px;
+                 background: var(--bg); }
+.msg { margin-bottom: 16px; }
+.msg-user { color: var(--accent); font-weight: 500; font-size: 13px; }
+.msg-assistant { color: var(--green); font-weight: 500; font-size: 13px; }
+.msg-text { margin-top: 4px; font-size: 14px; line-height: 1.5; }
+.msg-text pre { margin-top: 8px; }
+.chat-input { display: flex; gap: 8px; }
+.chat-input input { margin-bottom: 0; }
+.chat-input button { flex-shrink: 0; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>▲ MojoLlama Studio</h1>
+    <span>v0.1.0</span>
+    <span id="backend-status" style="margin-left:auto;font-size:13px">
+      <span class="status offline"></span>Backend: <span id="backend-name">detecting...</span>
+    </span>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="chat">💬 Chat</div>
+    <div class="tab" data-tab="models">📦 Models</div>
+    <div class="tab" data-tab="export">📤 Export</div>
+    <div class="tab" data-tab="train">🎓 Train</div>
+    <div class="tab" data-tab="dataset">📊 Dataset</div>
+  </div>
+
+  <!-- Chat -->
+  <div class="panel active" id="panel-chat">
+    <div class="card">
+      <div class="row" style="margin-bottom:12px">
+        <select id="chat-model">
+          <option value="">Loading models...</option>
+        </select>
+        <input type="number" id="chat-tokens" value="256" placeholder="Max tokens" style="width:120px">
+      </div>
+      <div class="chat-messages" id="chat-messages">
+        <div class="msg">
+          <div class="msg-assistant">MojoLlama</div>
+          <div class="msg-text">Hello! I'm MojoLlama. Select a model and start chatting.</div>
+        </div>
+      </div>
+      <div class="chat-input">
+        <input type="text" id="chat-input" placeholder="Type a message..." autofocus>
+        <button class="btn-primary" onclick="sendMessage()">Send</button>
+        <button class="btn-sm" onclick="clearChat()">Clear</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Models -->
+  <div class="panel" id="panel-models">
+    <div class="card">
+      <h3>Available Models</h3>
+      <div class="model-list" id="model-list"></div>
+    </div>
+  </div>
+
+  <!-- Export -->
+  <div class="panel" id="panel-export">
+    <div class="card">
+      <h3>HuggingFace → GGUF</h3>
+      <label>HF Model ID or local path</label>
+      <input type="text" id="export-model" placeholder="e.g. meta-llama/Llama-3.2-1B-Instruct">
+      <label>Quantization</label>
+      <select id="export-outtype">
+        <option value="q4_0">Q4_0 (4-bit, fast)</option>
+        <option value="q8_0">Q8_0 (8-bit, balanced)</option>
+        <option value="f16">F16 (16-bit, accurate)</option>
+        <option value="bf16">BF16 (bfloat16)</option>
+      </select>
+      <label>Output file</label>
+      <input type="text" id="export-outfile" placeholder="model-q4_0.gguf">
+      <button class="btn-primary" onclick="exportModel()">Export to GGUF</button>
+      <pre id="export-log" class="log" style="margin-top:12px"></pre>
+    </div>
+  </div>
+
+  <!-- Train -->
+  <div class="panel" id="panel-train">
+    <div class="card">
+      <h3>LoRA Fine-tuning</h3>
+      <div class="row">
+        <div>
+          <label>Base model (GGUF)</label>
+          <select id="train-model"></select>
+        </div>
+        <div>
+          <label>Dataset (JSONL)</label>
+          <input type="text" id="train-data" placeholder="dataset.jsonl">
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>LoRA rank</label>
+          <input type="number" id="train-rank" value="16">
+        </div>
+        <div>
+          <label>Learning rate</label>
+          <input type="text" id="train-lr" value="1e-4">
+        </div>
+        <div>
+          <label>Steps</label>
+          <input type="number" id="train-steps" value="100">
+        </div>
+      </div>
+      <button class="btn-green" onclick="startTrain()">Start Training</button>
+      <pre id="train-log" class="log" style="margin-top:12px"></pre>
+    </div>
+  </div>
+
+  <!-- Dataset -->
+  <div class="panel" id="panel-dataset">
+    <div class="card">
+      <h3>Create Dataset</h3>
+      <label>Prompt template (use {input} for variable)</label>
+      <input type="text" id="ds-template" value="### Instruction\n{input}\n### Response\n">
+      <label>Enter prompts (one per line)</label>
+      <textarea id="ds-prompts" rows="5" placeholder="What is AI?\nExplain quantum computing\nWrite a poem"></textarea>
+      <button class="btn-primary" onclick="createDataset()">Generate Dataset</button>
+      <pre id="ds-log" style="margin-top:12px"></pre>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = `http://${location.hostname}:8080`;
+
+// Tab switching
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(`panel-${tab.dataset.tab}`).classList.add('active');
+  });
+});
+
+// Chat
+async function sendMessage() {
+  const input = document.getElementById('chat-input');
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = '';
+  const container = document.getElementById('chat-messages');
+  container.innerHTML += `<div class="msg"><div class="msg-user">You</div><div class="msg-text">${escapeHtml(msg)}</div></div>`;
+  container.scrollTop = container.scrollHeight;
+  
+  const model = document.getElementById('chat-model').value;
+  const tokens = document.getElementById('chat-tokens').value;
+  
+  container.innerHTML += `<div class="msg" id="thinking"><div class="msg-assistant">MojoLlama</div><div class="msg-text">Thinking...</div></div>`;
+  
+  try {
+    const resp = await fetch(`${API}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        model: model || undefined,
+        messages: [{role: 'user', content: msg}],
+        max_tokens: parseInt(tokens) || 256
+      })
+    });
+    const data = await resp.json();
+    const text = data.choices?.[0]?.message?.content || data.error || 'No response';
+    document.getElementById('thinking').innerHTML = 
+      `<div class="msg-assistant">MojoLlama <span style="font-size:11px;color:var(--dim)">(${data.backend || 'unknown'})</span></div>
+       <div class="msg-text">${escapeHtml(text)}</div>`;
+  } catch(e) {
+    document.getElementById('thinking').innerHTML = 
+      `<div class="msg-assistant">Error</div><div class="msg-text" style="color:var(--red)">${e.message}</div>`;
+  }
+  container.scrollTop = container.scrollHeight;
+}
+
+function clearChat() {
+  document.getElementById('chat-messages').innerHTML = 
+    '<div class="msg"><div class="msg-assistant">MojoLlama</div><div class="msg-text">Chat cleared. Select a model and start chatting.</div></div>';
+}
+
+document.getElementById('chat-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+
+// Export
+async function exportModel() {
+  const model = document.getElementById('export-model').value;
+  const outtype = document.getElementById('export-outtype').value;
+  const outfile = document.getElementById('export-outfile').value || `${model.split('/').pop()}-${outtype}.gguf`;
+  const log = document.getElementById('export-log');
+  log.textContent = 'Starting conversion...\n';
+  
+  try {
+    const resp = await fetch(`${API}/export`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model, outtype, outfile})
+    });
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    while(true) {
+      const {done, value} = await reader.read();
+      if (done) break;
+      log.textContent += decoder.decode(value);
+    }
+  } catch(e) {
+    log.textContent += `\nError: ${e.message}`;
+  }
+}
+
+// Train
+async function startTrain() {
+  const log = document.getElementById('train-log');
+  log.textContent = 'Training not available in browser. Use CLI:\n';
+  log.textContent += `mojollama-studio train --model ${document.getElementById('train-model').value} --data ${document.getElementById('train-data').value}\n`;
+}
+
+// Dataset
+function createDataset() {
+  const template = document.getElementById('ds-template').value;
+  const prompts = document.getElementById('ds-prompts').value.split('\n').filter(p => p.trim());
+  const log = document.getElementById('ds-log');
+  let output = '';
+  for (const p of prompts) {
+    const prompt = template.replace('{input}', p);
+    output += JSON.stringify({prompt, completion: ''}) + '\n';
+  }
+  log.textContent = `Generated ${prompts.length} samples:\n${output}`;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Load models
+async function loadModels() {
+  try {
+    const resp = await fetch(`${API}/v1/models`);
+    const data = await resp.json();
+    if (data.data) {
+      const backendSpan = document.getElementById('backend-name');
+      backendSpan.textContent = data.data[0]?.backend || 'unknown';
+      document.querySelector('#backend-status .status').className = 'status online';
+    }
+  } catch(e) {
+    document.getElementById('backend-name').textContent = 'offline';
+  }
+  
+  // Populate model list and selects from known GGUF files
+  const models = ['Llama-3.2-1B-Instruct-Q4_0.gguf', 'Llama-3.2-1B-Instruct-Q4_0-max.gguf', 'Qwen3-30B-A3B-Q4_K_M.gguf'];
+  const list = document.getElementById('model-list');
+  const select = document.getElementById('chat-model');
+  const trainSelect = document.getElementById('train-model');
+  list.innerHTML = '';
+  select.innerHTML = '<option value="">Auto-detect</option>';
+  trainSelect.innerHTML = '';
+  
+  for (const m of models) {
+    const card = document.createElement('div');
+    card.className = 'model-card';
+    const size = m.includes('30B') ? '17.3 GB' : '0.7 GB';
+    card.innerHTML = `<h4>${m}</h4><p>${m.includes('30B') ? 'Qwen3-30B-A3B MoE' : 'Llama 3.2 1B'} · ${size}</p>`;
+    list.appendChild(card);
+    
+    const opt = document.createElement('option');
+    opt.value = m; opt.textContent = m;
+    select.appendChild(opt);
+    
+    const opt2 = document.createElement('option');
+    opt2.value = m; opt2.textContent = m;
+    trainSelect.appendChild(opt2);
+  }
+}
+
+loadModels();
+</script>
+</body>
+</html>
