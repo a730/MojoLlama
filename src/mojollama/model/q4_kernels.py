@@ -2,17 +2,17 @@
 Q4_0 quantized matmul — operates directly on raw Q4_0 blocks.
 Never allocates the full float32 weight matrix.
 
-Q4_0 block format (10 bytes per 16 values):
+Q4_0 block format (18 bytes per 32 values):
   bytes 0-1:   float16 scale (little-endian)
-  bytes 2-9:   8 × uint8, each storing 2 × 4-bit values
-               low nibble  = value at index 2i (even positions)
-               high nibble = value at index 2i+1 (odd positions)
+  bytes 2-17:  16 × uint8 nibble bytes
+               Position i (0-15): low nibble of byte[i] → value[i]
+               Position i+16 (16-31): high nibble of byte[i] → value[i+16]
   dequant: value[i] = (nibble - 8) * scale
 
-Usage:
-    q4 = Q4Matmul.from_gguf_tensor(gguf_tensor)
-    output = q4.forward_t(x)  # y = x @ W.T
+  NOTE: The nibble order is ALL LOW FIRST (16 vals), then ALL HIGH (16 vals).
+        NOT low/high interleaved. This is the GGUF v2/v3 format.
 """
+
 import numpy as np
 
 
@@ -22,42 +22,47 @@ class Q4Matmul:
     def __init__(self, raw_bytes: bytes, out_rows: int, in_cols: int):
         self.out_rows = out_rows
         self.in_cols = in_cols
-        self.blocks_per_row = (in_cols + 15) // 16
-        self.stride = self.blocks_per_row * 10  # bytes per row of blocks
+        self.blocks_per_row = (in_cols + 31) // 32
+        self.stride = self.blocks_per_row * 18  # bytes per row of blocks
         self.raw = np.frombuffer(raw_bytes, dtype=np.uint8)
 
     @classmethod
     def from_gguf_tensor(cls, tensor) -> "Q4Matmul":
         """Create from a GGUF reader tensor (Q4_0 type)."""
         raw = np.array(tensor.data)
-        out_rows, in_cols = tensor.shape[0], tensor.shape[1]
-        return cls(raw.tobytes(), out_rows, in_cols)
+        # GGUF shape is [cols, rows] but data is (rows, packed_cols)
+        # packed_cols = (cols / 32) * 18
+        n_rows, row_bytes = raw.shape
+        in_cols = (row_bytes // 18) * 32
+        return cls(raw.tobytes(), n_rows, in_cols)
 
     # ─── Block processing helpers ──────────────────────────────────────────
 
-    def _process_row_blocks(self, row_idx: int) -> tuple:
+    def _process_row_blocks(self, row_idx: int) -> np.ndarray:
         """Dequantize all blocks for one row of the weight matrix.
 
         Returns:
-            weight_vals: (blocks_per_row, 16) float32 — dequantized weight row
+            weight_vals: (blocks_per_row, 32) float32 — dequantized weight row
         """
         offset = row_idx * self.stride
         blocks_flat = self.raw[offset:offset + self.stride]
-        blocks = blocks_flat.reshape(-1, 10)  # (n_blocks, 10)
+        blocks = blocks_flat.reshape(-1, 18)  # (n_blocks, 18)
 
         # Extract scales (first 2 bytes as float16)
         scales = blocks[:, :2].view(np.float16).ravel().astype(np.float32)
 
-        # Extract and decode nibbles
-        nibbles = blocks[:, 2:]  # (n_blocks, 8)
+        # Extract and decode nibbles — CORRECT GGUF format:
+        # Positions 0-15: low nibbles of bytes 0-15
+        # Positions 16-31: high nibbles of bytes 0-15
+        nibbles = blocks[:, 2:]  # (n_blocks, 16)
         lo = (nibbles & 0x0F).astype(np.float32) - 8.0
         hi = ((nibbles >> 4) & 0x0F).astype(np.float32) - 8.0
 
-        # Interleave: lo_0, hi_0, lo_1, hi_1, ..., lo_7, hi_7
-        weight_vals = np.empty((self.blocks_per_row, 16), dtype=np.float32)
-        weight_vals[:, 0::2] = lo
-        weight_vals[:, 1::2] = hi
-        weight_vals *= scales[:, np.newaxis]  # broadcast: (n_blocks, 16)
+        # Concatenate: all lows first, then all highs
+        weight_vals = np.empty((self.blocks_per_row, 32), dtype=np.float32)
+        weight_vals[:, :16] = lo
+        weight_vals[:, 16:] = hi
+        weight_vals *= scales[:, np.newaxis]  # broadcast: (n_blocks, 32)
 
         return weight_vals
 
@@ -95,10 +100,10 @@ class Q4Matmul:
         assert in_cols == self.in_cols, f"Input dim {in_cols} != weight dim {self.in_cols}"
 
         out = np.zeros((batch, self.out_rows), dtype=np.float32)
-        x_blocks = x.reshape(batch, self.blocks_per_row, 16)
+        x_blocks = x.reshape(batch, self.blocks_per_row, 32)
 
         for r in range(self.out_rows):
-            w_row = self._process_row_blocks(r)  # (blocks_per_row, 16)
+            w_row = self._process_row_blocks(r)  # (blocks_per_row, 32)
             # For each batch: sum over blocks of dot product
             out[:, r] = np.sum(w_row[np.newaxis, :, :] * x_blocks, axis=(1, 2))
 
@@ -121,33 +126,36 @@ def pack_q4_weight(matrix: np.ndarray) -> bytes:
     """Quantize a float32 weight matrix to Q4_0 format (byte string).
 
     Used for testing against float32 reference.
+    Q4_0 block: 2 bytes f16 scale + 16 bytes nibbles = 18 bytes per 32 values.
+    Nibble order: all lows first (16), then all highs (16).
     """
     import struct
     out_rows, in_cols = matrix.shape
-    blocks_per_row = (in_cols + 15) // 16
-    stride = blocks_per_row * 10
+    blocks_per_row = (in_cols + 31) // 32
+    stride = blocks_per_row * 18
     raw = bytearray(out_rows * stride)
 
     for r in range(out_rows):
         row = matrix[r]
         for b in range(blocks_per_row):
-            start = b * 16
-            chunk = row[start:start + 16]
-            if len(chunk) < 16:
-                chunk = np.pad(chunk, (0, 16 - len(chunk)))
+            start = b * 32
+            chunk = row[start:start + 32]
+            if len(chunk) < 32:
+                chunk = np.pad(chunk, (0, 32 - len(chunk)))
 
-            # Q4_0: scale = absmax / 7
+            # Q4_0: scale = absmax / -8
             amax = np.max(np.abs(chunk))
-            scale = np.float16(amax / 7.0 if amax > 0 else 1.0)
+            scale = np.float16(amax / -8.0 if amax > 0 else -1.0)
             s = float(scale)
 
-            boff = (r * blocks_per_row + b) * 10
+            boff = (r * blocks_per_row + b) * 18
             struct.pack_into('<e', raw, boff, scale)
 
-            for i in range(8):
-                lo = max(0, min(15, int(round(chunk[i*2] / s)) + 8))
-                hi = max(0, min(15, int(round(chunk[i*2+1] / s)) + 8))
-                raw[boff + 2 + i] = (hi << 4) | lo
+            # Pack: low nibbles first (bytes 0-15), then high nibbles packed
+            for i in range(16):
+                lo_val = max(0, min(15, int(round(chunk[i] / s) + 8)))
+                hi_val = max(0, min(15, int(round(chunk[i + 16] / s) + 8)))
+                raw[boff + 2 + i] = (hi_val << 4) | lo_val
 
     return bytes(raw)
 

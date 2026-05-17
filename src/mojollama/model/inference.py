@@ -19,6 +19,12 @@ except ImportError:
     from mojollama.model.device import get_device, DeviceBackend, DeviceType
 
 try:
+    from mojollama.model.q4_kernels import Q4Matmul
+    _HAS_Q4 = True
+except ImportError:
+    _HAS_Q4 = False
+
+try:
     from mojollama.model.cq4_matmul import CQ4Matmul
     _HAS_CQ4 = True
 except ImportError:
@@ -211,26 +217,33 @@ class LLMInference:
         return self._persistent_cache[name]
 
     def _init_q4_matmuls(self):
-        """Pre-load all Q4_0 tensors as CQ4Matmul objects (zero allocation)."""
+        """Pre-load all Q4_0 tensors as Q4Matmul objects (correct Python kernel)."""
         self._q4_matmuls = {}
-        if not _HAS_CQ4:
-            return
         from gguf.constants import GGMLQuantizationType
         count = 0
+        kernel_type = "Python"
         for name, t in self._tensors_by_name.items():
             if hasattr(t, 'tensor_type') and t.tensor_type == GGMLQuantizationType.Q4_0:
                 try:
-                    self._q4_matmuls[name] = CQ4Matmul.from_gguf_tensor(t)
+                    if _HAS_Q4:
+                        self._q4_matmuls[name] = Q4Matmul.from_gguf_tensor(t)
+                    elif _HAS_CQ4:
+                        self._q4_matmuls[name] = CQ4Matmul.from_gguf_tensor(t)
+                        kernel_type = "C (may have wrong nibble order)"
+                    else:
+                        continue
                     count += 1
                 except Exception:
                     pass
         if count:
-            print(f"[MojoLlama] C-Q4 kernel ready for {count} weight tensors")
+            print(f"[MojoLlama] {kernel_type} Q4 kernel ready for {count} weight tensors")
 
     def _q4_matmul(self, name: str, x: np.ndarray, transposed: bool = True) -> np.ndarray:
-        """Compute x @ W.T (or x @ W) using C Q4_0 kernel if available.
+        """Compute x @ W.T (or x @ W) using Q4_0 kernel.
 
-        Falls back to _tensor() + BLAS for non-Q4_0 tensors.
+        Python Q4Matmul is preferred (correct GGUF format). Falls back to
+        C kernel (which has wrong nibble order - use at your own risk),
+        or dequant + BLAS as last resort.
         """
         if _HAS_CQ4 and name in self._q4_matmuls:
             return self._q4_matmuls[name].forward_t(x)
