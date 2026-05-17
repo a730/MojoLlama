@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from flask import Flask, request, jsonify, render_template_string, send_from_directory
 
 from src.mojollama.model.inference import LLMInference
+from src.mojollama.model.device import list_devices
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 DEFAULT_HOST = "0.0.0.0"
@@ -295,7 +296,7 @@ def _format_chat_prompt(messages: list) -> str:
 
 # ─── Server Init ──────────────────────────────────────────────────────────────
 
-def load_model_file(path: str):
+def load_model_file(path: str, device: str = 'auto'):
     global model, current_model_path
     path = str(path)
     if not os.path.exists(path):
@@ -310,19 +311,29 @@ def load_model_file(path: str):
             sys.exit(1)
 
     print(f"Loading model: {path}")
+    print(f"Device: {device}")
     t0 = time.time()
-    model = LLMInference(path)
+    model = LLMInference(path, device=device)
     elapsed = time.time() - t0
     current_model_path = path
     print(f"Model loaded in {elapsed:.1f}s")
     print(f"  Architecture: {model.arch}")
     print(f"  Parameters: {model.n_layers} layers, {model.n_embd} dim, {model.n_head} heads")
+    if model.device.device_type.value != 'cpu':
+        print(f"  Accelerator: {model.device.capability}")
+    else:
+        print(f"  Accelerator: CPU")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Mojo Hybrid Serve — LLM inference server")
     parser.add_argument("--model", "-m", default=os.environ.get("MODEL_PATH", ""),
                         help="Path to GGUF model file")
+    parser.add_argument("--device", "-d", default=os.environ.get("MOJOLLAMA_DEVICE", "auto"),
+                        choices=['auto', 'cpu', 'intel_arc', 'nvidia'],
+                        help="Compute device: auto, cpu, intel_arc, nvidia (default: auto)")
+    parser.add_argument("--list-devices", action="store_true",
+                        help="List available compute devices and exit")
     parser.add_argument("--host", default=os.environ.get("HOST", DEFAULT_HOST),
                         help=f"Host to bind (default: {DEFAULT_HOST})")
     parser.add_argument("--port", "-p", type=int,
@@ -331,7 +342,14 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     args = parser.parse_args()
 
-    load_model_file(args.model)
+    if args.list_devices:
+        devices = list_devices()
+        print("Available compute devices:")
+        for d in devices:
+            print(f"  {d['device']:12s} {d['name']:40s} VRAM: {d['vram_gb']:.1f}GB  CUs: {d['compute_units']}")
+        sys.exit(0)
+
+    load_model_file(args.model, args.device)
     print(f"\n🔥 Mojo Hybrid Serve running at http://{args.host}:{args.port}")
     print(f"   API: http://{args.host}:{args.port}/v1/chat/completions")
     print(f"   Web UI: http://{args.host}:{args.port}/")

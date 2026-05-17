@@ -211,11 +211,9 @@ MODEL_PATH=test_model.gguf timeout 30 python3 -c "..."  # for quick tests
 
 ## Immediate Next Steps
 1. ✅ ~~Test model.forward(ids) with lm_head fix~~
-2. ✅ ~~Test model.generate(prompt, max_tokens=10) — full generation loop~~ ✅ "Paris. The capital of"
-3. ⏳ Wire from Mojo via `Python.evaluate("__import__('mojollama.model.inference')")`
-4. ⏳ Test full end-to-end Mojo binary
-5. ⏳ Add KV caching for performance ✅ Done
-6. ⚡ Phase 1: Port RMSNorm and SiLU to Mojo **→ blocked: Python interop per-element is 75x slower than numpy. Need raw memory buffer access (Phase 3 approach) for real speedup.**
-7. ⚡ Fix server chat template and get it stable
-8. ⏳ Pre-dequantize and cache layer weights (trade memory for speed)
-9. ⏳ Bench against llama.cpp: current gap ~1000x, Q4_0 matmul kernel target: ~5-10x
+2. ✅ ~~Test model.generate(prompt, max_tokens=10) — full generation loop~~
+3. ✅ Server with OpenAI-compatible API + web UI running
+4. ⏳ Phase 3: Q4_0 quantized matmul kernels (main perf leap)
+5. ⏳ Pre-dequantize and cache layer weights (trade memory for speed)
+6. ⏳ Dockerfile + docker-compose.yml
+7. ⏳ Bench against llama.cpp: current gap ~1000x

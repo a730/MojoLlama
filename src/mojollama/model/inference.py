@@ -1,13 +1,21 @@
-"""Python inference module for MojoLlama — memory-efficient per-layer processing.
+"""
+Python inference module for MojoLlama — memory-efficient per-layer processing.
 Supports Qwen2 and Llama architectures from GGUF files.
+With GPU acceleration: Intel Arc (SYCL), NVIDIA CUDA, or CPU.
 """
 import gc
+import logging
+import os
 import numpy as np
 import gguf
 # pyrefly: ignore [untyped-import]
 import regex as re
 
-_gpt2_pat = re.compile(r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
+from mojollama.model.device import get_device, DeviceBackend, DeviceType
+
+logger = logging.getLogger(__name__)
+
+_gpt2_pat = re.compile(r"""(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
 # Llama 3 regex pattern (tiktoken-style pre-tokenization)
 _llama3_pat = re.compile(r"""(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+""")
 
@@ -15,11 +23,11 @@ _llama3_pat = re.compile(r"""(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L
 _byte_encoder = {}
 for i in range(ord('!'), ord('~') + 1):
     _byte_encoder[i] = chr(i)
-for i in range(ord('¡'), ord('¬') + 1):
+for i in range(ord('\xa1'), ord('\xac') + 1):
     _byte_encoder[i] = chr(i)
-for i in range(ord('®'), ord('ÿ') + 1):
+for i in range(ord('\xae'), ord('\xff') + 1):
     _byte_encoder[i] = chr(i)
-bs = list(range(ord('!'), ord('~')+1)) + list(range(ord('¡'), ord('¬')+1)) + list(range(ord('®'), ord('ÿ')+1))
+bs = list(range(ord('!'), ord('~')+1)) + list(range(ord('\xa1'), ord('\xac')+1)) + list(range(ord('\xae'), ord('\xff')+1))
 n = 0
 for b in range(256):
     if b not in bs:
@@ -50,6 +58,18 @@ def _get_np(val):
     return val
 
 
+def to_cpu_if_needed(arr, device_backend=None):
+    """Convert device array to CPU numpy if needed."""
+    if device_backend is not None and hasattr(arr, '__class__'):
+        import numpy as _np
+        if type(arr).__module__ != 'numpy':
+            try:
+                return _np.asarray(arr)
+            except Exception:
+                pass
+    return arr
+
+
 class LLMInference:
     """General LLM inference engine supporting multiple architectures from GGUF files."""
 
@@ -58,11 +78,29 @@ class LLMInference:
         'llama': ['llama.', 'llama3.', 'llama2.', 'codellama.'],
     }
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, device: str = 'auto'):
+        """
+        Initialize inference engine.
+
+        Args:
+            path: Path to GGUF model file
+            device: Compute device ('auto', 'cpu', 'intel_arc', 'nvidia')
+                    Defaults to 'auto' which picks best available.
+                    Override via MOJOLLAMA_DEVICE env var.
+        """
+        # Initialize device backend
+        env_device = os.environ.get('MOJOLLAMA_DEVICE', '').lower()
+        self.device = get_device(env_device or device)
+        if not self.device.is_available:
+            print(f"[MojoLlama] Device '{self.device.device_type.value}' unavailable, falling back to CPU")
+            self.device = get_device('cpu')
+        print(f"[MojoLlama] Using device: {self.device.capability}")
+
         self.reader = gguf.GGUFReader(path)
         self._tensors_by_name = {t.name: t for t in self.reader.tensors}
         self._load_config()
         self._build_tokenizer()
+        self._device_tensors = {}  # GPU-side tensor cache
 
     def _try_config(self, key: str, default=None):
         f = self.reader.get_field
@@ -121,20 +159,37 @@ class LLMInference:
         print(f"[MojoLlama] rope_type: {self.rope_type}, has_bias: {self.has_bias}")
 
     def _tensor(self, gguf_name: str):
+        """Load a tensor from GGUF and move to device if accelerator is active."""
+        # Check device cache first
+        if gguf_name in self._device_tensors:
+            return self._device_tensors[gguf_name]
+
         t = self._tensors_by_name.get(gguf_name)
         if t is None:
             return None
+
+        # Dequantize / load to numpy
         if hasattr(t, 'tensor_type') and t.tensor_type is not None:
             tt = t.tensor_type
             if tt == gguf.GGMLQuantizationType.F32:
-                return np.array(t.data, dtype=np.float32)
+                arr = np.array(t.data, dtype=np.float32)
             elif tt == gguf.GGMLQuantizationType.F16:
-                return np.array(t.data, dtype=np.float16).astype(np.float32)
-            try:
-                return gguf.dequantize(t.data, tt)
-            except Exception:
-                return np.array(t.data, dtype=np.float32)
-        return np.array(t.data, dtype=np.float32)
+                arr = np.array(t.data, dtype=np.float16).astype(np.float32)
+            else:
+                try:
+                    arr = gguf.dequantize(t.data, tt)
+                except Exception:
+                    arr = np.array(t.data, dtype=np.float32)
+        else:
+            arr = np.array(t.data, dtype=np.float32)
+
+        # Move to device if we have a GPU backend
+        if self.device.device_type != DeviceType.CPU:
+            device_arr = self.device.to_device(arr)
+            self._device_tensors[gguf_name] = device_arr
+            return device_arr
+
+        return arr
 
     def _get_persistent(self, name: str):
         if not hasattr(self, '_persistent_cache'):
@@ -261,10 +316,10 @@ class LLMInference:
 
         return tokens
 
-    @staticmethod
-    def rms_norm(x: np.ndarray, weight: np.ndarray, eps: float = 1e-6) -> np.ndarray:
-        variance = np.mean(x.astype(np.float64) ** 2, axis=-1, keepdims=True)
-        return x / np.sqrt(variance + eps) * weight.astype(np.float32)
+    # ─── Device-aware ops ──────────────────────────────────────────────────
+
+    def rms_norm(self, x, weight, eps=1e-6):
+        return self.device.rms_norm(x, weight, eps)
 
     @staticmethod
     def precompute_freqs_cis(dim: int, end: int, theta: float):
@@ -273,18 +328,49 @@ class LLMInference:
         freqs = np.outer(t, freqs)
         return np.cos(freqs), np.sin(freqs)
 
-    @staticmethod
-    def apply_rope(x: np.ndarray, cos: np.ndarray, sin: np.ndarray) -> np.ndarray:
-        n, h, d = x.shape
-        x2 = x.astype(np.float32).reshape(n, h, d // 2, 2)
-        xr = np.stack([-x2[..., 1], x2[..., 0]], axis=-1)
-        c = cos[:n, np.newaxis, :d//2, np.newaxis]
-        s = sin[:n, np.newaxis, :d//2, np.newaxis]
-        return (x2 * c + xr * s).reshape(n, h, d)
+    def apply_rope(self, x, cos, sin):
+        return self.device.rope(x, cos, sin)
 
-    @staticmethod
-    def silu(x: np.ndarray) -> np.ndarray:
-        return x / (1 + np.exp(-x))
+    def silu(self, x):
+        return self.device.silu(x)
+
+    def softmax(self, x, axis=-1):
+        return self.device.softmax(x, axis)
+
+    # ─── Attention helper (device-aware) ───────────────────────────────────
+
+    def _attention_scores(self, q, k, head_dim: float):
+        """Compute attention scores using device-aware batch matmul.
+        
+        Args:
+            q: (seq_len, n_head, head_dim)
+            k: (seq_len, n_kv_head or n_head, head_dim)
+            
+        Returns:
+            att: (n_head, seq_len, seq_len) OR (n_kv_head, seq_len, seq_len)
+        """
+        # Transpose to (n_head, seq_len, head_dim) for batch matmul
+        q_t = q.transpose(1, 0, 2) if hasattr(q, 'transpose') else q
+        k_t = k.transpose(1, 0, 2) if hasattr(k, 'transpose') else k
+        # (n_head, seq_len, seq_len) = (n_head, seq_len, hd) @ (n_head, hd, seq_len)
+        return self.device.matmul(q_t, k_t.swapaxes(-1, -2)) / head_dim
+
+    def _attention_apply(self, att, v):
+        """Apply attention weights to values using device-aware batch matmul.
+        
+        Args:
+            att: (n_head, seq_len, seq_len) 
+            v: (seq_len, n_kv_head or n_head, head_dim)
+            
+        Returns:
+            out: (seq_len, n_head, head_dim)
+        """
+        v_t = v.transpose(1, 0, 2) if hasattr(v, 'transpose') else v
+        # (n_head, seq_len, head_dim) = (n_head, seq_len, seq_len) @ (n_head, seq_len, hd)
+        out = self.device.matmul(att, v_t)
+        return out.transpose(1, 0, 2) if hasattr(out, 'transpose') else out
+
+    # ─── Forward passes ────────────────────────────────────────────────────
 
     def forward(self, input_ids: list[int], use_cache: bool = True):
         seq_len = len(input_ids)
@@ -312,9 +398,18 @@ class LLMInference:
     def _forward_full(self, x, cos, sin, mask, head_dim, n_rep, use_cache):
         """Full forward pass (prefill)."""
         seq_len = x.shape[0]
+        use_gpu = self.device.device_type != DeviceType.CPU
+
         if use_cache:
             self._kv_cache = []
             self._cached_len = seq_len
+
+        # Move inputs to device if using GPU
+        if use_gpu:
+            x = self.device.to_device(x)
+            cos = self.device.to_device(cos)
+            sin = self.device.to_device(sin)
+            mask = self.device.to_device(mask)
 
         for i in range(self.n_layers):
             ln1 = self._tensor(f'blk.{i}.attn_norm.weight')
@@ -325,17 +420,20 @@ class LLMInference:
 
             r = x
             x = self.rms_norm(x, ln1, self.norm_eps)
-            q = x @ q_w.T
-            k = x @ k_w.T
-            v = x @ v_w.T
+            q = self.device.matmul(x, q_w.T) if use_gpu else x @ q_w.T
+            k = self.device.matmul(x, k_w.T) if use_gpu else x @ k_w.T
+            v = self.device.matmul(x, v_w.T) if use_gpu else x @ v_w.T
 
             if self.has_bias:
-                for qkv_b in ['attn_q', 'attn_k', 'attn_v']:
-                    b = self._tensor(f'blk.{i}.{qkv_b}.bias')
+                for qkv_b_name in ['attn_q', 'attn_k', 'attn_v']:
+                    b = self._tensor(f'blk.{i}.{qkv_b_name}.bias')
                     if b is not None:
-                        if qkv_b == 'attn_q': q += b
-                        elif qkv_b == 'attn_k': k += b
-                        else: v += b
+                        if qkv_b_name == 'attn_q':
+                            q = q + b
+                        elif qkv_b_name == 'attn_k':
+                            k = k + b
+                        else:
+                            v = v + b
 
             q = q.reshape(seq_len, self.n_head, head_dim)
             k = k.reshape(seq_len, self.n_kv_head, head_dim)
@@ -344,19 +442,19 @@ class LLMInference:
             k = self.apply_rope(k, cos, sin)
 
             if use_cache:
-                self._kv_cache.append((k.copy(), v.copy()))
+                # KV cache: store copies (on device if GPU)
+                self._kv_cache.append((k.copy() if hasattr(k, 'copy') else k[:], v.copy() if hasattr(v, 'copy') else v[:]))
 
             if n_rep > 1:
                 k = np.repeat(k, n_rep, axis=1)
                 v = np.repeat(v, n_rep, axis=1)
 
-            att = np.einsum('ihd,jhd->hij', q, k) / np.sqrt(head_dim)
-            att = att + mask[np.newaxis, :, :]
-            am = np.max(att, axis=-1, keepdims=True)
-            att = np.exp(att - am)
-            att = att / np.sum(att, axis=-1, keepdims=True)
-            out = np.einsum('hij,jhd->ihd', att, v).reshape(seq_len, self.n_embd)
-            out = out @ o_w.T
+            att = self._attention_scores(q, k, np.sqrt(head_dim))
+            att = att + mask  # broadcast: (n_head, seq, seq) + (seq, seq)
+            att = self.softmax(att, axis=-1)
+            out = self._attention_apply(att, v)
+            out = out.reshape(seq_len, self.n_embd)
+            out = self.device.matmul(out, o_w.T) if use_gpu else out @ o_w.T
             x = r + out
 
             ln2 = self._tensor(f'blk.{i}.ffn_norm.weight')
@@ -366,9 +464,10 @@ class LLMInference:
 
             r = x
             x = self.rms_norm(x, ln2, self.norm_eps)
-            gate = x @ gate_w.T
-            up = x @ up_w.T
-            x = (self.silu(gate) * up) @ down_w.T
+            gate = self.device.matmul(x, gate_w.T) if use_gpu else x @ gate_w.T
+            up = self.device.matmul(x, up_w.T) if use_gpu else x @ up_w.T
+            x = (self.silu(gate) * up)
+            x = self.device.matmul(x, down_w.T) if use_gpu else x @ down_w.T
             x = r + x
 
             del ln1, q_w, k_w, v_w, o_w, ln2, gate_w, up_w, down_w
@@ -381,15 +480,23 @@ class LLMInference:
         if lm_w is None:
             embed = self._get_persistent('token_embd.weight')
             lm_w = embed
-        logits = x @ lm_w.T
+        logits = self.device.matmul(x, lm_w.T) if use_gpu else x @ lm_w.T
+
+        # Ensure logits are on CPU for Python consumption
+        if use_gpu:
+            logits = to_cpu_if_needed(logits)
         return logits
 
     def _forward_step(self, x, cos, sin, head_dim, n_rep, cached_len):
         """Single-token forward step using KV cache."""
         new_len = x.shape[0]
         new_total = cached_len + new_len
-        # Update cached length after we process these new tokens
         self._cached_len = new_total
+        use_gpu = self.device.device_type != DeviceType.CPU
+
+        # Move inputs to device if using GPU
+        if use_gpu:
+            x = self.device.to_device(x)
 
         for i in range(self.n_layers):
             ln1 = self._tensor(f'blk.{i}.attn_norm.weight')
@@ -400,17 +507,20 @@ class LLMInference:
 
             r = x
             x = self.rms_norm(x, ln1, self.norm_eps)
-            q = x @ q_w.T
-            k_new = x @ k_w.T
-            v_new = x @ v_w.T
+            q = self.device.matmul(x, q_w.T) if use_gpu else x @ q_w.T
+            k_new = self.device.matmul(x, k_w.T) if use_gpu else x @ k_w.T
+            v_new = self.device.matmul(x, v_w.T) if use_gpu else x @ v_w.T
 
             if self.has_bias:
-                for qkv_b in ['attn_q', 'attn_k', 'attn_v']:
-                    b = self._tensor(f'blk.{i}.{qkv_b}.bias')
+                for qkv_b_name in ['attn_q', 'attn_k', 'attn_v']:
+                    b = self._tensor(f'blk.{i}.{qkv_b_name}.bias')
                     if b is not None:
-                        if qkv_b == 'attn_q': q += b
-                        elif qkv_b == 'attn_k': k_new += b
-                        else: v_new += b
+                        if qkv_b_name == 'attn_q':
+                            q = q + b
+                        elif qkv_b_name == 'attn_k':
+                            k_new = k_new + b
+                        else:
+                            v_new = v_new + b
 
             q = q.reshape(new_len, self.n_head, head_dim)
             k_new = k_new.reshape(new_len, self.n_kv_head, head_dim)
@@ -430,19 +540,20 @@ class LLMInference:
                 k = np.repeat(k, n_rep, axis=1)
                 v = np.repeat(v, n_rep, axis=1)
 
-            # Causal mask for new tokens only
-            att = np.einsum('ihd,jhd->hij', q, k) / np.sqrt(head_dim)
-            # Apply causal mask: for each new query position, only attend to cached + itself
+            # Attention
+            att = self._attention_scores(q, k, np.sqrt(head_dim))
+            # Build causal mask for new tokens
             mask = np.full((new_len, new_total), -np.inf, dtype=np.float32)
             for j in range(new_len):
                 pos = cached_len + j
                 mask[j, :pos+1] = 0.0
-            att = att + mask[np.newaxis, :, :]
-            am = np.max(att, axis=-1, keepdims=True)
-            att = np.exp(att - am)
-            att = att / np.sum(att, axis=-1, keepdims=True)
-            out = np.einsum('hij,jhd->ihd', att, v).reshape(new_len, self.n_embd)
-            out = out @ o_w.T
+            if use_gpu:
+                mask = self.device.to_device(mask)
+            att = att + mask
+            att = self.softmax(att, axis=-1)
+            out = self._attention_apply(att, v)
+            out = out.reshape(new_len, self.n_embd)
+            out = self.device.matmul(out, o_w.T) if use_gpu else out @ o_w.T
             x = r + out
 
             ln2 = self._tensor(f'blk.{i}.ffn_norm.weight')
@@ -452,9 +563,10 @@ class LLMInference:
 
             r = x
             x = self.rms_norm(x, ln2, self.norm_eps)
-            gate = x @ gate_w.T
-            up = x @ up_w.T
-            x = (self.silu(gate) * up) @ down_w.T
+            gate = self.device.matmul(x, gate_w.T) if use_gpu else x @ gate_w.T
+            up = self.device.matmul(x, up_w.T) if use_gpu else x @ up_w.T
+            x = (self.silu(gate) * up)
+            x = self.device.matmul(x, down_w.T) if use_gpu else x @ down_w.T
             x = r + x
 
             del ln1, q_w, k_w, v_w, o_w, ln2, gate_w, up_w, down_w
@@ -467,7 +579,10 @@ class LLMInference:
         if lm_w is None:
             embed = self._get_persistent('token_embd.weight')
             lm_w = embed
-        logits = x @ lm_w.T
+        logits = self.device.matmul(x, lm_w.T) if use_gpu else x @ lm_w.T
+
+        if use_gpu:
+            logits = to_cpu_if_needed(logits)
         return logits
 
     def generate(self, prompt: str, max_tokens: int = 50) -> str:
@@ -479,7 +594,8 @@ class LLMInference:
 
         for step in range(max_tokens):
             logits = self.forward(ids, use_cache=True)
-            nid = int(np.argmax(logits[-1]))
+            logits_np = to_cpu_if_needed(logits)
+            nid = int(np.argmax(logits_np[-1]))
             if nid == self.eos_id:
                 break
             out.append(nid)
@@ -490,20 +606,38 @@ class LLMInference:
         return self.decode(out)
 
 
-def load_model(path: str):
-    return LLMInference(path)
+def load_model(path: str, device: str = 'auto'):
+    """Load a GGUF model with device auto-detection.
+
+    Args:
+        path: Path to GGUF file.
+        device: Device to use. 'auto' (default) picks best available.
+                Options: 'auto', 'cpu', 'intel_arc', 'nvidia'.
+                Override via MOJOLLAMA_DEVICE env var.
+    """
+    return LLMInference(path, device=device)
+
+
+def list_compute_devices():
+    """List all available compute devices."""
+    from mojollama.model.device import list_devices
+    return list_devices()
 
 
 if __name__ == '__main__':
     import sys
     if len(sys.argv) > 1:
         path = sys.argv[1]
+        device_arg = sys.argv[4] if len(sys.argv) > 4 else 'auto'
         print(f"Loading model from: {path}")
-        model = load_model(path)
+        print(f"Device: {device_arg}")
+        model = load_model(path, device=device_arg)
         prompt = sys.argv[2] if len(sys.argv) > 2 else "The capital of France is"
         tokens = int(sys.argv[3]) if len(sys.argv) > 3 else 10
         print(f"Testing generate with prompt: '{prompt}' ({tokens} tokens)")
         result = model.generate(prompt, max_tokens=tokens)
         print(f"Generated: {result}")
     else:
-        print("Usage: python inference.py <model.gguf> [prompt] [max_tokens]")
+        print("Usage: python inference.py <model.gguf> [prompt] [max_tokens] [device]")
+        print("  device: auto (default), cpu, intel_arc, nvidia")
+        print("  Or set MOJOLLAMA_DEVICE env var")
