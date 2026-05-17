@@ -191,6 +191,7 @@ def autotune(model, quick=False):
         print(f"  → {'mlock ON' if mlock_better else 'mlock OFF'} wins")
 
     # ─── Build final config ───
+    optimal_np = best_par["n_parallel"] if best_par else 4
     config = {
         "autotune_date": time.strftime("%Y-%m-%d %H:%M:%S"),
         "cpu": cpu,
@@ -200,9 +201,13 @@ def autotune(model, quick=False):
             "threads_batch": optimal_threads // 2,
             "batch_size": best_batch["batch"] if best_batch else 2048,
             "ubatch_size": best_batch["ubatch"] if best_batch else 512,
-            "n_parallel": best_par["n_parallel"] if best_par else 4,
+            "n_parallel": optimal_np,
             "mlock": mlock_better,
             "cont_batching": True,
+        },
+        "proxy_server": {
+            "max_workers": optimal_np * 4,  # 4× parallel slots for headroom
+            "queue_size": optimal_np * 16,  # 16× for burst absorption
         },
         "results": {
             "thread_sweep": [(r["threads"], r["tg_tok_s"]) for r in results],
@@ -235,23 +240,29 @@ def load_config():
 def print_config(config):
     """Pretty-print the config."""
     s = config.get("llama_server", {})
+    p = config.get("proxy_server", {})
     print(f"\n{'='*50}")
     print(f"  MojoLlama Server Configuration")
     print(f"  Tuned: {config.get('autotune_date', 'unknown')}")
     print(f"  CPU: {config.get('cpu', {}).get('name', 'unknown')}")
     print(f"{'='*50}")
-    print(f"  --threads         {s.get('threads', '?')}")
-    print(f"  --threads-batch   {s.get('threads_batch', '?')}")
-    print(f"  --batch-size      {s.get('batch_size', '?')}")
-    print(f"  --ubatch-size     {s.get('ubatch_size', '?')}")
-    print(f"  --parallel-slots  {s.get('n_parallel', '?')}")
-    print(f"  --mlock           {'yes' if s.get('mlock', True) else 'no'}")
-    print(f"  --cont-batching   {'yes' if s.get('cont_batching', True) else 'no'}")
+    print(f"  llama.cpp backend:")
+    print(f"    --threads         {s.get('threads', '?')}")
+    print(f"    --threads-batch   {s.get('threads_batch', '?')}")
+    print(f"    --batch-size      {s.get('batch_size', '?')}")
+    print(f"    --ubatch-size     {s.get('ubatch_size', '?')}")
+    print(f"    --parallel-slots  {s.get('n_parallel', '?')}")
+    print(f"    --mlock           {'yes' if s.get('mlock', True) else 'no'}")
+    print(f"    --cont-batching   {'yes' if s.get('cont_batching', True) else 'no'}")
+    print(f"  Proxy server:")
+    print(f"    --max-workers     {p.get('max_workers', '?')}")
+    print(f"    --queue-size      {p.get('queue_size', '?')}")
     print()
     print(f"  Performance (on tune model):")
     r = config.get("results", {})
-    print(f"    Generation: {r.get('best_gen_tok_s', 0):.0f} tok/s")
-    print(f"    Prompt:     {r.get('best_prompt_tok_s', 0):.0f} tok/s")
+    print(f"    Generation:     {r.get('best_gen_tok_s', 0):.0f} tok/s")
+    print(f"    Prompt:         {r.get('best_prompt_tok_s', 0):.0f} tok/s")
+    print(f"    Max throughput: ~{s.get('n_parallel', 4) * 12:.0f} req/s (est.)")
     print(f"{'='*50}")
 
 

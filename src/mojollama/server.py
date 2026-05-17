@@ -25,9 +25,9 @@ import subprocess
 import re
 import queue
 import http.client
+import concurrent.futures
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
 from io import BytesIO
 
@@ -50,20 +50,26 @@ _export_jobs_lock = threading.Lock()
 _training_queues = []
 _training_queues_lock = threading.Lock()
 
-# Connection pooling to llama.cpp backend
-_llama_conn = None
-_llama_conn_lock = threading.Lock()
+# Connection pool to llama.cpp backend (thread-safe queue)
+_llama_conn_pool = queue.Queue()
+_llama_pool_size = 16  # max concurrent connections to backend
 
 def _get_llama_conn():
-    """Get (or create) a persistent HTTP connection to llama.cpp backend."""
-    global _llama_conn
-    llama_port = backend.backend.port if hasattr(backend.backend, 'port') else 8081
-    with _llama_conn_lock:
-        if _llama_conn is None:
-            _llama_conn = http.client.HTTPConnection(
-                "127.0.0.1", llama_port, timeout=300
-            )
-        return _llama_conn
+    """Get a persistent HTTP connection from the pool (or create new)."""
+    try:
+        return _llama_conn_pool.get_nowait()
+    except queue.Empty:
+        llama_port = backend.backend.port if hasattr(backend.backend, 'port') else 8081
+        return http.client.HTTPConnection("127.0.0.1", llama_port, timeout=300)
+
+def _return_llama_conn(conn):
+    """Return connection to pool (or close if pool is full)."""
+    try:
+        _llama_conn_pool.put_nowait(conn)
+    except queue.Full:
+        try:
+            conn.close()
+        except: pass
 
 LLAMA_SERVER_PATH = "/tmp/llama.cpp/build/bin/llama-server"
 CONVERTER_PATH = "/tmp/llama.cpp/convert_hf_to_gguf.py"
@@ -73,10 +79,49 @@ WORK_DIR = BASE_DIR  # /onedev-workspace/work
 
 # ─── Threaded HTTP Server ──────────────────────────────────────────────
 
-class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
-    """Handle requests in separate threads for concurrency."""
-    daemon_threads = True
-    allow_reuse_address = True
+class ThreadPoolHTTPServer(HTTPServer):
+    """HTTP server with bounded thread pool for concurrent requests.
+    
+    Instead of spawning an unbounded thread per request (ThreadingMixIn),
+    uses a ThreadPoolExecutor with a configurable max_workers limit.
+    When the queue is full, new connections get 503 Service Unavailable.
+    """
+    
+    def __init__(self, server_address, RequestHandlerClass,
+                 max_workers=32, queue_size=64):
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers
+        )
+        self._queue_size = queue_size
+        self._active_requests = threading.BoundedSemaphore(queue_size)
+        HTTPServer.__init__(self, server_address, RequestHandlerClass)
+    
+    def process_request(self, request, client_address):
+        """Submit request to thread pool, or reject if queue is full."""
+        if not self._active_requests.acquire(blocking=False):
+            # Queue full — send 503
+            try:
+                request.sendall(b'HTTP/1.1 503 Service Unavailable\r\n'
+                               b'Content-Length: 0\r\nConnection: close\r\n\r\n')
+            except: pass
+            request.close()
+            return
+        
+        self._executor.submit(self._handle_request,
+                              request, client_address)
+    
+    def _handle_request(self, request, client_address):
+        try:
+            self.finish_request(request, client_address)
+        except Exception:
+            self.handle_error(request, client_address)
+        finally:
+            self._active_requests.release()
+            self.shutdown_request(request)
+    
+    def server_close(self):
+        self._executor.shutdown(wait=True)
+        HTTPServer.server_close(self)
 
 
 # ─── Request Handler ───────────────────────────────────────────────────
@@ -193,6 +238,7 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
                             pass
         finally:
             resp.close()
+            _return_llama_conn(conn)
 
     # ── HTTP Methods ────────────────────────────────────────────────
 
@@ -390,8 +436,8 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
                 "stream": False,
             }).encode()
 
+            conn = _get_llama_conn()
             try:
-                conn = _get_llama_conn()
                 conn.request(
                     "POST", "/v1/chat/completions",
                     body=llama_chat_data,
@@ -416,6 +462,8 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
                 self._send_json(result)
             except Exception as e:
                 self._send_error(f"Failed to proxy chat completion: {e}", 502)
+            finally:
+                _return_llama_conn(conn)
 
         # ── Studio API: /api/chat (streaming for web UI) ─────────
         elif path == "/api/chat":
@@ -642,6 +690,8 @@ def main():
     parser.add_argument("--model", help="Path to GGUF model file", default="")
     parser.add_argument("--port", type=int, help="HTTP server port", default=8080)
     parser.add_argument("--llama-port", type=int, help="llama.cpp backend port", default=8081)
+    parser.add_argument("--max-workers", type=int, help="Max concurrent requests", default=32)
+    parser.add_argument("--queue-size", type=int, help="Max queued requests", default=128)
     parser.add_argument("--weight", help="Path to MAX weight file", default="")
     args, _ = parser.parse_known_args()
 
@@ -649,6 +699,8 @@ def main():
     model_path = args.model or os.environ.get("MODEL_PATH", "")
     weight_path = args.weight or os.environ.get("WEIGHT_PATH", "")
     llama_port = args.llama_port
+    max_workers = args.max_workers
+    queue_size = args.queue_size
 
     print("╔══════════════════════════════════════════════╗")
     print("║         MojoLlama — Inference Server         ║")
@@ -659,8 +711,11 @@ def main():
                          llama_port=llama_port)
     print(f"\nBackend: {backend.info['active']}\n")
 
-    server = ThreadedHTTPServer(("0.0.0.0", port), MojoLlamaHandler)
+    server = ThreadPoolHTTPServer(("0.0.0.0", port), MojoLlamaHandler,
+                                  max_workers=max_workers,
+                                  queue_size=queue_size)
     print(f"Serving on http://0.0.0.0:{port}")
+    print(f"  Max workers: {max_workers}, Queue: {queue_size}")
     print(f"  /v1/models              — list models")
     print(f"  /v1/completions          — text completion")
     print(f"  /v1/chat/completions     — chat completion (SSE streaming)")
