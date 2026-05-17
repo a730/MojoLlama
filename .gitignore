@@ -8,3 +8,4 @@ env/
 test_model.gguf
 *.gguf
 opencode.json
+model.bin
