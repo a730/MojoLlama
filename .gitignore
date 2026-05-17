@@ -9,3 +9,7 @@ test_model.gguf
 *.gguf
 opencode.json
 model.bin
+*.bin
+mojollama_forward
+mojollama_bench
+.coding-context

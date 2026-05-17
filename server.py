@@ -13,7 +13,7 @@ import threading
 from pathlib import Path
 
 # Add project root to path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from flask import Flask, request, jsonify, render_template_string, send_from_directory
 
