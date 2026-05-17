@@ -93,33 +93,103 @@ def cmd_export(args):
     outtype = args.outtype or "q4_0"
     outfile = args.outfile or f"{model.split('/')[-1]}-{outtype}.gguf"
     
-    supported = ["f32", "f16", "bf16", "q8_0", "tq1_0", "tq2_0", "auto"]
-    print(f"Source: {model}")
-    print(f"Quantization: {outtype} (supported: {', '.join(supported)})")
-    print(f"Output: {outfile}")
+    # Supported direct types vs types needing post-quantization
+    direct_types = {"f32", "f16", "bf16", "q8_0", "tq1_0", "tq2_0", "auto"}
+    post_quant_types = {"q4_0", "q4_1", "q5_0", "q5_1", "q2_k", "q3_k", "q4_k", "q5_k", "q6_k", "q8_k"}
     
-    cmd = [sys.executable, CONVERTER, model, "--outtype", outtype, "--outfile", outfile]
+    if outtype in direct_types:
+        intermediate = outfile
+    elif outtype in post_quant_types:
+        # Step 1: convert to f16 first
+        intermediate = outfile.replace(f"-{outtype}.gguf", "-f16.gguf")
+        if intermediate == outfile:
+            intermediate = outfile.replace(".gguf", "-f16.gguf")
+        print(f"Step 1: Converting to F16 first...")
+    else:
+        print(f"Unsupported outtype: {outtype}")
+        print(f"Supported: {', '.join(sorted(direct_types | post_quant_types))}")
+        return
+    
+    cmd = [sys.executable, CONVERTER, model, "--outtype", "f16" if outtype in post_quant_types else outtype, 
+           "--outfile", intermediate]
     if args.remote:
         cmd.append("--remote")
     if args.vocab_only:
         cmd.append("--vocab-only")
     
-    print(f"\nConverting...\n")
+    print(f"Source: {model}")
+    print(f"Intermediate: {intermediate}")
+    print(f"Final: {outfile}")
+    print()
+    
     t0 = time.time()
     subprocess.run(cmd, check=True)
     elapsed = time.time() - t0
-    size_mb = os.path.getsize(outfile) / 1024**2 if os.path.exists(outfile) else 0
-    print(f"\n✅ Exported to {outfile} ({size_mb:.0f} MB, {elapsed:.0f}s)")
     
-    # Auto-convert the model.bin for Mojo SIMD
-    if args.mojo_bin and os.path.exists(f"{BASE_DIR}/src/mojollama/kernels/weights_to_bin.py"):
-        bin_file = outfile.replace(".gguf", ".bin")
-        print(f"\nAlso generating Mojo binary format: {bin_file}")
-        subprocess.run([
-            sys.executable,
-            f"{BASE_DIR}/src/mojollama/kernels/weights_to_bin.py",
-            outfile, bin_file
-        ])
+    # Step 2: post-quantize if needed
+    if outtype in post_quant_types:
+        print(f"\nStep 2: Quantizing {intermediate} → {outtype}...")
+        from gguf import quantize as gguf_quantize
+        import numpy as np
+        from gguf import GGMLQuantizationType, GGUFReader
+        
+        qt_map = {
+            "q4_0": GGMLQuantizationType.Q4_0,
+            "q4_1": GGMLQuantizationType.Q4_1,
+            "q5_0": GGMLQuantizationType.Q5_0,
+            "q5_1": GGMLQuantizationType.Q5_1,
+            "q2_k": GGMLQuantizationType.Q2_K,
+            "q3_k": GGMLQuantizationType.Q3_K,
+            "q4_k": GGMLQuantizationType.Q4_K,
+            "q5_k": GGMLQuantizationType.Q5_K,
+            "q6_k": GGMLQuantizationType.Q6_K,
+            "q8_k": GGMLQuantizationType.Q8_K,
+        }
+        target_qt = qt_map.get(outtype)
+        
+        if target_qt:
+            reader = GGUFReader(intermediate)
+            print(f"  Read {len(reader.tensors)} tensors from intermediate")
+            
+            from gguf import GGUFWriter
+            writer = GGUFWriter(outfile, "llama")
+            
+            # Copy KV metadata (simplified)
+            for name, field in reader.fields.items():
+                if name.startswith("GGUF."):
+                    continue
+                # Copy known types
+                from gguf import GGUFValueType
+                if field.types[-1] == GGUFValueType.STRING:
+                    val = bytes(field.parts[-1]).decode('utf-8') if hasattr(field.parts[-1], 'tobytes') else str(field.parts[-1])
+                    writer.add_string(name, val)
+                elif field.types[-1] in (GGUFValueType.UINT32, GGUFValueType.INT32, GGUFValueType.UINT64, GGUFValueType.INT64):
+                    val = int(field.parts[-1].item()) if hasattr(field.parts[-1], 'item') else int(field.parts[-1])
+                    writer.add_uint32(name, val)
+                elif field.types[-1] == GGUFValueType.FLOAT32:
+                    val = float(field.parts[-1].item()) if hasattr(field.parts[-1], 'item') else float(field.parts[-1])
+                    writer.add_float32(name, val)
+            
+            # Copy tensors with quantization
+            for t in reader.tensors:
+                data = np.asarray(t.data)
+                new_data = gguf_quantize(data, target_qt) if t.tensor_type != target_qt.value else data
+                writer.add_tensor(t.name, new_data, raw_dtype=target_qt)
+            
+            writer.write_header_to_file()
+            writer.write_kv_data_to_file()
+            writer.write_tensors_to_file(progress=True)
+            writer.close()
+            os.remove(intermediate)
+            print(f"  Quantized to {outtype}")
+        else:
+            # Fall back to copy
+            import shutil
+            shutil.copy(intermediate, outfile)
+    
+    size_mb = os.path.getsize(outfile) / 1024**2 if os.path.exists(outfile) else 0
+    elapsed = time.time() - t0
+    print(f"\n✅ Exported to {outfile} ({size_mb:.0f} MB, {elapsed:.0f}s)")
 
 
 # ─── Dataset ───────────────────────────────────────────────────────────
@@ -130,28 +200,36 @@ def cmd_dataset(args):
     print("[Dataset] Training data management")
     print()
     
-    if args.command == "create":
+    if args.action == "create":
         output = args.output or "dataset.jsonl"
         print(f"Creating dataset: {output}")
         print("Enter prompts one per line. Empty line to finish.\n")
         
         samples = []
-        while True:
-            inp = input("Prompt: ").strip()
-            if not inp and len(samples) > 0:
-                break
-            if not inp:
-                continue
-            completion = input("Completion: ").strip()
-            samples.append({"prompt": inp, "completion": completion})
-            print(f"  → Sample {len(samples)} saved\n")
+        try:
+            while True:
+                inp = input("Prompt: ").strip()
+                if not inp:
+                    break
+                # Use model for completion
+                completion = input("Completion: ").strip()
+                if not completion:
+                    # Use model to generate completion (placeholder)
+                    completion = "(pending)"
+                samples.append({"prompt": inp, "completion": completion})
+                print(f"  → Sample {len(samples)} saved\n")
+        except (EOFError, KeyboardInterrupt):
+            print()
         
-        with open(output, "w") as f:
-            for s in samples:
-                f.write(json.dumps(s) + "\n")
-        print(f"\n✅ Saved {len(samples)} samples to {output}")
+        if samples:
+            with open(output, "w") as f:
+                for s in samples:
+                    f.write(json.dumps(s) + "\n")
+            print(f"\n✅ Saved {len(samples)} samples to {output}")
+        else:
+            print("\n⚠️  No samples saved")
     
-    elif args.command == "view":
+    elif args.action == "view":
         path = args.dataset or input("Dataset path: ").strip()
         if not os.path.exists(path):
             print(f"❌ File not found: {path}")
@@ -170,7 +248,7 @@ def cmd_dataset(args):
             print(f"    Completion: {s.get('completion','')[:60]}...")
             print()
     
-    elif args.command == "convert":
+    elif args.action == "convert":
         src = args.input or input("Source format (csv/jsonl/alpaca): ").strip()
         dst = args.output or "converted.jsonl"
         fmt = args.format or "alpaca"
@@ -215,11 +293,13 @@ def cmd_chat(args):
     print(f"Model: {model}")
     print()
     
-    proc = subprocess.Popen(
-        [SERVER_BIN, "-m", model, "-c", "4096", "-t", "32",
-         "--port", str(port), "--host", "0.0.0.0", "--no-webui"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
+    logfile = f"/tmp/mojollama-chat-{port}.log"
+    with open(logfile, "w") as lf:
+        proc = subprocess.Popen(
+            [SERVER_BIN, "-m", model, "-c", "4096", "-t", "32",
+             "--port", str(port), "--host", "0.0.0.0", "--no-webui"],
+            stdout=lf, stderr=subprocess.STDOUT
+        )
     
     print("Waiting for server...")
     for _ in range(30):
@@ -228,14 +308,19 @@ def cmd_chat(args):
             urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2)
             print(f"\n✅ Server ready at http://0.0.0.0:{port}")
             print(f"   Chat UI: {CHAT_HTML}")
-            print("   API: curl http://127.0.0.1:{port}/v1/completions")
+            print("   API: curl http://127.0.0.1:{port}/v1/chat/completions")
+            print("   -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"}]}'")
             print("\nPress Ctrl+C to stop server")
             proc.wait()
             return
         except:
             pass
     
-    print("❌ Server failed to start")
+    with open(logfile) as lf:
+        last_lines = lf.read().splitlines()[-5:]
+    print(f"❌ Server failed to start (see {logfile})")
+    for line in last_lines:
+        print(f"  {line}")
     proc.kill()
 
 
@@ -330,7 +415,8 @@ def main():
     
     # dataset
     p_data = sub.add_parser("dataset", help="Manage datasets")
-    p_data.add_argument("command", choices=["create", "view", "convert"])
+    p_data.add_argument("action", choices=["create", "view", "convert"],
+                        help="Dataset action")
     p_data.add_argument("--output", help="Output file")
     p_data.add_argument("--dataset", help="Dataset path")
     p_data.add_argument("--input", help="Input file for conversion")
