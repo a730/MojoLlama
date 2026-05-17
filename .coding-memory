@@ -1,7 +1,18 @@
 # MojoLlama — Coding Memory
 
 ## Goal
-Build a Mojo-based LLM inference server (MojoLlama) with native GGUF support, starting with an MVP that can load GGUF files and run inference.
+Build **Mojo Hybrid Serve** — a high-concurrency LLM inference engine that combines the best of **llama.cpp** and **vLLM**:
+
+| Like llama.cpp | Like vLLM |
+|---|---|
+| Native GGUF support | Continuous batching |
+| Hybrid CPU/GPU offloading | PagedAttention / RadixAttention |
+| Single binary, easy to run | High concurrent throughput |
+| CPU-friendly, works anywhere | OpenAI-compatible API |
+| Quantized inference (Q4_0, etc.) | Multiple user support |
+
+Built in **Mojo on the MAX platform** for native-code speed without C++ complexity.
+Long-term vision: Docker one-liner, desktop app (Unsloth Studio-like), and built-in GGUF quantizer.
 
 ## Constraints & Preferences
 - Mojo SDK version 0.26.2.0 installed via `uv pip install --system mojo`
@@ -138,11 +149,28 @@ Repo at `/tmp/gguf-mojo`. Prototype pure-Mojo GGUF header parser — no dequant,
 Replace our current `types.mojo` (if/elif chains) with `extern_gguf.mojo`'s `GGUFTensorType` struct + alias pattern — cleaner, more maintainable, and matches GGUF spec. Our existing `reader.mojo` parsing logic is already equivalent to what this repo provides.
 
 ## Porting Strategy (Mojo → from Python)
-1. **Phase 0 (current)**: Keep all Python, wire from Mojo via `Python.evaluate`
+1. **Phase 0 (current)**: Keep all Python, wire from Mojo via `Python.evaluate` ✅
 2. **Phase 1**: Port scalar ops to Mojo (SiLU, RMSNorm) using modular's code as reference
 3. **Phase 2**: Port RoPE and attention to Mojo using `rope.mojo` and `mha.mojo` patterns
-4. **Phase 3**: Write quantized matmul kernels for our types (IQ4_NL, Q3_K, Q8_0, Q5_0) inspired by their qmatmul patterns
-5. **Phase 4**: Pure Mojo inference, no Python dependency
+4. **Phase 3**: Write quantized matmul kernels for our types (Q4_0, Q8_0, Q3_K, Q5_0, IQ4_NL) inspired by their qmatmul patterns
+5. **Phase 4**: Pure Mojo inference with continuous batching (RadixAttention/PagedAttention), no Python dependency
+6. **Phase 5: One-command deploy**
+   - Docker image + docker-compose.yml
+   - Single `docker compose up` to run, matching llama.cpp ease of use
+   - Auto-download models on first run
+   - Health checks, metrics, Prometheus endpoint
+7. **Phase 6: MojoLlama Studio** (long-term)
+   - Cross-platform desktop app (Windows/macOS/Linux)
+   - Like Unsloth Studio but for MojoLlama
+   - GUI: model browser, chat, fine-tuning, system monitor
+   - One-click download & run any GGUF model
+8. **Phase 7: GGUF Quantizer** (after all perf phases)
+   - Load any transformer model (HF format, safetensors)
+   - Quantize to any GGUF format: Q4_0, Q4_K_M, Q5_0, Q5_K_M, Q6_K, Q8_0, etc.
+   - Output standard GGUF files compatible with llama.cpp and other runners
+   - CLI: `mojollama quantize --input model/ --output model.gguf --type Q4_K_M`
+   - API endpoint for server-side quantization
+   - Like `llama-quantize` but built into MojoLlama
 
 ## Weight Name Mapping (GGUF → HuggingFace)
 - `token_embd.weight` → `embed_tokens` (cached as persistent)
@@ -186,6 +214,8 @@ MODEL_PATH=test_model.gguf timeout 30 python3 -c "..."  # for quick tests
 2. ✅ ~~Test model.generate(prompt, max_tokens=10) — full generation loop~~ ✅ "Paris. The capital of"
 3. ⏳ Wire from Mojo via `Python.evaluate("__import__('mojollama.model.inference')")`
 4. ⏳ Test full end-to-end Mojo binary
-5. ⏳ Add KV caching for performance (O(n²) → O(n) generation)
-6. ⏳ Pre-dequantize and cache layer weights (trade memory for speed)
-7. ⏳ Bench: warm token/s, peak memory, decode quality vs llama.cpp
+5. ⏳ Add KV caching for performance ✅ Done
+6. ⚡ Phase 1: Port RMSNorm and SiLU to Mojo **→ blocked: Python interop per-element is 75x slower than numpy. Need raw memory buffer access (Phase 3 approach) for real speedup.**
+7. ⚡ Fix server chat template and get it stable
+8. ⏳ Pre-dequantize and cache layer weights (trade memory for speed)
+9. ⏳ Bench against llama.cpp: current gap ~1000x, Q4_0 matmul kernel target: ~5-10x
