@@ -3,6 +3,16 @@ version: 6
 jobs:
   - name: MojoLlama Playground
     steps:
+      - type: CheckoutStep
+        name: checkout
+        cloneCredential:
+          type: DefaultCredential
+        withLfs: false
+        withSubmodules: false
+        cloneDepth: 1
+        condition: SUCCESSFUL
+        optional: false
+
       - type: CommandStep
         name: install dependencies
         condition: SUCCESSFUL
@@ -17,7 +27,7 @@ jobs:
 
             echo "=== Install Dependencies ==="
             apt-get update && apt-get install -y gcc 2>/dev/null
-            pip install numpy gguf regex ftfy --break-system-packages -q
+            pip install flask numpy gguf regex ftfy --break-system-packages -q
 
             echo "=== Build C Q4_0 Kernel ==="
             gcc -O3 -march=native -shared -fPIC \
@@ -54,8 +64,7 @@ jobs:
           commands: |
             set -e
             echo "=== Start API Server ==="
-            PYTHONPATH=src:$PYTHONPATH \
-              nohup python3 -m mojollama.server \
+            nohup /usr/bin/python3 server.py \
               --model Llama-3.2-1B-Instruct-Q4_0.gguf \
               --port 8080 \
               > /tmp/mojollama-api.log 2>&1 &
@@ -77,9 +86,9 @@ jobs:
           commands: |
             set -e
             echo "=== Wait for API + Smoke Test ==="
-            echo "Waiting for model to load (this may take 10-20s)..."
+            echo "Waiting for model to load..."
             for i in $(seq 1 60); do
-              if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+              if curl -sf http://localhost:8080/v1/models > /dev/null 2>&1; then
                 echo "✓ API ready after ~${i}s"
                 break
               fi
@@ -101,14 +110,11 @@ jobs:
             echo ""
             echo "  Chat UI:  port 8081 (published by OneDev)"
             echo "  API:      port 8080"
-            echo "  Docs:     port 8081 (serves index.html)"
-            echo ""
             echo "  Model: Llama 3.2 1B Instruct (Q4_0)"
             echo "  Kernel: C Q4_0 with AVX2"
             echo "══════════════════════════════════════════════════"
             echo ""
             echo "Keep this build running to use the playground."
-            echo "Stop the build when done."
             sleep 86400
 
     triggers:
