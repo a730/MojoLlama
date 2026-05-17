@@ -24,6 +24,7 @@ import threading
 import subprocess
 import re
 import queue
+import http.client
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -48,6 +49,21 @@ _export_jobs_lock = threading.Lock()
 # Training metrics subscription: list of queues
 _training_queues = []
 _training_queues_lock = threading.Lock()
+
+# Connection pooling to llama.cpp backend
+_llama_conn = None
+_llama_conn_lock = threading.Lock()
+
+def _get_llama_conn():
+    """Get (or create) a persistent HTTP connection to llama.cpp backend."""
+    global _llama_conn
+    llama_port = backend.backend.port if hasattr(backend.backend, 'port') else 8081
+    with _llama_conn_lock:
+        if _llama_conn is None:
+            _llama_conn = http.client.HTTPConnection(
+                "127.0.0.1", llama_port, timeout=300
+            )
+        return _llama_conn
 
 LLAMA_SERVER_PATH = "/tmp/llama.cpp/build/bin/llama-server"
 CONVERTER_PATH = "/tmp/llama.cpp/convert_hf_to_gguf.py"
@@ -126,16 +142,9 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
     def _proxy_stream_from_llamacpp(self, request_data):
         """Proxy streaming through llama.cpp /completion?stream=true.
 
-        Reads the SSE stream from llama.cpp and re-emits as OpenAI-format
-        SSE events.
+        Reads the SSE stream from llama.cpp line-by-line (buffered readline)
+        and re-emits as OpenAI-format SSE events. Uses pooled HTTP connection.
         """
-        import urllib.request
-
-        llama_port = backend.backend.port if hasattr(backend.backend, 'port') else 8081
-        base_url = f"http://127.0.0.1:{llama_port}"
-
-        # Build the request for llama.cpp's native /completion endpoint
-        # which supports native streaming
         prompt = request_data.get("prompt", "")
         max_tokens = request_data.get("max_tokens", 256)
         temperature = request_data.get("temperature", 0.7)
@@ -148,44 +157,42 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
             "cache_prompt": True,
         }).encode()
 
-        req = urllib.request.Request(
-            f"{base_url}/completion",
-            data=llama_data,
+        conn = _get_llama_conn()
+        conn.request(
+            "POST", "/completion",
+            body=llama_data,
             headers={"Content-Type": "application/json"},
         )
-
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            buffer = b""
+        resp = conn.getresponse()
+        try:
             while True:
-                chunk = resp.read(1)
-                if not chunk:
+                line = resp.readline()
+                if not line:
                     break
-                buffer += chunk
-                # Check for complete SSE line
-                if b"\n" in buffer:
-                    line, buffer = buffer.split(b"\n", 1)
-                    line_str = line.decode("utf-8", errors="replace").strip()
-                    # Parse llama.cpp SSE format: data: {"content":"...","stop":false}
-                    if line_str.startswith("data: "):
-                        payload = line_str[6:]
-                        if payload.strip():
-                            try:
-                                inner = json.loads(payload)
-                                token = inner.get("content", "")
-                                stop = inner.get("stop", False)
+                line_str = line.decode("utf-8", errors="replace").strip()
+                # Parse llama.cpp SSE format: data: {"content":"...","stop":false}
+                if line_str.startswith("data: "):
+                    payload = line_str[6:]
+                    if payload.strip():
+                        try:
+                            inner = json.loads(payload)
+                            token = inner.get("content", "")
+                            stop = inner.get("stop", False)
 
-                                # Emit OpenAI-format SSE
-                                self._sse_send({
-                                    "choices": [{
-                                        "delta": {"content": token},
-                                        "index": 0,
-                                    }]
-                                })
+                            # Emit OpenAI-format SSE
+                            self._sse_send({
+                                "choices": [{
+                                    "delta": {"content": token},
+                                    "index": 0,
+                                }]
+                            })
 
-                                if stop:
-                                    break
-                            except json.JSONDecodeError:
-                                pass
+                            if stop:
+                                break
+                        except json.JSONDecodeError:
+                            pass
+        finally:
+            resp.close()
 
     # ── HTTP Methods ────────────────────────────────────────────────
 
@@ -374,30 +381,41 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
                     messages, max_tokens, temperature
                 )
 
-            t0 = time.time()
-            result = backend.chat(messages, max_tokens=max_tokens, temperature=temperature)
-            elapsed = time.time() - t0
-            prompts_served += 1
+            # Non-streaming: proxy directly to llama.cpp's /v1/chat/completions
+            # This gets proper chat template handling and is faster
+            llama_chat_data = json.dumps({
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "stream": False,
+            }).encode()
 
-            self._send_json({
-                "id": f"chatcmpl-{prompts_served}",
-                "object": "chat.completion",
-                "created": int(time.time()),
-                "model": "mojollama-llama-3.2-1b",
-                "choices": [{
-                    "index": 0,
-                    "message": {
-                        "role": "assistant",
-                        "content": result.get("text", ""),
-                    },
-                    "finish_reason": "stop",
-                }],
-                "usage": {
-                    "completion_tokens": result.get("tokens", 0),
-                    "total_tokens": result.get("tokens", 0),
-                },
-                "backend": result.get("backend"),
-            })
+            try:
+                conn = _get_llama_conn()
+                conn.request(
+                    "POST", "/v1/chat/completions",
+                    body=llama_chat_data,
+                    headers={"Content-Type": "application/json"},
+                )
+                resp = conn.getresponse()
+                raw = resp.read()
+                resp.close()
+
+                if resp.status >= 400:
+                    self._send_error(
+                        f"llama.cpp error: {resp.status} {raw.decode('utf-8', errors='replace')}",
+                        resp.status,
+                    )
+                    return
+
+                result = json.loads(raw.decode("utf-8"))
+                prompts_served += 1
+                # Preserve the model name from the backend response
+                if "model" not in result:
+                    result["model"] = "mojollama-llama-3.2-1b"
+                self._send_json(result)
+            except Exception as e:
+                self._send_error(f"Failed to proxy chat completion: {e}", 502)
 
         # ── Studio API: /api/chat (streaming for web UI) ─────────
         elif path == "/api/chat":

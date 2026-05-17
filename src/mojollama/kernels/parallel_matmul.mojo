@@ -1,13 +1,22 @@
-"""MojoLlama — parallel Q4_0 matmul using Python threading.
+"""MojoLlama — parallel Q4_0 matmul via file-based IPC.
 
-Each row of the matmul is independent, so we parallelize across CPU cores.
-Uses concurrent.futures from Python interop for thread pool management.
+Compile: mojo build parallel_matmul.mojo -o mojollama_q4
 
-Compile: mojo build parallel_matmul.mojo -o mojollama_parallel
+Each invocation reads weights/input from binary files, computes
+a chunk of rows, and writes results to an output file. Python
+multiprocessing fans out across CPU cores — one process per chunk.
+
+File formats (raw binary, no numpy dependency):
+  weights: [uint8] — n_blocks * 18 bytes  (Q4_0 blocks)
+  input:   [float32] — n_cols values
+  output:  [float32] — n_rows values (pre-allocated, each worker writes subset)
+
+Usage:
+  mojollama_q4 <weights.bin> <input.bin> <output.bin> <n_rows> <n_cols> <start_row> <end_row>
 """
 
-from std.memory.unsafe_pointer import alloc
-from std.math import sqrt
+from std.memory.unsafe_pointer import alloc, free, pointer_to_int
+from python import Python
 
 alias F32x8 = SIMD[DType.float32, 8]
 alias U8x16 = SIMD[DType.uint8, 16]
@@ -23,149 +32,149 @@ def f16_to_f32(h: UInt16) -> Float32:
         var e = (UInt32(h) >> 10) & 0x1f
         var m = UInt32(h) & 0x3ff
         if e == 0:
-            if m == 0: return Float32(bitcast[DType.float32](s << 31))
-            var mm = m; var c: UInt32 = 0
-            while mm > 0: mm >>= 1; c += 1
+            if m == 0:
+                return Float32(bitcast[DType.float32](s << 31))
+            var mm = m
+            var c: UInt32 = 0
+            while mm > 0:
+                mm >>= 1
+                c += 1
             var sh = 24 - c
-            return Float32(bitcast[DType.float32]((s << 31) | ((UInt32(113 - sh)) << 23) | ((m << (sh + 13)) & 0x7fffff)))
-        if e == 31: return Float32(bitcast[DType.float32]((s << 31) | 0x7f800000 | (m << 13)))
-        return Float32(bitcast[DType.float32]((s << 31) | ((e + 112) << 23) | (m << 13))))
+            return Float32(
+                bitcast[DType.float32](
+                    (s << 31) | ((UInt32(113 - sh)) << 23) | ((m << (sh + 13)) & 0x7fffff)
+                )
+            )
+        if e == 31:
+            return Float32(
+                bitcast[DType.float32]((s << 31) | 0x7f800000 | (m << 13))
+            )
+        return Float32(
+            bitcast[DType.float32]((s << 31) | ((e + 112) << 23) | (m << 13))
+        )
 
 
-def q4_block_dot(scale: Float32, nibbles: U8x16,
-                 x0: F32x8, x1: F32x8, x2: F32x8, x3: F32x8) -> Float32:
+def q4_block_dot(
+    scale: Float32, nibbles: U8x16, x0: F32x8, x1: F32x8, x2: F32x8, x3: F32x8
+) -> Float32:
     @parameter
     def dg(s: Int, xv: F32x8) -> Float32:
         var v = F32x8()
         for j in range(8):
             var bi = s + j // 2
             var b = nibbles[bi]
-            v[j] = Float32(Int8(b & 15) - 8) if j % 2 == 0 else Float32(Int8((b >> 4) & 15) - 8)
+            v[j] = (
+                Float32(Int8(b & 15) - 8)
+                if j % 2 == 0
+                else Float32(Int8((b >> 4) & 15) - 8)
+            )
         return (v * scale * xv).reduce_add()
     return dg(0, x0) + dg(4, x1) + dg(8, x2) + dg(12, x3)
 
 
-def q4_matmul_row(
-    w: UnsafePointer[mut=True, type=UInt8, origin=_],
-    inp: UnsafePointer[mut=False, type=Float32, origin=_],
-    result: UnsafePointer[mut=True, type=Float32, origin=_],
-    n_cols: Int, row: Int,
-):
-    var bpr = n_cols // 32
-    var total: Float32 = 0.0
-    for blk in range(bpr):
-        var off = (row * bpr + blk) * 18
-        var lo = w.load(off)
-        var hi = w.load(off + 1)
-        var scale = f16_to_f32((UInt16(hi) << 8) | UInt16(lo))
-        var nibs = w.load[width=16](off + 2)
-        var inp_off = blk * 32
-        var x0 = inp.load[width=8](inp_off)
-        var x1 = inp.load[width=8](inp_off + 8)
-        var x2 = inp.load[width=8](inp_off + 16)
-        var x3 = inp.load[width=8](inp_off + 24)
-        total += q4_block_dot(scale, nibs, x0, x1, x2, x3)
-    result.store(row, total)
-
-
-def q4_matmul_sequential(
-    w: UnsafePointer[mut=True, type=UInt8, origin=_],
-    inp: UnsafePointer[mut=False, type=Float32, origin=_],
-    result: UnsafePointer[mut=True, type=Float32, origin=_],
-    n_rows: Int, n_cols: Int,
-):
-    for row in range(n_rows):
-        q4_matmul_row(w, inp, result, n_cols, row)
-
-
-def q4_matmul_parallel_py(
-    w: UnsafePointer[mut=True, type=UInt8, origin=_],
-    inp: UnsafePointer[mut=False, type=Float32, origin=_],
-    result: UnsafePointer[mut=True, type=Float32, origin=_],
-    n_rows: Int, n_cols: Int, n_threads: Int,
+def q4_matmul_file(
+    w_path: String,
+    inp_path: String,
+    out_path: String,
+    n_rows: Int,
+    n_cols: Int,
+    start_row: Int,
+    end_row: Int,
 ) raises:
-    """Parallel matmul using Python's ThreadPoolExecutor.
-    
-    Each thread processes a chunk of rows. Python interop is only
-    used for thread management — the actual SIMD computation is Mojo.
-    """
-    from python import Python
-    var futures = Python.import_module("concurrent.futures")
-    var executor = futures.ThreadPoolExecutor(max_workers=n_threads)
-    
-    var rows_per_chunk = n_rows // n_threads
-    if rows_per_chunk < 1: rows_per_chunk = 1
-    
-    var n_chunks = n_rows // rows_per_chunk
-    if n_chunks * rows_per_chunk < n_rows:
-        n_chunks += 1
-    
-    # Submit all chunks
-    var fs = Python.evaluate("[]")
-    for chunk in range(n_chunks):
-        var start = chunk * rows_per_chunk
-        var end = start + rows_per_chunk
-        if end > n_rows: end = n_rows
-        
-        # For each row in this chunk, call the Mojo SIMD kernel
-        # We use Python's executor.map 
-        var rows = Python.evaluate("[]")
-        for r in range(start, end):
-            Python.evaluate("rows.append").__call__(r)
-        
-        var row_task = executor.map(
-            Python.evaluate("lambda r: None"),  # placeholder
-            rows
-        )
-        _ = row_task
-    
-    executor.shutdown()
+    """Read weights/input from binary files, compute chunk, write results."""
+    var posix = Python.import_module("os")
+
+    # Calculate sizes
+    var bpr = n_cols // 32                           # blocks per row
+    var bsize = 18                                    # bytes per block (2 scale + 16 nibbles)
+
+    var w_size = n_rows * bpr * bsize
+    var inp_size = n_cols * 4                         # float32
+    var out_size = n_rows * 4
+
+    # Open files
+    var w_fd = posix.open(w_path, 0)                  # O_RDONLY
+    var inp_fd = posix.open(inp_path, 0)
+    var out_fd = posix.open(out_path, 2)              # O_RDWR
+
+    # mmap the files (shared memory across processes)
+    var mmap_mod = Python.import_module("mmap")
+    var prot_read = 1                                  # PROT_READ
+    var prot_write = 2                                 # PROT_WRITE
+    var mmap_shared = 1                                # MAP_SHARED
+
+    var w_mmap = mmap_mod.mmap(w_fd, w_size, prot=prot_read, flags=mmap_shared, offset=0)
+    var inp_mmap = mmap_mod.mmap(inp_fd, inp_size, prot=prot_read, flags=mmap_shared, offset=0)
+    var out_mmap = mmap_mod.mmap(out_fd, out_size, prot=prot_read | prot_write, flags=mmap_shared, offset=0)
+
+    # Get buffer pointers from mmap
+    var buf_mod = Python.import_module("builtins")
+    var w_view = buf_mod.memoryview(w_mmap).cast("B")
+    var inp_view = buf_mod.memoryview(inp_mmap).cast("f")
+    var out_view = buf_mod.memoryview(out_mmap).cast("f")
+
+    # Read data into Mojo-managed buffers
+    var w_buf = alloc[UInt8](w_size)
+    var inp_buf = alloc[Float32](n_cols)
+    var out_buf = alloc[Float32](n_rows)
+
+    # Copy from Python memory views to Mojo buffers
+    for i in range(n_cols):
+        inp_buf.store(i, Float32(inp_view[i]))
+
+    # For weights, copy byte-by-byte via Python
+    for i in range(w_size):
+        w_buf.store(i, UInt8(w_view[i]))
+
+    # Compute
+    for row in range(start_row, end_row):
+        var total: Float32 = 0.0
+        for blk in range(bpr):
+            var off = (row * bpr + blk) * bsize
+            var lo = w_buf.load(off)
+            var hi = w_buf.load(off + 1)
+            var scale = f16_to_f32((UInt16(hi) << 8) | UInt16(lo))
+            var nibs = w_buf.load[width=16](off + 2)
+            var inp_off = blk * 32
+            var x0 = inp_buf.load[width=8](inp_off)
+            var x1 = inp_buf.load[width=8](inp_off + 8)
+            var x2 = inp_buf.load[width=8](inp_off + 16)
+            var x3 = inp_buf.load[width=8](inp_off + 24)
+            total += q4_block_dot(scale, nibs, x0, x1, x2, x3)
+        out_buf.store(row, total)
+
+    # Write results back to mmap
+    for row in range(start_row, end_row):
+        out_view[row] = out_buf.load(row)
+
+    # Cleanup
+    w_buf.free()
+    inp_buf.free()
+    out_buf.free()
+    w_mmap.close()
+    inp_mmap.close()
+    out_mmap.close()
+    posix.close(w_fd)
+    posix.close(inp_fd)
+    posix.close(out_fd)
 
 
 def main() raises:
-    from python import Python
-    var tim = Python.import_module("time")
-    var np = Python.import_module("numpy")
-    var os_mod = Python.import_module("os")
-    var ncpu = os_mod.cpu_count()
-    
-    var n_rows = 2048
-    var n_cols = 2048
-    var n_blocks = n_rows * (n_cols // 32)
-    
-    print("=== MojoLlama Parallel Matmul Benchmark ===\n")
-    print("CPU cores:", ncpu)
-    print("Matrix: Q4_0", n_rows, "x", n_cols)
-    
-    # Allocate test data
-    var w = alloc[UInt8](n_blocks * 18)
-    var inp = alloc[Float32](n_cols)
-    var result = alloc[Float32](n_rows)
-    
-    for i in range(n_cols): inp.store(i, Float32(0.5))
-    
-    # Sequential benchmark
-    print("\n[Sequential] 1 thread...")
-    var t0 = tim.time()
-    q4_matmul_sequential(w, inp, result, n_rows, n_cols)
-    var t1 = tim.time()
-    var seq_time = t1 - t0
-    print("  Time:", seq_time * 1000, "ms")
-    print("  Throughput:", 1.0 / seq_time, "matmul/s")
-    
-    # Parallel via Python threading
-    for n_threads in [2, 4, 8, 16, 32, 64]:
-        var n_used = n_threads
-        if n_used > ncpu: n_used = ncpu
-        
-        var t0 = tim.time()
-        q4_matmul_parallel_py(w, inp, result, n_rows, n_cols, n_used)
-        var t1 = tim.time()
-        var par_time = t1 - t0
-        var speedup = seq_time / par_time if par_time > 0 else 0
-        print("[", n_used, "threads] Time:", par_time * 1000, "ms, Speedup:", speedup, "x")
-    
-    inp.free()
-    result.free()
-    w.free()
-    print("\nDone.")
+    var sys = Python.import_module("sys")
+    var bltns = Python.import_module("builtins")
+    var argv = sys.argv
+    var argc = Int(bltns.len(argv))
+
+    if argc < 8:
+        print("Usage: mojollama_q4 <weights.bin> <input.bin> <output.bin> <n_rows> <n_cols> <start_row> <end_row>")
+        sys.exit(1)
+
+    var w_path = String(argv[1])
+    var inp_path = String(argv[2])
+    var out_path = String(argv[3])
+    var n_rows = Int(String(argv[4]))
+    var n_cols = Int(String(argv[5]))
+    var start_row = Int(String(argv[6]))
+    var end_row = Int(String(argv[7]))
+
+    q4_matmul_file(w_path, inp_path, out_path, n_rows, n_cols, start_row, end_row)

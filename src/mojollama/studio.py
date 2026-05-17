@@ -466,7 +466,9 @@ def cmd_dataset(args):
         # Start llama.cpp server in background
         print(f"Starting llama.cpp server on port {port}...")
         proc = subprocess.Popen(
-            [SERVER_BIN, "-m", model, "-c", "4096", "-t", "32",
+            [SERVER_BIN, "-m", model, "-c", "4096",
+             "-t", "64", "-tb", "32", "-b", "4096", "-ub", "4096",
+             "-np", "8", "--mlock", "--cont-batching",
              "--port", str(port), "--host", "127.0.0.1", "--no-webui"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
@@ -572,7 +574,9 @@ def cmd_chat(args):
     logfile = f"/tmp/mojollama-chat-{port}.log"
     with open(logfile, "w") as lf:
         proc = subprocess.Popen(
-            [SERVER_BIN, "-m", model, "-c", "4096", "-t", "32",
+            [SERVER_BIN, "-m", model, "-c", "4096",
+             "-t", "64", "-tb", "32", "-b", "4096", "-ub", "4096",
+             "-np", "8", "--mlock", "--cont-batching",
              "--port", str(port), "--host", "0.0.0.0", "--no-webui"],
             stdout=lf, stderr=subprocess.STDOUT
         )
@@ -642,7 +646,9 @@ def cmd_benchmark(args):
     # Start server
     print(f"Starting llama.cpp server on port {port}...")
     proc = subprocess.Popen(
-        [SERVER_BIN, "-m", model, "-c", "4096", "-t", "32",
+        [SERVER_BIN, "-m", model, "-c", "4096",
+         "-t", "64", "-tb", "32", "-b", "4096", "-ub", "4096",
+         "-np", "8", "--mlock", "--cont-batching",
          "--port", str(port), "--host", "127.0.0.1", "--no-webui",
          "--metrics"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL

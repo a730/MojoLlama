@@ -64,10 +64,14 @@ class LlamaCppBackend(BackendBase):
         if self._check_server():
             self._started = True
             return
-        # Start server
+        # Start server with optimized settings for Threadripper 3970X
+        # -t 64: use all cores, -np 8: 8 parallel slots, -b 4096: batch size
+        # -ub 4096: batch for generation, --mlock: lock in RAM, --cont-batching
         self._process = subprocess.Popen(
-            [self._server_path, "-m", self.model_path, "-c", "4096", 
-             "-t", "32", "--port", str(self.port), "--host", "127.0.0.1", "--no-webui"],
+            [self._server_path, "-m", self.model_path, "-c", "4096",
+             "-t", "64", "-tb", "32", "-b", "4096", "-ub", "4096",
+             "-np", "8", "--mlock", "--cont-batching",
+             "--port", str(self.port), "--host", "127.0.0.1", "--no-webui"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
         # Wait for it to be ready
