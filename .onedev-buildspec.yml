@@ -153,16 +153,13 @@ jobs:
         name: publish www files as artifacts
         condition: SUCCESSFUL
         optional: false
-        artifacts: |
-          www/index.html
-          www/studio.html
-          www/chat.html
+        artifacts: www/**
 
       - type: PublishSiteStep
         name: deploy API web page to ~site
         condition: SUCCESSFUL
         optional: false
-        artifacts: www/index.html, www/studio.html, www/chat.html
+        artifacts: www/**
 
     triggers:
       - type: BranchUpdateTrigger
