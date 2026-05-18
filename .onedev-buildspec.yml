@@ -13,14 +13,12 @@ jobs:
         condition: SUCCESSFUL
         optional: false
 
-      # Publish www/ early — these are static files from checkout,
-      # they don't need the container build to complete.
-      # ServerSideStep uses server-side workspace (files from checkout).
       - type: PublishSiteStep
         name: deploy www to ~site
         condition: SUCCESSFUL
         optional: false
-        artifacts: www/**
+        sourcePath: www
+        artifacts: "**"
 
       - type: CommandStep
         name: build C kernel + install deps
