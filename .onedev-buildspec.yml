@@ -13,6 +13,15 @@ jobs:
         condition: SUCCESSFUL
         optional: false
 
+      # Publish www/ early — these are static files from checkout,
+      # they don't need the container build to complete.
+      # ServerSideStep uses server-side workspace (files from checkout).
+      - type: PublishSiteStep
+        name: deploy www to ~site
+        condition: SUCCESSFUL
+        optional: false
+        artifacts: www/**
+
       - type: CommandStep
         name: build C kernel + install deps
         condition: SUCCESSFUL
@@ -109,11 +118,13 @@ jobs:
               echo "Studio UI: HTTP $STUDIO_CODE"
             fi
 
-            echo "Verify static files:"
+            echo "www/ files present:"
             ls -la /onedev-build/work/www/
 
-      - type: PublishSiteStep
-        name: deploy www to ~site
-        condition: SUCCESSFUL
-        optional: false
-        artifacts: www/**
+    triggers:
+      - type: BranchUpdateTrigger
+        branches: main
+      - type: BranchUpdateTrigger
+        branches: dev
+
+    retryCondition: never
