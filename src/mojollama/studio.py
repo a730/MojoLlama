@@ -736,19 +736,48 @@ def cmd_benchmark(args):
 def cmd_autotune(args):
     """Auto-tune server settings for this hardware."""
     print("╔══════════════════════════════════════════════╗")
-    print("║      MojoLlama AutoTuner v0.1.0              ║")
+    print("║      MojoLlama AutoTuner v0.2.0              ║")
     print("╚══════════════════════════════════════════════╝")
     print()
+
+    # Deep mode: detect hardware first
+    if args.deep:
+        from mojollama.detect import detect_hardware, summary, recommend_llamacpp_flags, format_recommendation
+        hw = detect_hardware()
+        print(summary(hw))
+        print()
+        flags = recommend_llamacpp_flags(hw)
+        print("Recommended flags from hardware detection:")
+        print(f"  {format_recommendation(flags)}")
+        print()
 
     config = autotune(args.model or 
                       "/tmp/tl-Q4_0.gguf",
                       quick=args.quick)
 
     if config:
+        # Merge hardware detection findings into config
+        if args.deep:
+            from mojollama.detect import detect_hardware, recommend_llamacpp_flags
+            hw = detect_hardware()
+            flags = recommend_llamacpp_flags(hw)
+            config["hardware_detection"] = {
+                "cpu": hw["cpu"],
+                "gpu": hw["gpu"]["primary"],
+            }
+            # Apply hardware-recommended settings
+            hs = config["llama_server"]
+            for k in ["threads", "batch_size", "n_parallel", "mlock", "flash_attn", "cpu_mask"]:
+                if k in flags:
+                    hs[k] = flags[k]
+            if hw["gpu"]["primary"]:
+                hs["gpu"] = flags.get("gpu")
+                hs["gpu_layers"] = flags.get("gpu_layers", -1)
+
         save_config(config)
         print_config(config)
 
-        # Also show the generated server config
+        # Show the generated server config
         from mojollama.backends import build_server_cmd
         cmd = build_server_cmd(
             "/tmp/llama.cpp/build/bin/llama-server",
@@ -877,6 +906,8 @@ def main():
     p_tune = sub.add_parser("autotune", help="Auto-tune server settings for this hardware")
     p_tune.add_argument("--model", "-m", help="Model to benchmark with (default: TinyLlama Q4_0)")
     p_tune.add_argument("--quick", "-q", action="store_true", help="Faster sweep (fewer combos)")
+    p_tune.add_argument("--deep", "-d", action="store_true",
+                        help="Deep hardware detection (CPU features, GPU, CUDA, ROCm, etc.)")
     
     # info
     sub.add_parser("info", help="System info")
