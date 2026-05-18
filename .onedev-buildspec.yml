@@ -161,9 +161,10 @@ jobs:
             echo "  API:           http://hostname:8080/v1/models"
             echo "=========================================="
 
-            # Keep running for OneDev service port exposure
-            echo "Server PID=$API_PID — keeping alive for service"
-            wait $API_PID
+            echo "Server PID=$API_PID — smoke test complete"
+            # Don't wait — let step finish so PublishSiteStep runs
+            # The server continues in background until container exits
+            echo "Build step complete. Server still running PID=$API_PID"
 
       - type: PublishSiteStep
         name: deploy API web page to ~site
