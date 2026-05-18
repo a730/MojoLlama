@@ -27,17 +27,30 @@ jobs:
 
             echo "=== System Dependencies ==="
             apt-get update -qq && apt-get install -y -qq gcc 2>/dev/null
-            echo "✓ System deps ready"
+            echo "System deps ready"
 
             echo "=== Python Dependencies ==="
             pip install flask numpy gguf regex ftfy --break-system-packages -q
-            echo "✓ Python deps ready"
+            echo "Python deps ready"
 
-            echo "=== Build C Q4_0 Kernel ==="
+            echo "=== Build C AVX2 Kernels ==="
+            # Legacy C Q4_0 kernel
             gcc -O3 -march=native -shared -fPIC \
               -o src/mojollama/model/libq4matmul.so \
               src/mojollama/model/q4_matmul_c.c
-            echo "✓ C kernel built"
+
+            # New AVX2 reference kernel (hand-tuned intrinsics)
+            gcc -O3 -mavx2 -mfma -mf16c -shared -fPIC \
+              -o src/mojollama/kernels/q4_kernel_avx2.so \
+              src/mojollama/kernels/q4_kernel_avx2.c
+            echo "C AVX2 kernel built"
+
+            # OpenMP parallel kernel (AVX2 + FMA + F16C + OpenMP)
+            gcc -O3 -mavx2 -mfma -mf16c -fopenmp -shared -fPIC \
+              -o src/mojollama/kernels/q4_kernel_omp.so \
+              src/mojollama/kernels/q4_kernel_omp.c 2>/dev/null || \
+            echo "OMP kernel skipped (no OpenMP support in container)"
+            echo "C kernel build complete"
 
       - type: CommandStep
         name: verify model + smoke test
@@ -58,7 +71,7 @@ jobs:
 
             echo "=== Model Check ==="
             if [ -f Llama-3.2-1B-Instruct-Q4_0.gguf ]; then
-              echo "✓ Model file present ($(du -h Llama-3.2-1B-Instruct-Q4_0.gguf | cut -f1))"
+              echo "Model file present ($(du -h Llama-3.2-1B-Instruct-Q4_0.gguf | cut -f1))"
             else
               echo "Downloading model (728 MB)..."
               curl -L -o Llama-3.2-1B-Instruct-Q4_0.gguf \
@@ -69,23 +82,22 @@ jobs:
             echo "=== Start API Server (background) ==="
             cd /onedev-build/work
 
-            # Use the modern stdlib server (no Flask dependency at runtime)
             nohup python3 -m mojollama.server \
               --model Llama-3.2-1B-Instruct-Q4_0.gguf \
               --port 8080 \
               > /tmp/mojollama-api.log 2>&1 &
             API_PID=$!
-            echo "✓ API server PID=$API_PID on port 8080"
+            echo "API server PID=$API_PID on port 8080"
 
             echo ""
             echo "=== Wait for Model Load + Health Check ==="
             for i in $(seq 1 60); do
               if curl -sf http://localhost:8080/v1/models > /dev/null 2>&1; then
-                echo "✓ API ready after ~${i}s"
+                echo "API ready after ~${i}s"
                 break
               fi
               if [ $i -eq 60 ]; then
-                echo "✗ API failed to start within 120s"
+                echo "API failed to start within 120s"
                 cat /tmp/mojollama-api.log | tail -20
                 kill $API_PID 2>/dev/null || true
                 exit 1
@@ -101,9 +113,9 @@ jobs:
             echo "Response: $(echo "$RESULT" | head -c 200)"
             echo ""
             if echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['choices'][0]['message']['content']" 2>/dev/null; then
-              echo "✓ Smoke test passed"
+              echo "Smoke test passed"
             else
-              echo "✗ Smoke test failed"
+              echo "Smoke test failed"
               kill $API_PID 2>/dev/null || true
               exit 1
             fi
@@ -113,9 +125,9 @@ jobs:
             curl -sf http://localhost:8080/v1/models | python3 -m json.tool | head -10
 
             echo ""
-            echo "══════════════════════════════════════════════════"
-            echo "  🔥 MojoLlama Build + Smoke Test PASSED"
-            echo "══════════════════════════════════════════════════"
+            echo "=========================================="
+            echo "  MojoLlama Build + Smoke Test PASSED"
+            echo "=========================================="
 
             kill $API_PID 2>/dev/null || true
 
