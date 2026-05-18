@@ -4,27 +4,31 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MojoLlama — High-Performance LLM Inference</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
 :root {
-  --bg: #0a0d14; --surface: #11161e; --border: #1e2533;
-  --text: #e4e8ee; --dim: #7a8395; --accent: #5b8def;
+  --bg: #090c10; --surface: #12161e; --border: #252d3a;
+  --text: #e6edf3; --dim: #7d8590; --accent: #5b8def;
   --green: #3fb950; --purple: #a37cf0; --orange: #f0883e;
-  --red: #f85149;
+  --red: #f85149; --cyan: #39d2c0;
+  --grad1: linear-gradient(135deg, #5b8def 0%, #a37cf0 50%, #f778ba 100%);
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: 'Inter', -apple-system, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+body { font-family: 'Inter', -apple-system, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh;
+       background-image: radial-gradient(ellipse at 20% 50%, rgba(91,141,239,0.04) 0%, transparent 50%),
+                         radial-gradient(ellipse at 80% 20%, rgba(163,124,240,0.03) 0%, transparent 50%); }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 /* Nav */
-nav { display: flex; align-items: center; gap: 24px; padding: 16px 40px; border-bottom: 1px solid var(--border); background: var(--surface); }
+nav { display: flex; align-items: center; gap: 24px; padding: 16px 40px; border-bottom: 1px solid var(--border); background: rgba(18,22,30,0.85); backdrop-filter: blur(12px); position: sticky; top: 0; z-index: 100; }
 nav .logo { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; }
-nav .logo span { color: var(--accent); }
+nav .logo span { background: var(--grad1); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
 nav .nav-links { display: flex; gap: 16px; margin-left: auto; align-items: center; }
 nav .nav-links a { font-size: 14px; font-weight: 500; color: var(--dim); transition: color .2s; }
 nav .nav-links a:hover { color: var(--text); text-decoration: none; }
-.btn-nav { padding: 7px 18px; border-radius: 8px; background: var(--accent); color: #fff !important; font-weight: 600 !important; }
+.btn-nav { padding: 7px 18px; border-radius: 8px; background: var(--accent); color: #fff !important; font-weight: 600 !important; transition: all .2s; }
 .btn-nav:hover { filter: brightness(1.15); text-decoration: none !important; }
 #serverStatus { font-size: 12px; padding: 4px 10px; border-radius: 12px; border: 1px solid var(--border); display: flex; align-items: center; gap: 6px; cursor: pointer; transition: all .2s; }
 #serverStatus:hover { border-color: var(--accent); }
@@ -35,23 +39,14 @@ nav .nav-links a:hover { color: var(--text); text-decoration: none; }
 /* Hero */
 .hero { padding: 80px 40px 40px; text-align: center; max-width: 800px; margin: 0 auto; }
 .hero h1 { font-size: 52px; font-weight: 800; letter-spacing: -1.5px; line-height: 1.1; margin-bottom: 16px; }
-.hero h1 span { background: linear-gradient(135deg, var(--accent), var(--purple)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.hero h1 span { background: var(--grad1); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
 .hero p { font-size: 18px; color: var(--dim); line-height: 1.6; margin-bottom: 32px; }
 .hero-btns { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
 .btn-lg { padding: 14px 32px; border-radius: 10px; font-size: 16px; font-weight: 600; border: none; cursor: pointer; transition: all .2s; display: inline-flex; align-items: center; gap: 8px; }
 .btn-primary-lg { background: var(--accent); color: #fff; }
-.btn-primary-lg:hover { filter: brightness(1.15); transform: translateY(-1px); }
+.btn-primary-lg:hover { filter: brightness(1.15); transform: translateY(-1px); text-decoration: none; }
 .btn-outline-lg { background: transparent; border: 1px solid var(--border); color: var(--text); }
-.btn-outline-lg:hover { border-color: var(--accent); transform: translateY(-1px); }
-
-/* Connection panel */
-.connect-panel { max-width: 700px; margin: 0 auto; padding: 0 40px; }
-.connect-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px 28px; margin-bottom: 12px; }
-.connect-card h3 { font-size: 15px; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
-.connect-card p, .connect-card ol { font-size: 13px; color: var(--dim); line-height: 1.7; }
-.connect-card ol { padding-left: 20px; }
-.connect-card code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 12px; color: var(--accent); }
-.connect-card input { width: 100%; padding: 8px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; font-family: monospace; margin: 6px 0 4px; }
+.btn-outline-lg:hover { border-color: var(--accent); transform: translateY(-1px); text-decoration: none; }
 
 /* Features */
 .features { max-width: 1200px; margin: 0 auto; padding: 40px; }
@@ -63,8 +58,17 @@ nav .nav-links a:hover { color: var(--text); text-decoration: none; }
 .feature-card h3 { font-size: 17px; font-weight: 600; margin-bottom: 8px; }
 .feature-card p { font-size: 14px; color: var(--dim); line-height: 1.6; }
 .feature-badge { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 6px; margin-top: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
-.badge-new { background: #1f3f2a; color: var(--green); }
-.badge-pro { background: #2a1f3f; color: var(--purple); }
+.badge-new { background: rgba(63,185,80,0.15); color: var(--green); }
+.badge-pro { background: rgba(163,124,240,0.15); color: var(--purple); }
+.badge-beta { background: rgba(240,136,62,0.15); color: var(--orange); }
+
+/* Connect */
+.connect-panel { max-width: 700px; margin: 0 auto; padding: 0 40px; }
+.connect-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px 28px; margin-bottom: 12px; }
+.connect-card h3 { font-size: 15px; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+.connect-card p, .connect-card ol { font-size: 13px; color: var(--dim); line-height: 1.7; }
+.connect-card ol { padding-left: 20px; }
+.connect-card code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 12px; color: var(--accent); }
 
 /* Benchmarks */
 .benchmarks { max-width: 1000px; margin: 40px auto; padding: 0 40px; }
@@ -82,7 +86,7 @@ footer a { color: var(--accent); }
 /* Toast */
 .toast { position: fixed; bottom: 20px; right: 20px; padding: 10px 18px; border-radius: 8px; font-size: 13px; z-index: 100; max-width: 400px; animation: fadeIn .3s ease; }
 .toast.info { background: var(--surface); border: 1px solid var(--border); color: var(--text); }
-.toast.success { background: #1f3f2a; border: 1px solid var(--green); color: var(--green); }
+.toast.success { background: rgba(31,63,42,0.9); border: 1px solid var(--green); color: var(--green); }
 @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
 @media (max-width: 768px) {
@@ -124,11 +128,11 @@ footer a { color: var(--accent); }
     <p>This is a static site. To chat with a model, the Studio needs to connect to a running MojoLlama server.</p>
     <ol>
       <li>Open <a href="studio.html"><strong>Studio</strong></a></li>
-      <li>Click the <strong>⚙ gear icon</strong> (top-right) or the <strong>offline badge</strong></li>
+      <li>Click the <strong>⚙ gear icon</strong> (sidebar footer) or the <strong>offline badge</strong></li>
       <li>Enter the server URL and click <strong>Save &amp; Reload</strong></li>
     </ol>
     <p style="margin-top:8px">
-      🔗 <strong>Direct access</strong> (no config needed): 
+      🔗 <strong>Direct access</strong> (no config needed):
       <code><span id="directUrl">http://hostname:8080/studio.html</span></code>
     </p>
   </div>
@@ -144,36 +148,54 @@ footer a { color: var(--accent); }
     <div class="feature-card">
       <div class="feature-icon">⚡</div>
       <h3>Multi-Backend</h3>
-      <p>Auto-selects the fastest backend — llama.cpp (85 tok/s CPU), MAX GPU, or Mojo SIMD. No configuration needed.</p>
+      <p>Auto-selects the fastest backend — llama.cpp (162 tok/s CPU), MAX GPU, or Mojo SIMD. No configuration needed.</p>
       <span class="feature-badge badge-pro">AutoBackend</span>
     </div>
     <div class="feature-card">
       <div class="feature-icon">💬</div>
       <h3>Streaming Chat</h3>
-      <p>Real-time token-by-token streaming via SSE. OpenAI-compatible API works with any client.</p>
-      <span class="feature-badge badge-new">Streaming</span>
+      <p>Real-time token-by-token streaming with SSE. System prompts, temperature, top_p, repeat penalty. OpenAI-compatible API.</p>
+      <span class="feature-badge badge-new">Advanced</span>
     </div>
     <div class="feature-card">
       <div class="feature-icon">🎓</div>
       <h3>LoRA Fine-Tuning</h3>
-      <p>Fine-tune models with LoRA adapters. Merge adapters back into base models for deployment.</p>
-      <span class="feature-badge badge-new">Merge</span>
+      <p>Fine-tune with advanced configs: warmup, gradient accumulation, schedulers, templates. Resume from checkpoints.</p>
+      <span class="feature-badge badge-new">Templates</span>
     </div>
     <div class="feature-card">
-      <div class="feature-icon">📤</div>
-      <h3>HF → GGUF Export</h3>
-      <p>Convert any HuggingFace model to GGUF with one command. All quantization types supported.</p>
+      <div class="feature-icon">🎯</div>
+      <h3>Evaluation Suite</h3>
+      <p>Perplexity evaluation and accuracy scoring. Measure model quality before and after fine-tuning.</p>
+      <span class="feature-badge badge-beta">Evaluate</span>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">🔮</div>
+      <h3>Quantization Studio</h3>
+      <p>Compare quantization formats side-by-side. Convert GGUF models between Q2_K through Q8_0 with benchmark data.</p>
+      <span class="feature-badge badge-new">Quantize</span>
     </div>
     <div class="feature-card">
       <div class="feature-icon">📊</div>
       <h3>Dataset Studio</h3>
-      <p>Create, view, and auto-label datasets. Use the running model to generate completions for unlabeled data.</p>
+      <p>Create datasets in Alpaca, ShareGPT, or JSONL format. Auto-label using your model. Fine-tuning-ready data pipeline.</p>
       <span class="feature-badge badge-new">Auto-Label</span>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">📤</div>
+      <h3>HF → GGUF Export</h3>
+      <p>Convert any HuggingFace model to GGUF with one click. All quantization types supported including K-quants.</p>
+    </div>
+    <div class="feature-card">
+      <div class="feature-icon">📋</div>
+      <h3>Training Templates</h3>
+      <p>Pre-configured recipes for Llama, Mistral, Qwen, Gemma, Phi, DeepSeek. One-click model-specific configs.</p>
+      <span class="feature-badge badge-new">v0.3</span>
     </div>
     <div class="feature-card">
       <div class="feature-icon">🔬</div>
       <h3>Benchmark Suite</h3>
-      <p>Compare models and quantization levels. Real tok/s metrics for prompt processing and generation.</p>
+      <p>Compare models and quantization levels with real tok/s metrics. History chart tracks improvement over time.</p>
     </div>
   </div>
 </section>
@@ -195,63 +217,43 @@ footer a { color: var(--accent); }
 
 <footer>
   <p>Built with <a href="https://www.modular.com/max">MAX</a> + <a href="https://github.com/ggml-org/llama.cpp">llama.cpp</a> + <a href="https://www.modular.com/mojo">Mojo</a> 🔥</p>
-  <p style="margin-top:8px">MojoLlama v0.2.0 — Threadripper 3970X (64c) · DDR4 · AVX2</p>
+  <p style="margin-top:8px">MojoLlama v0.3.0 — Threadripper 3970X (64c) · DDR4 · AVX2</p>
 </footer>
 
 <script>
-// Check if the running server is accessible from this browser
 (async function checkServer() {
   const dot = document.getElementById('statusDot');
   const label = document.getElementById('statusLabel');
-
-  // Try to reach the server via localStorage/Fallback logic (same as Studio)
   const stored = localStorage.getItem('mojollama_api_url');
   const baseUrl = stored || `http://${location.hostname}:8080`;
-
   try {
     const resp = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(3000) });
     const data = await resp.json();
     dot.className = 'status-dot online';
     label.textContent = `🟢 ${data.backend || 'online'} (${data.uptime || ''})`;
-    label.style.color = 'var(--green)';
-
-    // Show server details
+    label.style.color = '#3fb950';
     const details = document.getElementById('serverDetails');
     details.style.display = 'block';
-    document.getElementById('serverInfoContent').innerHTML = `
-      <strong>Backend:</strong> ${data.backend || 'unknown'}<br>
-      <strong>Uptime:</strong> ${data.uptime || 'unknown'}<br>
-      <strong>URL:</strong> <code>${baseUrl}</code><br>
-      <strong>Models:</strong> <span id="modelCount">loading...</span>
-    `;
-    // Fetch models too
+    document.getElementById('serverInfoContent').innerHTML =
+      `<strong>Backend:</strong> ${data.backend || 'unknown'}<br><strong>Uptime:</strong> ${data.uptime || 'unknown'}<br><strong>URL:</strong> <code>${baseUrl}</code><br><strong>Models:</strong> <span id="modelCount">loading...</span>`;
     try {
       const mresp = await fetch(`${baseUrl}/v1/models`, { signal: AbortSignal.timeout(3000) });
       const mdata = await mresp.json();
       document.getElementById('modelCount').textContent = (mdata.data || []).length + ' loaded';
-    } catch(e) {
-      document.getElementById('modelCount').textContent = 'unreachable';
-    }
+    } catch(e) { document.getElementById('modelCount').textContent = 'unreachable'; }
   } catch(e) {
     dot.className = 'status-dot offline';
     label.textContent = '⚫ offline';
-    label.style.color = 'var(--red)';
+    label.style.color = '#f85149';
   }
 })();
 
 function showServerInfo() {
-  const stored = localStorage.getItem('mojollama_api_url');
-  const url = stored || `http://${location.hostname}:8080`;
   const details = document.getElementById('serverDetails');
-  if (details.style.display === 'block') {
-    details.style.display = 'none';
-    return;
-  }
-  details.style.display = 'block';
+  details.style.display = details.style.display === 'block' ? 'none' : 'block';
   details.scrollIntoView({ behavior: 'smooth' });
 }
 
-// Show direct URL on page
 document.getElementById('directUrl').textContent = `${location.protocol}//${location.hostname}:8080/studio.html`;
 </script>
 </body>

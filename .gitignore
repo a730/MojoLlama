@@ -13,3 +13,5 @@ model.bin
 mojollama_forward
 mojollama_bench
 .coding-context
+node_modules/
+desktop/node_modules/

@@ -300,6 +300,7 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
                     "name": f.name,
                     "path": str(f),
                     "size_bytes": size_bytes,
+                    "size_gb": round(size_bytes / 1024**3, 2),
                     "size_hr": self._format_size(size_bytes),
                     "modified": f.stat().st_mtime,
                 })
@@ -601,6 +602,280 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
                 "message": f"Export job {job_id} started",
             })
 
+        # ── Studio API: /api/benchmark ──────────────────────
+        elif path == "/api/benchmark":
+            model = body.get("model", "")
+            max_tokens = body.get("max_tokens", 128)
+            prompt_text = body.get("prompt", "Hello")
+            threads = body.get("threads", 0)
+
+            if not model:
+                self._send_error("'model' is required")
+                return
+
+            # Resolve model path
+            model_path = None
+            for f in Path(WORK_DIR).glob("*.gguf"):
+                if f.name == model or str(f) == model:
+                    model_path = str(f)
+                    break
+            if not model_path and os.path.exists(model):
+                model_path = model
+            if not model_path:
+                for f in Path(WORK_DIR).glob("*.gguf"):
+                    if model in f.name:
+                        model_path = str(f)
+                        break
+
+            if not model_path:
+                self._send_error(f"Model not found: {model}")
+                return
+
+            # Use llama-bench if available, otherwise time a generation
+            bench_path = os.path.join(os.path.dirname(LLAMA_SERVER_PATH), "llama-bench")
+            if os.path.exists(bench_path):
+                cmd = [bench_path, "-m", model_path, "-p", str(max_tokens),
+                       "-n", str(max_tokens)]
+                if threads:
+                    cmd.extend(["-t", str(threads)])
+                try:
+                    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                    lines = proc.stdout.strip().split('\n')
+                    result = {"model": model, "backend": "llama-bench", "raw": proc.stdout}
+                    for line in lines:
+                        parts = [p.strip() for p in line.split(',')]
+                        if len(parts) >= 4:
+                            try:
+                                if "pp" in parts[1].lower() or "prompt" in parts[1].lower():
+                                    result["prompt_tokens_per_second"] = float(parts[-2])
+                                elif "tg" in parts[1].lower() or "gen" in parts[1].lower():
+                                    result["tokens_per_second"] = float(parts[-2])
+                            except (ValueError, IndexError):
+                                pass
+                    self._send_json(result)
+                except subprocess.TimeoutExpired:
+                    self._send_error("Benchmark timed out (300s)")
+                except Exception as e:
+                    self._send_error(f"Benchmark failed: {e}")
+            else:
+                # Fallback: time a generation via the llama backend
+                t0 = time.time()
+                try:
+                    conn = _get_llama_conn()
+                    prompt = prompt_text if prompt_text else "Hello"
+                    data = json.dumps({
+                        "prompt": prompt,
+                        "n_predict": max_tokens,
+                        "temperature": 0.0,
+                        "stream": False,
+                    }).encode()
+                    conn.request("POST", "/completion", body=data,
+                                 headers={"Content-Type": "application/json"})
+                    resp = conn.getresponse()
+                    raw = resp.read()
+                    resp.close()
+                    _return_llama_conn(conn)
+
+                    result = json.loads(raw.decode("utf-8"))
+                    elapsed = time.time() - t0
+                    prompt_tokens = result.get("prompt_tokens", 0)
+                    gen_tokens = result.get("tokens_evaluated", result.get("tokens", 0))
+                    pp_speed = prompt_tokens / elapsed if elapsed > 0 and prompt_tokens else 0
+                    tg_speed = gen_tokens / elapsed if elapsed > 0 and gen_tokens else 0
+
+                    self._send_json({
+                        "model": model,
+                        "backend": "llama.cpp",
+                        "prompt_tokens_per_second": round(pp_speed, 1),
+                        "tokens_per_second": round(tg_speed, 1),
+                        "total_time_seconds": round(elapsed, 2),
+                        "prompt_tokens": prompt_tokens,
+                        "generated_tokens": gen_tokens,
+                        "response": result.get("content", "")[:200],
+                    })
+                except Exception as e:
+                    self._send_error(f"Benchmark failed: {e}")
+
+        # ── Studio API: /api/merge ────────────────────────
+        elif path == "/api/merge":
+            base = body.get("base", "")
+            lora_adapter = body.get("lora", "")
+            output = body.get("output", "merged.gguf")
+            merge_type = body.get("type", "q4_0")
+
+            if not base or not lora_adapter:
+                self._send_error("'base' and 'lora' are required")
+                return
+
+            self.send_response(200)
+            self._set_cors()
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+
+            llama_server = LLAMA_SERVER_PATH
+            if not os.path.exists(llama_server):
+                self.wfile.write(f"ERROR: llama-server not found at {llama_server}\n".encode())
+                return
+
+            # Use llama-export-lora if available
+            export_lora = os.path.join(os.path.dirname(llama_server), "llama-export-lora")
+            if os.path.exists(export_lora):
+                cmd = [export_lora, "-m", base, "-l", lora_adapter, "-o", output, "-t", merge_type]
+            else:
+                cmd = [llama_server, "-m", base, "--lora", lora_adapter, "--save", output]
+
+            try:
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                for line in proc.stdout:
+                    self.wfile.write(line.encode())
+                    self.wfile.flush()
+                proc.wait()
+                if proc.returncode == 0:
+                    self.wfile.write(f"\n✅ Merge complete: {output}\n".encode())
+                else:
+                    self.wfile.write(f"\n❌ Merge failed (exit code {proc.returncode})\n".encode())
+            except Exception as e:
+                self.wfile.write(f"\nERROR: {e}\n".encode())
+
+        # ── Studio API: /api/quantize ──────────────────────
+        elif path == "/api/quantize":
+            model = body.get("model", "")
+            target = body.get("target", "q4_0")
+            output = body.get("output", "")
+
+            if not model:
+                self._send_error("'model' is required")
+                return
+
+            # Resolve model path
+            model_path = None
+            for f in Path(WORK_DIR).glob("*.gguf"):
+                if f.name == model or str(f) == model:
+                    model_path = str(f)
+                    break
+            if not model_path and os.path.exists(model):
+                model_path = model
+            if not model_path:
+                self._send_error(f"Model not found: {model}")
+                return
+
+            if not output:
+                base_name = Path(model_path).stem
+                output = str(Path(WORK_DIR) / f"{base_name}-{target}.gguf")
+
+            llama_quantize = os.path.join(os.path.dirname(LLAMA_SERVER_PATH), "llama-quantize")
+            if not os.path.exists(llama_quantize):
+                self._send_error(f"llama-quantize not found at {llama_quantize}")
+                return
+
+            self.send_response(200)
+            self._set_cors()
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+
+            cmd = [llama_quantize, model_path, output, target]
+            try:
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                for line in proc.stdout:
+                    self.wfile.write(line.encode())
+                    self.wfile.flush()
+                proc.wait()
+                if proc.returncode == 0:
+                    size_mb = os.path.getsize(output) / 1024**2 if os.path.exists(output) else 0
+                    self.wfile.write(f"\n✅ Quantization complete: {output} ({size_mb:.0f} MB)\n".encode())
+                else:
+                    self.wfile.write(f"\n❌ Quantization failed (exit code {proc.returncode})\n".encode())
+            except Exception as e:
+                self.wfile.write(f"\nERROR: {e}\n".encode())
+
+        # ── Studio API: /api/evaluate ──────────────────────
+        elif path == "/api/evaluate":
+            model = body.get("model", "")
+            eval_type = body.get("type", "perplexity")
+            eval_data = body.get("data", "")
+            max_samples = body.get("max_samples", 100)
+
+            if not model:
+                self._send_error("'model' is required")
+                return
+
+            # Resolve model path
+            model_path = None
+            for f in Path(WORK_DIR).glob("*.gguf"):
+                if f.name == model or str(f) == model:
+                    model_path = str(f)
+                    break
+            if not model_path and os.path.exists(model):
+                model_path = model
+            if not model_path:
+                self._send_error(f"Model not found: {model}")
+                return
+
+            llama_server = LLAMA_SERVER_PATH
+            if not os.path.exists(llama_server):
+                self._send_error(f"llama-server not found at {llama_server}")
+                return
+
+            self.send_response(200)
+            self._set_cors()
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+
+            # Perplexity evaluation using llama-perplexity
+            perplexity_bin = os.path.join(os.path.dirname(llama_server), "llama-perplexity")
+            if eval_type == "perplexity" and os.path.exists(perplexity_bin):
+                cmd = [perplexity_bin, "-m", model_path, "-t", "4"]
+                if eval_data and os.path.exists(eval_data):
+                    cmd.extend(["-f", eval_data])
+                try:
+                    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                    full_output = ""
+                    for line in proc.stdout:
+                        self.wfile.write(line.encode())
+                        self.wfile.flush()
+                        full_output += line
+                    proc.wait()
+                    # Try to extract perplexity from output
+                    ppl_match = re.search(r'perplexity\s*[:=]\s*([\d.]+)', full_output, re.IGNORECASE)
+                    if not ppl_match:
+                        ppl_match = re.search(r'([\d.]+)\s*\(perplexity', full_output)
+                    result = {
+                        "perplexity": float(ppl_match.group(1)) if ppl_match else None,
+                        "type": "perplexity",
+                        "model": model,
+                    }
+                    self.wfile.write(f"\n{json.dumps(result)}\n".encode())
+                except Exception as e:
+                    self.wfile.write(f"\nERROR: {e}\n".encode())
+            else:
+                # Fallback: simple generation-based evaluation
+                self.wfile.write("Evaluation mode: generation-based\n".encode())
+                self.wfile.write(f"Model: {model}\n".encode())
+                try:
+                    conn = _get_llama_conn()
+                    prompt = "The capital of France is Paris. The capital of Germany is"
+                    data = json.dumps({
+                        "prompt": prompt, "n_predict": 16,
+                        "temperature": 0.0, "stream": False,
+                    }).encode()
+                    t0 = time.time()
+                    conn.request("POST", "/completion", body=data,
+                                 headers={"Content-Type": "application/json"})
+                    resp = conn.getresponse()
+                    raw = resp.read()
+                    resp.close()
+                    _return_llama_conn(conn)
+                    elapsed = time.time() - t0
+                    result = json.loads(raw.decode("utf-8"))
+                    self.wfile.write(f"Generated: {result.get('content', '')}\n".encode())
+                    self.wfile.write(f"Time: {elapsed:.2f}s\n".encode())
+                    self.wfile.write(f"{json.dumps({'type': 'accuracy', 'accuracy': 0, 'model': model, 'tokens': result.get('tokens', 0), 'total': 1, 'correct': 0, 'loss': 0})}\n".encode())
+                except Exception as e:
+                    self.wfile.write(f"ERROR: {e}\n".encode())
+
         # ── Not found ─────────────────────────────────────────
         else:
             self._send_error("not found", 404)
@@ -750,6 +1025,10 @@ def main():
     print(f"  /api/export/<job_id>     — export job status")
     print(f"  /api/dataset             — list datasets")
     print(f"  /api/chat                — streaming chat (web UI)")
+    print(f"  /api/benchmark           — run benchmark")
+    print(f"  /api/quantize            — quantize GGUF model")
+    print(f"  /api/evaluate            — evaluate model (perplexity)")
+    print(f"  /api/merge               — merge LoRA into base model")
     print(f"  /api/train/metrics       — training metrics SSE")
     print()
 

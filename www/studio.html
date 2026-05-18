@@ -5,444 +5,982 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MojoLlama Studio</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #0d1117; --surface: #161b22; --border: #30363d;
-  --text: #e6edf3; --dim: #8b949e; --accent: #58a6ff;
-  --green: #3fb950; --yellow: #d29922; --red: #f85149;
-  --purple: #bc8cff; --orange: #f0883e;
+  --bg: #090c10; --surface: #12161e; --surface2: #181d27; --border: #252d3a;
+  --text: #e6edf3; --dim: #7d8590; --accent: #5b8def;
+  --accent2: #a37cf0; --green: #3fb950; --yellow: #d29922; --red: #f85149;
+  --orange: #f0883e; --cyan: #39d2c0; --pink: #f778ba;
+  --glass: rgba(18,22,30,0.85); --glass2: rgba(37,45,58,0.5);
+  --grad1: linear-gradient(135deg, #5b8def 0%, #a37cf0 50%, #f778ba 100%);
+  --grad2: linear-gradient(135deg, #3fb950 0%, #39d2c0 100%);
+  --grad3: linear-gradient(135deg, #f0883e 0%, #f85149 100%);
+  --radius: 12px; --radius-sm: 8px;
+  --shadow: 0 8px 32px rgba(0,0,0,0.3);
+  --shadow-sm: 0 2px 8px rgba(0,0,0,0.2);
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-       background: var(--bg); color: var(--text); min-height: 100vh; }
-.container { max-width: 1280px; margin: 0 auto; padding: 16px 24px; }
+body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+       background: var(--bg); color: var(--text); min-height: 100vh;
+       background-image: radial-gradient(ellipse at 20% 50%, rgba(91,141,239,0.04) 0%, transparent 50%),
+                         radial-gradient(ellipse at 80% 20%, rgba(163,124,240,0.03) 0%, transparent 50%); }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--dim); }
 
-/* Header */
-.header { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
-.header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
-.header h1 span { color: var(--accent); }
-.header .ver { color: var(--dim); font-size: 12px; }
-.header-actions { margin-left: auto; display: flex; align-items: center; gap: 16px; }
-.backend-badge { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 4px 10px; border-radius: 12px; border: 1px solid var(--border); cursor: pointer; transition: all .2s; }
-.backend-badge:hover { border-color: var(--accent); }
-.status-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
-.status-dot.online { background: var(--green); box-shadow: 0 0 6px var(--green); }
+/* Layout */
+.app { display: flex; height: 100vh; overflow: hidden; }
+
+/* Sidebar */
+.sidebar { width: 220px; background: var(--surface); border-right: 1px solid var(--border);
+           display: flex; flex-direction: column; flex-shrink: 0;
+           backdrop-filter: blur(12px); }
+.sidebar-header { padding: 20px 16px 16px; border-bottom: 1px solid var(--border); }
+.sidebar-header h1 { font-size: 18px; font-weight: 800; letter-spacing: -0.5px;
+                     background: var(--grad1); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.sidebar-header .ver { font-size: 11px; color: var(--dim); margin-top: 2px; }
+.sidebar-nav { flex: 1; padding: 12px 8px; overflow-y: auto; }
+.nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+            border-radius: var(--radius-sm); cursor: pointer; color: var(--dim);
+            font-size: 13px; font-weight: 500; transition: all .2s; margin-bottom: 2px;
+            position: relative; }
+.nav-item:hover { color: var(--text); background: var(--glass2); }
+.nav-item.active { color: var(--accent); background: rgba(91,141,239,0.1); }
+.nav-item.active::before { content: ''; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+                           width: 3px; height: 20px; border-radius: 0 2px 2px 0; background: var(--accent); }
+.nav-icon { font-size: 16px; width: 20px; text-align: center; }
+.nav-badge { margin-left: auto; font-size: 10px; padding: 1px 6px; border-radius: 8px;
+             background: rgba(91,141,239,0.15); color: var(--accent); font-weight: 600; }
+
+.sidebar-footer { padding: 12px; border-top: 1px solid var(--border); }
+.backend-status { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+                  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+                  cursor: pointer; transition: all .2s; font-size: 12px; }
+.backend-status:hover { border-color: var(--accent); }
+.status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.status-dot.online { background: var(--green); box-shadow: 0 0 8px var(--green); }
 .status-dot.offline { background: var(--red); }
-.refresh-btn { cursor: pointer; color: var(--dim); font-size: 16px; padding: 4px; border-radius: 4px; transition: all .2s; }
-.refresh-btn:hover { color: var(--text); background: var(--border); }
+.backend-info { flex: 1; overflow: hidden; }
+.backend-name { font-weight: 600; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.backend-uptime { color: var(--dim); font-size: 10px; }
 
-/* Tabs */
-.tabs { display: flex; gap: 2px; margin-bottom: 16px; flex-wrap: wrap; }
-.tab { padding: 8px 18px; border: 1px solid transparent; border-radius: 8px 8px 0 0;
-       cursor: pointer; color: var(--dim); font-size: 13px; font-weight: 500;
-       transition: all .2s; position: relative; }
-.tab:hover { color: var(--text); background: var(--surface); }
-.tab.active { color: var(--accent); border-color: var(--border) var(--border) var(--bg); background: transparent; }
-.tab.active::after { content: ''; position: absolute; bottom: -1px; left: 0; right: 0; height: 1px; background: var(--bg); }
+/* Main content */
+.main { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+.topbar { display: flex; align-items: center; gap: 12px; padding: 12px 24px;
+          border-bottom: 1px solid var(--border); background: var(--glass);
+          backdrop-filter: blur(12px); flex-shrink: 0; }
+.topbar-title { font-size: 16px; font-weight: 700; }
+.topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+
+.content { flex: 1; overflow-y: auto; padding: 20px 24px; }
 
 /* Panels */
-.panel { display: none; animation: fadeIn .2s ease; }
+.panel { display: none; animation: fadeSlide .3s ease; }
 .panel.active { display: block; }
-@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes fadeSlide { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
 /* Cards */
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 16px; }
-.card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
-.card-header h3 { font-size: 15px; font-weight: 600; }
-.card-header .badge { font-size: 11px; padding: 2px 8px; border-radius: 8px; background: var(--bg); color: var(--dim); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+        padding: 20px; margin-bottom: 16px; transition: border-color .2s; }
+.card:hover { border-color: rgba(91,141,239,0.3); }
+.card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.card-header h3 { font-size: 15px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.card-header h3 .icon { font-size: 18px; }
+.badge { font-size: 10px; padding: 2px 8px; border-radius: 8px; font-weight: 600; }
+.badge-new { background: rgba(63,185,80,0.15); color: var(--green); }
+.badge-pro { background: rgba(163,124,240,0.15); color: var(--accent2); }
+.badge-beta { background: rgba(240,136,62,0.15); color: var(--orange); }
 
 /* Forms */
-label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 4px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
+label { display: block; font-size: 11px; color: var(--dim); margin-bottom: 4px;
+        font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
 input, select, textarea { width: 100%; padding: 8px 12px; background: var(--bg);
-       border: 1px solid var(--border); border-radius: 6px; color: var(--text);
-       font-size: 13px; margin-bottom: 12px; transition: border .2s; }
-input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
-textarea { font-family: 'Monaco','Menlo','Consolas',monospace; font-size: 12px; resize: vertical; min-height: 60px; }
+       border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text);
+       font-size: 13px; margin-bottom: 10px; transition: all .2s; font-family: inherit; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent);
+         box-shadow: 0 0 0 3px rgba(91,141,239,0.1); }
+textarea { font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', monospace; font-size: 12px;
+           resize: vertical; min-height: 60px; line-height: 1.5; }
 
 /* Buttons */
-.btn { padding: 7px 18px; border: none; border-radius: 6px; cursor: pointer;
-       font-size: 13px; font-weight: 600; transition: all .2s; display: inline-flex; align-items: center; gap: 6px; }
+.btn { padding: 8px 18px; border: none; border-radius: var(--radius-sm); cursor: pointer;
+       font-size: 13px; font-weight: 600; transition: all .15s; display: inline-flex;
+       align-items: center; gap: 6px; font-family: inherit; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn:active:not(:disabled) { transform: scale(0.97); }
 .btn-primary { background: var(--accent); color: #fff; }
-.btn-primary:hover:not(:disabled) { filter: brightness(1.15); }
+.btn-primary:hover:not(:disabled) { background: #4d7fd4; box-shadow: var(--shadow-sm); }
 .btn-green { background: var(--green); color: #fff; }
-.btn-green:hover:not(:disabled) { filter: brightness(1.15); }
+.btn-green:hover:not(:disabled) { background: #2ea043; }
 .btn-red { background: var(--red); color: #fff; }
-.btn-red:hover:not(:disabled) { filter: brightness(1.15); }
+.btn-red:hover:not(:disabled) { background: #da3633; }
 .btn-dim { background: var(--border); color: var(--text); }
-.btn-dim:hover:not(:disabled) { background: #464f5c; }
-.btn-sm { padding: 4px 10px; font-size: 11px; }
-.btn-icon { padding: 6px; border-radius: 6px; cursor: pointer; background: transparent; border: 1px solid var(--border); color: var(--dim); transition: all .2s; }
-.btn-icon:hover { border-color: var(--accent); color: var(--text); }
+.btn-dim:hover:not(:disabled) { background: #363e4c; }
+.btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+.btn-outline:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.btn-sm { padding: 5px 12px; font-size: 12px; }
+.btn-xs { padding: 3px 8px; font-size: 11px; border-radius: 6px; }
+.btn-icon { padding: 6px 8px; border-radius: var(--radius-sm); cursor: pointer; background: transparent;
+            border: 1px solid var(--border); color: var(--dim); transition: all .2s; font-size: 14px; }
+.btn-icon:hover { border-color: var(--accent); color: var(--accent); background: rgba(91,141,239,0.05); }
 
-/* Grid layouts */
+/* Grid */
 .row { display: flex; gap: 12px; flex-wrap: wrap; }
 .row > * { flex: 1; min-width: 0; }
 .col-2 { flex: 2 !important; }
 .col-3 { flex: 3 !important; }
+.col-auto { flex: 0 0 auto !important; }
 .mb-8 { margin-bottom: 8px; }
 .mb-12 { margin-bottom: 12px; }
 .mt-8 { margin-top: 8px; }
 .mt-12 { margin-top: 12px; }
+.gap-16 { gap: 16px; }
 
-/* Log/output */
-.log { background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
-       padding: 10px 14px; font-family: 'Monaco','Menlo','Consolas',monospace;
-       font-size: 12px; line-height: 1.5; overflow-y: auto; white-space: pre-wrap;
-       word-break: break-all; max-height: 300px; min-height: 40px; }
-.log::-webkit-scrollbar { width: 6px; }
-.log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+/* Log */
+.log { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+       padding: 12px 14px; font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', monospace;
+       font-size: 12px; line-height: 1.6; overflow-y: auto; white-space: pre-wrap;
+       word-break: break-all; max-height: 300px; min-height: 40px; color: var(--dim); }
 
 /* Chat */
-.chat-container { border: 1px solid var(--border); border-radius: 10px;
-                  background: var(--bg); overflow: hidden; }
-.chat-messages { height: 420px; overflow-y: auto; padding: 16px;
-                 scroll-behavior: smooth; }
-.chat-messages::-webkit-scrollbar { width: 6px; }
-.chat-messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-.msg { margin-bottom: 18px; animation: msgIn .2s ease; }
-@keyframes msgIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-.msg-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-.msg-avatar { width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
-.msg-avatar.user { background: #1f3a5f; color: var(--accent); }
-.msg-avatar.assistant { background: #1f3f2a; color: var(--green); }
-.msg-name { font-size: 12px; font-weight: 600; }
+.chat-container { border: 1px solid var(--border); border-radius: var(--radius);
+                  background: var(--bg); overflow: hidden; display: flex; flex-direction: column; height: 520px; }
+.chat-messages { flex: 1; overflow-y: auto; padding: 16px; scroll-behavior: smooth; }
+.msg { margin-bottom: 16px; animation: msgIn .25s ease; }
+@keyframes msgIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+.msg-row { display: flex; gap: 10px; }
+.msg-avatar { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center;
+              justify-content: center; font-size: 13px; font-weight: 700; flex-shrink: 0; }
+.msg-avatar.user { background: linear-gradient(135deg, #1f3a5f, #1a2f4f); color: var(--accent); }
+.msg-avatar.assistant { background: linear-gradient(135deg, #1f3f2a, #1a3525); color: var(--green); }
+.msg-avatar.system { background: linear-gradient(135deg, #3f2a1f, #35251a); color: var(--orange); }
+.msg-body { flex: 1; min-width: 0; }
+.msg-name { font-size: 12px; font-weight: 600; margin-bottom: 3px; }
 .msg-name.user { color: var(--accent); }
 .msg-name.assistant { color: var(--green); }
-.msg-meta { font-size: 10px; color: var(--dim); margin-left: auto; }
-.msg-text { margin-left: 34px; font-size: 14px; line-height: 1.6; color: var(--text); }
+.msg-name.system { color: var(--orange); }
+.msg-meta { font-size: 10px; color: var(--dim); margin-left: 8px; }
+.msg-text { font-size: 14px; line-height: 1.65; color: var(--text); }
 .msg-text p { margin-bottom: 8px; }
-.msg-text pre { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: 12px; overflow-x: auto; margin: 8px 0; }
-.msg-text code { background: var(--surface); padding: 1px 5px; border-radius: 3px; font-size: 13px; }
+.msg-text pre { background: var(--surface2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+               padding: 12px; font-size: 12px; overflow-x: auto; margin: 8px 0; }
+.msg-text code { background: var(--surface2); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
 .msg-text pre code { background: none; padding: 0; }
-.chat-input-area { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); }
-.chat-input-area input { margin-bottom: 0; flex: 1; }
-.typing-indicator { display: inline-flex; gap: 4px; align-items: center; margin-left: 34px; padding: 8px 0; }
+.chat-input-area { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); align-items: flex-end; }
+.chat-input-area textarea { flex: 1; margin-bottom: 0; min-height: 40px; max-height: 120px; resize: none; }
+.typing-indicator { display: inline-flex; gap: 4px; align-items: center; padding: 8px 0; margin-left: 40px; }
 .typing-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--dim); animation: typingBounce 1.4s infinite ease; }
 .typing-dot:nth-child(2) { animation-delay: 0.2s; }
 .typing-dot:nth-child(3) { animation-delay: 0.4s; }
 @keyframes typingBounce { 0%,60%,100% { transform: translateY(0); } 30% { transform: translateY(-6px); } }
 
-/* Metrics / Stats */
-.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
-.stat-card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px; text-align: center; }
-.stat-value { font-size: 24px; font-weight: 700; color: var(--accent); }
-.stat-label { font-size: 11px; color: var(--dim); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.5px; }
+/* Stats grid */
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.stat-card { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+             padding: 14px; text-align: center; position: relative; overflow: hidden; }
+.stat-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; }
+.stat-card:nth-child(1)::before { background: var(--grad1); }
+.stat-card:nth-child(2)::before { background: var(--grad2); }
+.stat-card:nth-child(3)::before { background: var(--grad3); }
+.stat-card:nth-child(4)::before { background: linear-gradient(135deg, var(--cyan), var(--accent)); }
+.stat-value { font-size: 22px; font-weight: 800; letter-spacing: -0.5px; }
+.stat-value.c1 { color: var(--accent); }
+.stat-value.c2 { color: var(--green); }
+.stat-value.c3 { color: var(--orange); }
+.stat-value.c4 { color: var(--cyan); }
+.stat-label { font-size: 10px; color: var(--dim); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
 
-/* Models grid */
-.model-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
-.model-card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 14px; cursor: pointer; transition: all .2s; }
-.model-card:hover { border-color: var(--accent); transform: translateY(-1px); }
-.model-card.selected { border-color: var(--accent); box-shadow: 0 0 12px rgba(88,166,255,0.15); }
-.model-card h4 { font-size: 13px; margin-bottom: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Model grid */
+.model-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+.model-card { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+              padding: 14px; cursor: pointer; transition: all .2s; }
+.model-card:hover { border-color: var(--accent); transform: translateY(-1px); box-shadow: var(--shadow-sm); }
+.model-card.selected { border-color: var(--accent); box-shadow: 0 0 16px rgba(91,141,239,0.15); }
+.model-card h4 { font-size: 13px; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .model-card .model-meta { font-size: 11px; color: var(--dim); }
-.model-card .model-size { font-size: 11px; color: var(--accent); font-weight: 600; }
+.model-card .model-size { font-size: 12px; color: var(--accent); font-weight: 700; }
 
-/* Chart wrapper */
-.chart-wrapper { position: relative; height: 220px; width: 100%; }
+/* Chart */
+.chart-wrapper { position: relative; height: 240px; width: 100%; }
 .chart-wrapper canvas { width: 100% !important; height: 100% !important; }
 
 /* Results table */
 .results-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.results-table th { text-align: left; padding: 8px 12px; border-bottom: 2px solid var(--border); color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
-.results-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
-.results-table tr:hover td { background: rgba(88,166,255,0.05); }
-
-/* Toast */
-.toast { position: fixed; bottom: 24px; right: 24px; padding: 12px 20px; border-radius: 8px; font-size: 13px; font-weight: 500; z-index: 1000; animation: slideUp .3s ease; max-width: 360px; }
-.toast.success { background: #1f3f2a; border: 1px solid var(--green); color: var(--green); }
-.toast.error { background: #3f1f1f; border: 1px solid var(--red); color: var(--red); }
-.toast.info { background: #1f2a3f; border: 1px solid var(--accent); color: var(--accent); }
-@keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+.results-table th { text-align: left; padding: 10px 14px; border-bottom: 2px solid var(--border);
+                    color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+.results-table td { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.results-table tr:hover td { background: rgba(91,141,239,0.03); }
 
 /* Slider */
-input[type="range"] { width: 100%; height: 4px; -webkit-appearance: none; background: var(--border); border-radius: 2px; outline: none; padding: 0; margin: 0; }
-input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); cursor: pointer; }
+input[type="range"] { width: 100%; height: 4px; -webkit-appearance: none; background: var(--border);
+                      border-radius: 2px; outline: none; padding: 0; margin: 0; border: none; }
+input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px;
+                      border-radius: 50%; background: var(--accent); cursor: pointer; border: 2px solid var(--bg);
+                      box-shadow: 0 0 4px rgba(91,141,239,0.3); }
 .range-row { display: flex; align-items: center; gap: 12px; }
 .range-row input[type="range"] { flex: 1; margin-bottom: 0; }
-.range-value { font-size: 13px; font-weight: 600; color: var(--accent); min-width: 36px; text-align: right; }
+.range-value { font-size: 13px; font-weight: 700; color: var(--accent); min-width: 40px; text-align: right;
+               font-family: 'JetBrains Mono', monospace; }
+
+/* Toast */
+.toast { position: fixed; bottom: 24px; right: 24px; padding: 12px 20px; border-radius: var(--radius-sm);
+         font-size: 13px; font-weight: 500; z-index: 1000; animation: slideUp .3s ease;
+         max-width: 360px; backdrop-filter: blur(12px); }
+.toast.success { background: rgba(31,63,42,0.9); border: 1px solid var(--green); color: var(--green); }
+.toast.error { background: rgba(63,31,31,0.9); border: 1px solid var(--red); color: var(--red); }
+.toast.info { background: rgba(31,42,63,0.9); border: 1px solid var(--accent); color: var(--accent); }
+@keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+
+/* Tag chips */
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 20px;
+        font-size: 11px; font-weight: 600; border: 1px solid var(--border); background: var(--bg); cursor: pointer; transition: all .2s; }
+.chip:hover { border-color: var(--accent); color: var(--accent); }
+.chip.active { background: rgba(91,141,239,0.15); border-color: var(--accent); color: var(--accent); }
+
+/* Collapsible */
+.collapse-toggle { cursor: pointer; display: flex; align-items: center; gap: 6px; font-size: 13px;
+                   font-weight: 600; color: var(--dim); margin-bottom: 8px; transition: color .2s; }
+.collapse-toggle:hover { color: var(--text); }
+.collapse-toggle .arrow { transition: transform .2s; font-size: 10px; }
+.collapse-toggle.open .arrow { transform: rotate(90deg); }
+.collapse-body { display: none; }
+.collapse-body.open { display: block; animation: fadeSlide .2s ease; }
+
+/* Template card */
+.template-card { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+                 padding: 14px; cursor: pointer; transition: all .2s; }
+.template-card:hover { border-color: var(--accent); }
+.template-card.selected { border-color: var(--accent); background: rgba(91,141,239,0.05);
+                          box-shadow: inset 0 0 0 1px var(--accent); }
+.template-card h4 { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.template-card p { font-size: 12px; color: var(--dim); line-height: 1.5; }
+.template-card .template-tags { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+
+/* Quant compare cards */
+.quant-card { text-align: center; padding: 16px; background: var(--bg); border: 1px solid var(--border);
+              border-radius: var(--radius-sm); transition: all .2s; }
+.quant-card:hover { border-color: var(--accent); }
+.quant-card .quant-name { font-size: 18px; font-weight: 800; letter-spacing: -0.5px; }
+.quant-card .quant-bits { font-size: 12px; color: var(--dim); margin-top: 2px; }
+.quant-card .quant-speed { font-size: 20px; font-weight: 800; color: var(--green); margin-top: 8px; }
+.quant-card .quant-size { font-size: 12px; color: var(--accent); font-weight: 600; }
+
+/* Dialog overlay */
+.dialog-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 1000;
+                  display: flex; align-items: center; justify-content: center;
+                  animation: fadeIn .2s ease; backdrop-filter: blur(4px); }
+.dialog { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+          padding: 28px; max-width: 520px; width: 90%; box-shadow: var(--shadow); }
+.dialog h3 { margin-bottom: 16px; font-size: 17px; font-weight: 700; }
+.dialog-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
 /* Status colors */
-.text-green { color: var(--green); }
-.text-red { color: var(--red); }
-.text-accent { color: var(--accent); }
-.text-dim { color: var(--dim); }
-.text-yellow { color: var(--yellow); }
+.text-green { color: var(--green); } .text-red { color: var(--red); }
+.text-accent { color: var(--accent); } .text-dim { color: var(--dim); }
+.text-yellow { color: var(--yellow); } .text-orange { color: var(--orange); }
 
+/* Responsive */
+@media (max-width: 900px) {
+  .sidebar { width: 60px; }
+  .sidebar-header h1 { font-size: 0; }
+  .sidebar-header h1::first-letter { font-size: 18px; -webkit-text-fill-color: var(--accent); }
+  .nav-item span:not(.nav-icon) { display: none; }
+  .nav-badge { display: none; }
+  .backend-info { display: none; }
+  .content { padding: 16px; }
+}
 @media (max-width: 768px) {
-  .container { padding: 12px; }
+  .sidebar { display: none; }
   .row { flex-direction: column; }
-  .stats-grid { grid-template-columns: repeat(2, 1fr); }
-  .chat-messages { height: 300px; }
+  .chat-container { height: 400px; }
 }
 </style>
 </head>
 <body>
-<div class="container">
-  <!-- Header -->
-  <div class="header">
-    <h1><span>▲</span> MojoLlama Studio</h1>
-    <span class="ver">v0.2.0</span>
-  <div class="header-actions">
-    <div class="backend-badge" onclick="showServerSettings()" title="Click to configure server">
-      <span class="status-dot offline" id="statusDot"></span>
-      <span id="backendName" style="color:var(--red)">offline</span>
-      <span id="backendSpeed" style="color:var(--dim);font-size:11px;"></span>
+<div class="app">
+  <!-- Sidebar Navigation -->
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <h1>MojoLlama</h1>
+      <div class="ver">Studio v0.3.0</div>
     </div>
-    <span class="refresh-btn" onclick="refreshBackend();loadModels()" title="Refresh">↻</span>
-    <span class="refresh-btn" onclick="showServerSettings()" title="Server settings">⚙</span>
-  </div>
-  </div>
-
-  <!-- Tabs -->
-  <div class="tabs">
-    <div class="tab active" data-tab="chat">💬 Chat</div>
-    <div class="tab" data-tab="train">🎓 Train</div>
-    <div class="tab" data-tab="dataset">📊 Dataset</div>
-    <div class="tab" data-tab="export">📤 Export</div>
-    <div class="tab" data-tab="benchmark">⚡ Benchmark</div>
-    <div class="tab" data-tab="merge">🔗 Merge</div>
-  </div>
-
-  <!-- ═══════════ CHAT ═══════════ -->
-  <div class="panel active" id="panel-chat">
-    <div class="card">
-      <div class="card-header">
-        <h3>Chat</h3>
-        <div style="display:flex;gap:8px;align-items:center">
-          <select id="chatModel" style="width:auto;margin:0;padding:4px 10px;font-size:12px;min-width:200px">
-            <option value="">Select model...</option>
-          </select>
-          <button class="btn btn-dim btn-sm" onclick="clearChat()">Clear</button>
-        </div>
+    <div class="sidebar-nav">
+      <div class="nav-item active" data-tab="chat">
+        <span class="nav-icon">💬</span><span>Chat</span>
       </div>
-      <div class="chat-container">
-        <div class="chat-messages" id="chatMessages">
-          <div class="msg">
-            <div class="msg-header">
-              <div class="msg-avatar assistant">M</div>
-              <span class="msg-name assistant">MojoLlama</span>
-              <span class="msg-meta">ready</span>
+      <div class="nav-item" data-tab="train">
+        <span class="nav-icon">🎓</span><span>Train</span>
+        <span class="nav-badge">LoRA</span>
+      </div>
+      <div class="nav-item" data-tab="dataset">
+        <span class="nav-icon">📊</span><span>Dataset</span>
+      </div>
+      <div class="nav-item" data-tab="export">
+        <span class="nav-icon">📤</span><span>Export</span>
+      </div>
+      <div class="nav-item" data-tab="benchmark">
+        <span class="nav-icon">⚡</span><span>Benchmark</span>
+      </div>
+      <div class="nav-item" data-tab="evaluate">
+        <span class="nav-icon">🎯</span><span>Evaluate</span>
+        <span class="nav-badge">New</span>
+      </div>
+      <div class="nav-item" data-tab="quantize">
+        <span class="nav-icon">🔮</span><span>Quantize</span>
+        <span class="nav-badge">New</span>
+      </div>
+      <div class="nav-item" data-tab="merge">
+        <span class="nav-icon">🔗</span><span>Merge</span>
+      </div>
+      <div class="nav-item" data-tab="templates">
+        <span class="nav-icon">📋</span><span>Templates</span>
+        <span class="nav-badge">New</span>
+      </div>
+    </div>
+    <div class="sidebar-footer">
+      <div class="backend-status" onclick="showServerSettings()" title="Click to configure server">
+        <span class="status-dot offline" id="statusDot"></span>
+        <div class="backend-info">
+          <span class="backend-name" id="backendName" style="color:var(--red)">offline</span>
+          <span class="backend-uptime" id="backendSpeed"></span>
+        </div>
+        <span class="btn-icon" style="border:none;padding:0;font-size:12px" title="Settings">⚙</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Content -->
+  <div class="main">
+    <div class="topbar">
+      <div class="topbar-title" id="topbarTitle">💬 Chat</div>
+      <div class="topbar-actions">
+        <span class="btn-icon" onclick="refreshAll()" title="Refresh">↻</span>
+        <span class="btn-icon" onclick="showServerSettings()" title="Server settings">⚙</span>
+      </div>
+    </div>
+
+    <div class="content">
+
+      <!-- ═══════════ CHAT ═══════════ -->
+      <div class="panel active" id="panel-chat">
+        <div class="row mb-12">
+          <div style="flex:0 0 auto">
+            <label>Model</label>
+            <select id="chatModel" style="width:220px;margin-bottom:0">
+              <option value="">Select model...</option>
+            </select>
+          </div>
+          <div style="flex:0 0 auto">
+            <label>Temperature</label>
+            <div class="range-row">
+              <input type="range" id="chatTemp" min="0" max="2" step="0.05" value="0.7"
+                     oninput="document.getElementById('chatTempVal').textContent=this.value">
+              <span class="range-value" id="chatTempVal">0.7</span>
             </div>
-            <div class="msg-text">Hello! I'm <strong>MojoLlama</strong>. Select a model from the dropdown above and start chatting. I support <strong>real-time streaming</strong> — responses appear token by token.</div>
+          </div>
+          <div style="flex:0 0 auto">
+            <label>Top P</label>
+            <div class="range-row">
+              <input type="range" id="chatTopP" min="0" max="1" step="0.05" value="0.9"
+                     oninput="document.getElementById('chatTopPVal').textContent=this.value">
+              <span class="range-value" id="chatTopPVal">0.9</span>
+            </div>
+          </div>
+          <div style="flex:0 0 auto">
+            <label>Max Tokens</label>
+            <input type="number" id="chatMaxTokens" value="512" style="width:80px;margin-bottom:0">
+          </div>
+          <div style="flex:0 0 auto;display:flex;align-items:flex-end;gap:6px;margin-left:auto">
+            <button class="btn btn-dim btn-sm" onclick="clearChat()">Clear</button>
           </div>
         </div>
-        <div class="chat-input-area">
-          <input type="text" id="chatInput" placeholder="Type a message..." autofocus>
-          <button class="btn btn-primary" onclick="sendChat()" id="chatSendBtn">Send</button>
-        </div>
-      </div>
-    </div>
-    <div class="card" style="padding:12px 16px">
-      <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--dim)">
-        <span>⏎ <kbd style="background:var(--border);padding:1px 6px;border-radius:3px;font-size:11px">Enter</kbd> to send</span>
-        <span>⚡ Streaming: <span class="text-green">ON</span></span>
-        <span id="chatStats">0 messages</span>
-      </div>
-    </div>
-  </div>
 
-  <!-- ═══════════ TRAIN ═══════════ -->
-  <div class="panel" id="panel-train">
-    <div class="card">
-      <div class="card-header"><h3>LoRA Fine-tuning Configuration</h3></div>
-      <div class="row mb-12">
-        <div>
-          <label>Base Model</label>
-          <select id="trainModel"><option value="">Select a model...</option></select>
-        </div>
-        <div>
-          <label>Dataset (JSONL)</label>
-          <div style="display:flex;gap:8px">
-            <input type="text" id="trainData" placeholder="dataset.jsonl or path" style="flex:1;margin:0">
-            <button class="btn btn-dim btn-sm" onclick="document.getElementById('trainData').value='/tmp/e2e_test.jsonl'">Use test</button>
+        <div class="card" style="padding:0;margin-bottom:12px">
+          <div class="chat-container">
+            <div class="chat-messages" id="chatMessages">
+              <div class="msg">
+                <div class="msg-row">
+                  <div class="msg-avatar assistant">M</div>
+                  <div class="msg-body">
+                    <div class="msg-name assistant">MojoLlama <span class="msg-meta">ready</span></div>
+                    <div class="msg-text">Hello! I'm <strong>MojoLlama</strong>. Select a model and start chatting. I support <strong>streaming</strong>, configurable <strong>temperature</strong>, and <strong>system prompts</strong>.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="chat-input-area">
+              <textarea id="chatInput" placeholder="Type a message... (Shift+Enter for new line)" rows="1"
+                        oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'"></textarea>
+              <button class="btn btn-primary" onclick="sendChat()" id="chatSendBtn">Send</button>
+              <button class="btn btn-red btn-sm" onclick="stopChat()" id="chatStopBtn" style="display:none">Stop</button>
+            </div>
           </div>
         </div>
-      </div>
-      <div class="row mb-12">
-        <div>
-          <label>LoRA Rank</label>
-          <div class="range-row">
-            <input type="range" id="trainRank" min="4" max="128" value="16" oninput="document.getElementById('trainRankVal').textContent=this.value">
-            <span class="range-value" id="trainRankVal">16</span>
-          </div>
-        </div>
-        <div>
-          <label>Learning Rate</label>
-          <input type="text" id="trainLR" value="1e-4">
-        </div>
-        <div>
-          <label>Steps</label>
-          <input type="number" id="trainSteps" value="100">
-        </div>
-        <div>
-          <label>Batch Size</label>
-          <input type="number" id="trainBatch" value="4">
-        </div>
-      </div>
-      <div style="display:flex;gap:8px">
-        <button class="btn btn-green" onclick="startTraining()" id="trainStartBtn">▶ Start Training</button>
-        <button class="btn btn-red" onclick="stopTraining()" id="trainStopBtn" disabled>■ Stop</button>
-      </div>
-    </div>
-    <div class="row mb-8">
-      <div class="col-3">
-        <div class="card">
-          <div class="card-header"><h3>Training Metrics</h3><span class="badge" id="trainStatusBadge">idle</span></div>
-          <div class="chart-wrapper"><canvas id="lossChart"></canvas></div>
-          <div class="stats-grid mt-8">
-            <div class="stat-card"><div class="stat-value" id="trainStep">0</div><div class="stat-label">Step</div></div>
-            <div class="stat-card"><div class="stat-value" id="trainLoss">—</div><div class="stat-label">Loss</div></div>
-            <div class="stat-card"><div class="stat-value" id="trainProgress">0%</div><div class="stat-label">Progress</div></div>
-            <div class="stat-card"><div class="stat-value" id="trainSpeed">—</div><div class="stat-label">Steps/s</div></div>
-          </div>
-        </div>
-      </div>
-      <div style="flex:1">
-        <div class="card">
-          <div class="card-header"><h3>Training Log</h3></div>
-          <div class="log" id="trainLog" style="max-height:380px">Training not started.</div>
-        </div>
-      </div>
-    </div>
-  </div>
 
-  <!-- ═══════════ DATASET ═══════════ -->
-  <div class="panel" id="panel-dataset">
-    <div class="row mb-8">
-      <div class="col-3">
-        <div class="card">
-          <div class="card-header"><h3>Create Dataset</h3></div>
-          <label>Enter prompts (one per line)</label>
-          <textarea id="dsPrompts" rows="6" placeholder="What is machine learning?&#10;Explain transformers&#10;How does attention work?&#10;Write code for a neural network"></textarea>
-          <label>Output file</label>
-          <input type="text" id="dsOutput" value="dataset.jsonl">
-          <button class="btn btn-primary" onclick="createDataset()">Create Dataset</button>
-          <div class="log mt-8" id="dsLog" style="max-height:120px">Ready.</div>
+        <div class="card" style="padding:10px 16px">
+          <div class="collapse-toggle" onclick="toggleCollapse(this)">
+            <span class="arrow">▶</span> System Prompt &amp; Advanced
+          </div>
+          <div class="collapse-body" id="chatAdvanced">
+            <label>System Prompt</label>
+            <textarea id="chatSystemPrompt" rows="3" placeholder="You are a helpful AI assistant...">You are a helpful, knowledgeable AI assistant powered by MojoLlama.</textarea>
+            <div class="row">
+              <div>
+                <label>Frequency Penalty</label>
+                <div class="range-row">
+                  <input type="range" id="chatFreqPen" min="0" max="2" step="0.1" value="0"
+                         oninput="document.getElementById('chatFreqPenVal').textContent=this.value">
+                  <span class="range-value" id="chatFreqPenVal">0</span>
+                </div>
+              </div>
+              <div>
+                <label>Presence Penalty</label>
+                <div class="range-row">
+                  <input type="range" id="chatPresPen" min="0" max="2" step="0.1" value="0"
+                         oninput="document.getElementById('chatPresPenVal').textContent=this.value">
+                  <span class="range-value" id="chatPresPenVal">0</span>
+                </div>
+              </div>
+              <div>
+                <label>Repeat Penalty</label>
+                <div class="range-row">
+                  <input type="range" id="chatRepeatPen" min="1" max="2" step="0.05" value="1.1"
+                         oninput="document.getElementById('chatRepeatPenVal').textContent=this.value">
+                  <span class="range-value" id="chatRepeatPenVal">1.1</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="font-size:12px;color:var(--dim);display:flex;gap:16px;flex-wrap:wrap">
+          <span>⏎ <kbd style="background:var(--border);padding:1px 6px;border-radius:4px;font-size:10px">Enter</kbd> to send, Shift+Enter for newline</span>
+          <span>⚡ Streaming: <span class="text-green">ON</span></span>
+          <span id="chatStats">0 messages</span>
         </div>
       </div>
-      <div style="flex:1">
+
+      <!-- ═══════════ TRAIN ═══════════ -->
+      <div class="panel" id="panel-train">
         <div class="card">
-          <div class="card-header"><h3>Auto-Label Dataset</h3><span class="badge">✨ New</span></div>
-          <label>Use a loaded model to auto-generate completions for your prompts</label>
-          <div class="row mb-8">
+          <div class="card-header">
+            <h3><span class="icon">🎓</span> LoRA Fine-tuning</h3>
+            <div style="display:flex;gap:6px;align-items:center">
+              <select id="trainTemplate" style="width:auto;margin:0;padding:4px 10px;font-size:12px;min-width:160px"
+                      onchange="applyTrainTemplate(this.value)">
+                <option value="">Custom Config</option>
+                <option value="light">Light (r=8, 100 steps)</option>
+                <option value="balanced">Balanced (r=16, 500 steps)</option>
+                <option value="deep">Deep (r=64, 2000 steps)</option>
+                <option value="qlora">QLoRA (r=32, 1000 steps)</option>
+              </select>
+              <span class="badge badge-pro">LoRA</span>
+            </div>
+          </div>
+          <div class="row mb-12">
             <div>
-              <label>Model</label>
-              <select id="dsModel"><option value="">Select model...</option></select>
+              <label>Base Model</label>
+              <select id="trainModel"><option value="">Select a model...</option></select>
             </div>
             <div>
-              <label>Input JSONL</label>
-              <input type="text" id="dsInputFile" placeholder="prompts.jsonl">
+              <label>Dataset (JSONL)</label>
+              <div style="display:flex;gap:8px">
+                <input type="text" id="trainData" placeholder="dataset.jsonl or path" style="flex:1;margin:0">
+                <button class="btn btn-dim btn-xs" onclick="document.getElementById('trainData').value='/tmp/e2e_test.jsonl'">Test</button>
+              </div>
+            </div>
+          </div>
+          <div class="row mb-12">
+            <div>
+              <label>LoRA Rank (r)</label>
+              <div class="range-row">
+                <input type="range" id="trainRank" min="1" max="128" value="16"
+                       oninput="document.getElementById('trainRankVal').textContent=this.value">
+                <span class="range-value" id="trainRankVal">16</span>
+              </div>
+            </div>
+            <div>
+              <label>LoRA Alpha</label>
+              <input type="number" id="trainAlpha" value="32">
+            </div>
+            <div>
+              <label>Learning Rate</label>
+              <input type="text" id="trainLR" value="2e-4">
+            </div>
+            <div>
+              <label>LR Scheduler</label>
+              <select id="trainScheduler">
+                <option value="cosine">Cosine</option>
+                <option value="linear">Linear</option>
+                <option value="constant">Constant</option>
+                <option value="cosine_restarts">Cosine w/ Restarts</option>
+              </select>
+            </div>
+          </div>
+          <div class="row mb-12">
+            <div>
+              <label>Steps</label>
+              <input type="number" id="trainSteps" value="100">
+            </div>
+            <div>
+              <label>Batch Size</label>
+              <input type="number" id="trainBatch" value="4">
+            </div>
+            <div>
+              <label>Gradient Accumulation</label>
+              <input type="number" id="trainGradAccum" value="1">
+            </div>
+            <div>
+              <label>Warmup Steps</label>
+              <input type="number" id="trainWarmup" value="10">
+            </div>
+          </div>
+
+          <div class="collapse-toggle" onclick="toggleCollapse(this)">
+            <span class="arrow">▶</span> Advanced Parameters
+          </div>
+          <div class="collapse-body" id="trainAdvanced">
+            <div class="row mb-12">
+              <div>
+                <label>Weight Decay</label>
+                <input type="text" id="trainWeightDecay" value="0.01">
+              </div>
+              <div>
+                <label>Max Context Length</label>
+                <input type="number" id="trainCtxLen" value="2048">
+              </div>
+              <div>
+                <label>Target Modules</label>
+                <input type="text" id="trainModules" placeholder="q_proj,v_proj,k_proj,o_proj" value="q_proj,v_proj">
+              </div>
+              <div>
+                <label>LoRA Dropout</label>
+                <input type="text" id="trainDropout" value="0.05">
+              </div>
+            </div>
+            <div class="row mb-12">
+              <div>
+                <label>Save Checkpoint Every N Steps</label>
+                <input type="number" id="trainCheckpointEvery" value="100">
+              </div>
+              <div>
+                <label>Resume from Checkpoint</label>
+                <input type="text" id="trainResume" placeholder="path/to/checkpoint">
+              </div>
+              <div>
+                <label>Seed</label>
+                <input type="number" id="trainSeed" value="42">
+              </div>
+              <div>
+                <label>Evaluation Steps</label>
+                <input type="number" id="trainEvalSteps" value="0">
+              </div>
+            </div>
+            <div class="row">
+              <div style="flex:0 0 auto;display:flex;gap:12px;align-items:center">
+                <label style="margin-bottom:0;display:flex;align-items:center;gap:6px;cursor:pointer">
+                  <input type="checkbox" id="trainFlashAttn" checked style="width:auto;margin:0"> Flash Attention
+                </label>
+                <label style="margin-bottom:0;display:flex;align-items:center;gap:6px;cursor:pointer">
+                  <input type="checkbox" id="trainFp16" checked style="width:auto;margin:0"> FP16
+                </label>
+                <label style="margin-bottom:0;display:flex;align-items:center;gap:6px;cursor:pointer">
+                  <input type="checkbox" id="trainGradientCheckpointing" style="width:auto;margin:0"> Gradient Checkpointing
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:8px;margin-top:12px">
+            <button class="btn btn-green" onclick="startTraining()" id="trainStartBtn">▶ Start Training</button>
+            <button class="btn btn-red" onclick="stopTraining()" id="trainStopBtn" disabled>■ Stop</button>
+            <button class="btn btn-outline btn-sm" onclick="resetTrainConfig()">Reset</button>
+          </div>
+        </div>
+
+        <div class="row mb-8">
+          <div class="col-3">
+            <div class="card">
+              <div class="card-header">
+                <h3><span class="icon">📉</span> Training Metrics</h3>
+                <span class="badge badge-new" id="trainStatusBadge">idle</span>
+              </div>
+              <div class="chart-wrapper"><canvas id="lossChart"></canvas></div>
+              <div class="stats-grid mt-8">
+                <div class="stat-card"><div class="stat-value c1" id="trainStep">0</div><div class="stat-label">Step</div></div>
+                <div class="stat-card"><div class="stat-value c2" id="trainLoss">—</div><div class="stat-label">Loss</div></div>
+                <div class="stat-card"><div class="stat-value c3" id="trainProgress">0%</div><div class="stat-label">Progress</div></div>
+                <div class="stat-card"><div class="stat-value c4" id="trainSpeed">—</div><div class="stat-label">Steps/s</div></div>
+              </div>
+            </div>
+          </div>
+          <div style="flex:1">
+            <div class="card">
+              <div class="card-header"><h3><span class="icon">📜</span> Training Log</h3></div>
+              <div class="log" id="trainLog" style="max-height:420px">Training not started.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════════ DATASET ═══════════ -->
+      <div class="panel" id="panel-dataset">
+        <div class="row mb-8 gap-16">
+          <div class="col-2">
+            <div class="card">
+              <div class="card-header"><h3><span class="icon">📝</span> Create Dataset</h3></div>
+              <label>Format</label>
+              <select id="dsFormat">
+                <option value="alpaca">Alpaca (instruction/input/output)</option>
+                <option value="sharegpt">ShareGPT (conversations)</option>
+                <option value="jsonl">Simple JSONL (prompt/completion)</option>
+              </select>
+              <label id="dsField1Label">Instruction</label>
+              <textarea id="dsField1" rows="5" placeholder="What is machine learning?&#10;Explain transformers&#10;How does attention work?"></textarea>
+              <label id="dsField2Label">Input (optional)</label>
+              <textarea id="dsField2" rows="2" placeholder="Context or input text per line (leave blank if none)"></textarea>
+              <label>Output file</label>
+              <input type="text" id="dsOutput" value="dataset.jsonl">
+              <button class="btn btn-primary" onclick="createDataset()">Create Dataset</button>
+              <div class="log mt-8" id="dsLog" style="max-height:120px">Ready.</div>
+            </div>
+          </div>
+          <div style="flex:1">
+            <div class="card">
+              <div class="card-header">
+                <h3><span class="icon">✨</span> Auto-Label Dataset</h3>
+                <span class="badge badge-new">Auto</span>
+              </div>
+              <label>Use a loaded model to auto-generate completions for your prompts</label>
+              <div class="row mb-8">
+                <div>
+                  <label>Model</label>
+                  <select id="dsModel"><option value="">Select model...</option></select>
+                </div>
+                <div>
+                  <label>Input JSONL</label>
+                  <input type="text" id="dsInputFile" placeholder="prompts.jsonl">
+                </div>
+                <div>
+                  <label>Output</label>
+                  <input type="text" id="dsOutputFile" value="labeled.jsonl">
+                </div>
+              </div>
+              <label>Completion max tokens</label>
+              <input type="number" id="dsMaxTokens" value="256" style="width:120px">
+              <button class="btn btn-green" onclick="autoLabel()" id="dsAutoBtn">✨ Auto-Label Dataset</button>
+              <div class="log mt-8" id="dsAutoLog" style="max-height:120px">Ready.</div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h3><span class="icon">📂</span> Available Datasets</h3></div>
+          <div id="datasetList"><span class="text-dim">Loading datasets...</span></div>
+        </div>
+      </div>
+
+      <!-- ═══════════ EXPORT ═══════════ -->
+      <div class="panel" id="panel-export">
+        <div class="row mb-8 gap-16">
+          <div class="col-2">
+            <div class="card">
+              <div class="card-header"><h3><span class="icon">📤</span> HuggingFace → GGUF</h3></div>
+              <label>HF Model ID or local path</label>
+              <input type="text" id="exportModel" placeholder="meta-llama/Llama-3.2-1B-Instruct">
+              <label>Quantization</label>
+              <select id="exportType">
+                <option value="q4_0">Q4_0 — 4-bit (fast, compact)</option>
+                <option value="q4_1">Q4_1 — 4-bit (with min/max)</option>
+                <option value="q5_0">Q5_0 — 5-bit (balanced)</option>
+                <option value="q8_0">Q8_0 — 8-bit (accurate)</option>
+                <option value="f16">F16 — 16-bit (full precision)</option>
+                <option value="bf16">BF16 — bfloat16</option>
+                <option value="q2_k">Q2_K — 2-bit K-quant (smallest)</option>
+                <option value="q3_k_m">Q3_K_M — 3-bit K-quant (mixed)</option>
+                <option value="q4_k_m">Q4_K_M — 4-bit K-quant (recommended)</option>
+                <option value="q5_k_m">Q5_K_M — 5-bit K-quant (quality)</option>
+                <option value="q6_k">Q6_K — 6-bit K-quant (near lossless)</option>
+              </select>
+              <label>Output filename</label>
+              <input type="text" id="exportOutput" placeholder="model-q4_0.gguf">
+              <button class="btn btn-primary" onclick="startExport()" id="exportBtn">📤 Start Export</button>
+            </div>
+          </div>
+          <div style="flex:1">
+            <div class="card">
+              <div class="card-header"><h3><span class="icon">📜</span> Export Log</h3></div>
+              <div class="log" id="exportLog" style="max-height:420px;font-size:11px">Ready to export. Specify a HuggingFace model ID and click Start.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════════ BENCHMARK ═══════════ -->
+      <div class="panel" id="panel-benchmark">
+        <div class="row mb-8 gap-16">
+          <div style="flex:1">
+            <div class="card">
+              <div class="card-header"><h3><span class="icon">⚡</span> Benchmark</h3></div>
+              <div class="row mb-8">
+                <div>
+                  <label>Model</label>
+                  <select id="benchModel"><option value="">Select model...</option></select>
+                </div>
+                <div>
+                  <label>Prompt Tokens</label>
+                  <input type="number" id="benchPromptTokens" value="512">
+                </div>
+                <div>
+                  <label>Generation Tokens</label>
+                  <input type="number" id="benchTokens" value="128">
+                </div>
+                <div>
+                  <label>Threads</label>
+                  <input type="number" id="benchThreads" value="0" placeholder="auto">
+                </div>
+              </div>
+              <label>Custom Prompt (optional)</label>
+              <textarea id="benchPrompt" rows="3" placeholder="Leave empty for default benchmark prompt"></textarea>
+              <button class="btn btn-primary" onclick="runBenchmark()" id="benchBtn">⚡ Run Benchmark</button>
+            </div>
+          </div>
+          <div class="col-2">
+            <div class="card">
+              <div class="card-header"><h3><span class="icon">📊</span> Results</h3></div>
+              <table class="results-table">
+                <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+                <tbody id="benchResults">
+                  <tr><td class="text-dim">Run a benchmark to see results</td><td></td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="card" id="benchHistoryCard" style="display:none">
+              <div class="card-header"><h3><span class="icon">📈</span> History</h3></div>
+              <div class="chart-wrapper" style="height:180px"><canvas id="benchHistoryChart"></canvas></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════════ EVALUATE ═══════════ -->
+      <div class="panel" id="panel-evaluate">
+        <div class="row mb-8 gap-16">
+          <div style="flex:1">
+            <div class="card">
+              <div class="card-header">
+                <h3><span class="icon">🎯</span> Model Evaluation</h3>
+                <span class="badge badge-beta">Beta</span>
+              </div>
+              <div class="row mb-8">
+                <div>
+                  <label>Model</label>
+                  <select id="evalModel"><option value="">Select model...</option></select>
+                </div>
+                <div>
+                  <label>Evaluation Type</label>
+                  <select id="evalType">
+                    <option value="perplexity">Perplexity</option>
+                    <option value="accuracy">Accuracy (MMLU-style)</option>
+                  </select>
+                </div>
+              </div>
+              <label>Evaluation Dataset (JSONL with prompt+expected)</label>
+              <input type="text" id="evalData" placeholder="evaluation.jsonl">
+              <label>Max Samples</label>
+              <input type="number" id="evalMaxSamples" value="100" style="width:120px">
+              <div style="display:flex;gap:8px;margin-top:8px">
+                <button class="btn btn-primary" onclick="runEvaluation()" id="evalBtn">🎯 Run Evaluation</button>
+                <button class="btn btn-dim btn-sm" onclick="document.getElementById('evalData').value='/tmp/e2e_test.jsonl'">Use test data</button>
+              </div>
+            </div>
+          </div>
+          <div class="col-2">
+            <div class="card">
+              <div class="card-header"><h3><span class="icon">📊</span> Evaluation Results</h3></div>
+              <div id="evalResults" style="text-align:center;padding:32px;color:var(--dim)">
+                <div style="font-size:32px;margin-bottom:12px">🎯</div>
+                <div style="font-size:14px">Run an evaluation to see results</div>
+              </div>
+              <div class="log" id="evalLog" style="max-height:200px;display:none">Evaluating...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════════ QUANTIZE ═══════════ -->
+      <div class="panel" id="panel-quantize">
+        <div class="card">
+          <div class="card-header">
+            <h3><span class="icon">🔮</span> Quantization Studio</h3>
+            <span class="badge badge-new">New</span>
+          </div>
+          <p style="font-size:13px;color:var(--dim);margin-bottom:16px">
+            Compare quantization formats side-by-side. Convert your GGUF models between quantization levels.
+          </p>
+          <div class="row mb-12">
+            <div>
+              <label>Source Model (GGUF)</label>
+              <select id="quantModel"><option value="">Select a model...</option></select>
+            </div>
+            <div>
+              <label>Target Quantization</label>
+              <select id="quantTarget">
+                <option value="q4_0">Q4_0 (2.56 bpw)</option>
+                <option value="q4_1">Q4_1 (2.75 bpw)</option>
+                <option value="q5_0">Q5_0 (3.31 bpw)</option>
+                <option value="q5_1">Q5_1 (3.50 bpw)</option>
+                <option value="q8_0">Q8_0 (5.50 bpw)</option>
+                <option value="f16">F16 (16 bpw)</option>
+                <option value="q2_k">Q2_K (~2.56 bpw)</option>
+                <option value="q3_k_m">Q3_K_M (~3.40 bpw)</option>
+                <option value="q4_k_m">Q4_K_M (~4.80 bpw)</option>
+                <option value="q5_k_m">Q5_K_M (~5.68 bpw)</option>
+                <option value="q6_k">Q6_K (~6.59 bpw)</option>
+              </select>
             </div>
             <div>
               <label>Output</label>
-              <input type="text" id="dsOutputFile" value="labeled.jsonl">
+              <input type="text" id="quantOutput" placeholder="model-q4_0.gguf">
             </div>
           </div>
-          <button class="btn btn-green" onclick="autoLabel()" id="dsAutoBtn">✨ Auto-Label Dataset</button>
-          <div class="log mt-8" id="dsAutoLog" style="max-height:120px">Ready.</div>
+          <button class="btn btn-primary" onclick="runQuantize()" id="quantBtn">🔮 Quantize &amp; Compare</button>
         </div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-header"><h3>Available Datasets</h3></div>
-      <div id="datasetList"><span class="text-dim">Loading datasets...</span></div>
-    </div>
-  </div>
 
-  <!-- ═══════════ EXPORT ═══════════ -->
-  <div class="panel" id="panel-export">
-    <div class="row mb-8">
-      <div class="col-3">
         <div class="card">
-          <div class="card-header"><h3>HuggingFace → GGUF</h3></div>
-          <label>HF Model ID or local path</label>
-          <input type="text" id="exportModel" placeholder="meta-llama/Llama-3.2-1B-Instruct">
-          <label>Quantization</label>
-          <select id="exportType">
-            <option value="q4_0">Q4_0 — 4-bit (fast, compact)</option>
-            <option value="q8_0">Q8_0 — 8-bit (balanced)</option>
-            <option value="f16">F16 — 16-bit (accurate)</option>
-            <option value="bf16">BF16 — bfloat16</option>
-            <option value="q4_k_m">Q4_K_M — 4-bit K-quant (mixed)</option>
-            <option value="q6_k">Q6_K — 6-bit K-quant</option>
-          </select>
-          <label>Output</label>
-          <input type="text" id="exportOutput" placeholder="model-q4_0.gguf">
-          <button class="btn btn-primary" onclick="startExport()" id="exportBtn">📤 Start Export</button>
-        </div>
-      </div>
-      <div style="flex:1">
-        <div class="card">
-          <div class="card-header"><h3>Export Log</h3></div>
-          <div class="log" id="exportLog" style="max-height:400px;font-size:11px">Ready to export. Specify a HuggingFace model ID and click Start.</div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- ═══════════ BENCHMARK ═══════════ -->
-  <div class="panel" id="panel-benchmark">
-    <div class="row mb-8">
-      <div style="flex:1">
-        <div class="card">
-          <div class="card-header"><h3>Benchmark Configuration</h3></div>
-          <div class="row mb-8">
-            <div>
-              <label>Model</label>
-              <select id="benchModel"><option value="">Select model...</option></select>
+          <div class="card-header"><h3><span class="icon">📊</span> Quantization Comparison</h3></div>
+          <div class="row gap-16" id="quantCompare">
+            <div class="quant-card">
+              <div class="quant-name" style="color:var(--accent)">Q2_K</div>
+              <div class="quant-bits">~2.56 bpw</div>
+              <div class="quant-speed">71 tok/s</div>
+              <div class="quant-size">Smallest</div>
             </div>
-            <div>
-              <label>Max Tokens</label>
-              <input type="number" id="benchTokens" value="128">
+            <div class="quant-card" style="border-color:var(--green)">
+              <div class="quant-name" style="color:var(--green)">Q4_0</div>
+              <div class="quant-bits">4.0 bpw</div>
+              <div class="quant-speed">66 tok/s</div>
+              <div class="quant-size" style="color:var(--green)">Best tradeoff</div>
+            </div>
+            <div class="quant-card">
+              <div class="quant-name" style="color:var(--accent2)">Q4_K_M</div>
+              <div class="quant-bits">~4.80 bpw</div>
+              <div class="quant-speed">62 tok/s</div>
+              <div class="quant-size">Good quality</div>
+            </div>
+            <div class="quant-card">
+              <div class="quant-name" style="color:var(--orange)">Q8_0</div>
+              <div class="quant-bits">8.0 bpw</div>
+              <div class="quant-speed">40 tok/s</div>
+              <div class="quant-size">Near lossless</div>
+            </div>
+            <div class="quant-card">
+              <div class="quant-name" style="color:var(--cyan)">F16</div>
+              <div class="quant-bits">16.0 bpw</div>
+              <div class="quant-speed">23 tok/s</div>
+              <div class="quant-size">Baseline</div>
             </div>
           </div>
-          <label>Prompt</label>
-          <textarea id="benchPrompt" rows="3">What is the meaning of life? Provide a detailed philosophical answer.</textarea>
-          <button class="btn btn-primary" onclick="runBenchmark()" id="benchBtn">⚡ Run Benchmark</button>
         </div>
-      </div>
-      <div class="col-3">
-        <div class="card">
-          <div class="card-header"><h3>Results</h3></div>
-          <table class="results-table">
-            <thead><tr><th>Metric</th><th>Value</th></tr></thead>
-            <tbody id="benchResults">
-              <tr><td class="text-dim">Run a benchmark to see results</td><td></td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  </div>
 
-  <!-- ═══════════ MERGE ═══════════ -->
-  <div class="panel" id="panel-merge">
-    <div class="row mb-8">
-      <div class="col-3">
         <div class="card">
-          <div class="card-header"><h3>Merge LoRA → Base</h3><span class="badge">✨ New</span></div>
-          <label>Base Model (GGUF)</label>
-          <select id="mergeBase"><option value="">Select base model...</option></select>
-          <label>LoRA Adapter (GGUF)</label>
-          <input type="text" id="mergeLora" placeholder="path/to/lora-adapter.gguf">
-          <label>Output Type</label>
-          <select id="mergeType">
-            <option value="q4_0">Q4_0 (4-bit)</option>
-            <option value="q8_0">Q8_0 (8-bit)</option>
-            <option value="f16">F16 (16-bit)</option>
-          </select>
-          <label>Output</label>
-          <input type="text" id="mergeOutput" value="merged.gguf">
-          <button class="btn btn-primary" onclick="runMerge()" id="mergeBtn">🔗 Merge Models</button>
+          <div class="card-header"><h3><span class="icon">📜</span> Quantization Log</h3></div>
+          <div class="log" id="quantLog" style="max-height:300px">Ready. Select a model and target quantization to convert.</div>
         </div>
       </div>
-      <div style="flex:1">
-        <div class="card">
-          <div class="card-header"><h3>Merge Log</h3></div>
-          <div class="log" id="mergeLog" style="max-height:400px">Ready. Select a base model and LoRA adapter to merge.</div>
+
+      <!-- ═══════════ MERGE ═══════════ -->
+      <div class="panel" id="panel-merge">
+        <div class="row mb-8 gap-16">
+          <div class="col-2">
+            <div class="card">
+              <div class="card-header">
+                <h3><span class="icon">🔗</span> Merge LoRA → Base</h3>
+                <span class="badge badge-new">Merge</span>
+              </div>
+              <label>Base Model (GGUF)</label>
+              <select id="mergeBase"><option value="">Select base model...</option></select>
+              <label>LoRA Adapter (GGUF)</label>
+              <input type="text" id="mergeLora" placeholder="path/to/lora-adapter.gguf">
+              <label>Output Type</label>
+              <select id="mergeType">
+                <option value="q4_0">Q4_0 (4-bit)</option>
+                <option value="q8_0">Q8_0 (8-bit)</option>
+                <option value="f16">F16 (16-bit)</option>
+              </select>
+              <label>Output filename</label>
+              <input type="text" id="mergeOutput" value="merged.gguf">
+              <button class="btn btn-primary" onclick="runMerge()" id="mergeBtn">🔗 Merge Models</button>
+            </div>
+          </div>
+          <div style="flex:1">
+            <div class="card">
+              <div class="card-header"><h3><span class="icon">📜</span> Merge Log</h3></div>
+              <div class="log" id="mergeLog" style="max-height:420px">Ready. Select a base model and LoRA adapter to merge.</div>
+            </div>
+          </div>
         </div>
       </div>
+
+      <!-- ═══════════ TEMPLATES ═══════════ -->
+      <div class="panel" id="panel-templates">
+        <div class="card">
+          <div class="card-header">
+            <h3><span class="icon">📋</span> Training Templates</h3>
+            <span class="badge badge-new">New</span>
+          </div>
+          <p style="font-size:13px;color:var(--dim);margin-bottom:16px">
+            Pre-configured training recipes for popular models. Select a template to auto-fill the Train tab.
+          </p>
+          <div class="row gap-16" style="flex-wrap:wrap">
+            <div class="template-card" onclick="selectTemplate('llama3')" style="flex:1;min-width:240px">
+              <h4>🦙 Llama 3 / 3.1 / 3.2</h4>
+              <p>LoRA fine-tune for Llama models. Alpaca format, cosine schedule, recommended defaults.</p>
+              <div class="template-tags">
+                <span class="chip">r=16</span><span class="chip">cosine</span><span class="chip">alpaca</span>
+              </div>
+            </div>
+            <div class="template-card" onclick="selectTemplate('mistral')" style="flex:1;min-width:240px">
+              <h4>🌀 Mistral / Mixtral</h4>
+              <p>Mistral-7B and Mixtral MoE fine-tuning. Sliding window attention, higher rank.</p>
+              <div class="template-tags">
+                <span class="chip">r=32</span><span class="chip">cosine</span><span class="chip">sharegpt</span>
+              </div>
+            </div>
+            <div class="template-card" onclick="selectTemplate('qwen')" style="flex:1;min-width:240px">
+              <h4>🌙 Qwen2 / Qwen3</h4>
+              <p>Qwen models with MoE support. Supports both dense and MoE architectures.</p>
+              <div class="template-tags">
+                <span class="chip">r=16</span><span class="chip">linear</span><span class="chip">alpaca</span>
+              </div>
+            </div>
+            <div class="template-card" onclick="selectTemplate('gemma')" style="flex:1;min-width:240px">
+              <h4>💎 Gemma / Gemma 2</h4>
+              <p>Google Gemma fine-tuning. Gemma chat template, balanced settings.</p>
+              <div class="template-tags">
+                <span class="chip">r=16</span><span class="chip">cosine</span><span class="chip">gemma</span>
+              </div>
+            </div>
+            <div class="template-card" onclick="selectTemplate('phi')" style="flex:1;min-width:240px">
+              <h4>🔷 Phi-3 / Phi-3.5</h4>
+              <p>Microsoft Phi models. Compact but capable — lower rank recommended.</p>
+              <div class="template-tags">
+                <span class="chip">r=8</span><span class="chip">constant</span><span class="chip">instruct</span>
+              </div>
+            </div>
+            <div class="template-card" onclick="selectTemplate('deepseek')" style="flex:1;min-width:240px">
+              <h4>🔍 DeepSeek V2/V3/R1</h4>
+              <p>DeepSeek models with MLA attention. Higher rank for reasoning tasks.</p>
+              <div class="template-tags">
+                <span class="chip">r=64</span><span class="chip">cosine</span><span class="chip">sharegpt</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div>
   </div>
 </div>
@@ -450,83 +988,46 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 14p
 <script>
 // ─── API URL resolution ──────────────────────────────────────────
 const API = (() => {
-  // 1. localStorage override (persistent)
   const stored = localStorage.getItem('mojollama_api_url');
   if (stored) return stored;
-  // 2. URL param: ?api=http://hostname:8080
   const params = new URLSearchParams(location.search);
   const apiParam = params.get('api');
-  if (apiParam) {
-    localStorage.setItem('mojollama_api_url', apiParam);
-    return apiParam;
-  }
-  // 3. Served from same origin as API (port 8080)
-  if (location.port === '8080' || location.port === '') {
-    return '';
-  }
-  // 4. Fallback: try hostname:8080
+  if (apiParam) { localStorage.setItem('mojollama_api_url', apiParam); return apiParam; }
+  if (location.port === '8080' || location.port === '') return '';
   return `http://${location.hostname}:8080`;
 })();
-const MODELS_DIR = '/onedev-workspace/work';
 
-// ─── Server settings dialog ─────────────────────────────────────
-function showServerSettings() {
-  const overlay = document.createElement('div');
-  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;display:flex;align-items:center;justify-content:center;';
-  const box = document.createElement('div');
-  box.style.cssText = 'background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:28px;max-width:480px;width:90%;';
-  box.innerHTML = `
-    <h3 style="margin-bottom:16px;font-size:17px;">⚙️ Server Settings</h3>
-    <label>API Server URL</label>
-    <input id="settingsApiUrl" type="text" value="${API}" placeholder="http://hostname:8080" style="margin-bottom:8px;font-family:monospace;">
-    <div style="font-size:12px;color:var(--dim);margin-bottom:16px;">
-      Enter the URL where your MojoLlama server is running.
-      The Studio fetches models and sends chat requests to this server.
-    </div>
-    <div style="display:flex;gap:8px;justify-content:flex-end;">
-      <button class="btn btn-dim" onclick="this.closest('div[style]').parentElement.remove()">Cancel</button>
-      <button class="btn btn-primary" id="settingsSaveBtn">Save &amp; Reload</button>
-    </div>
-  `;
-  overlay.appendChild(box);
-  document.body.appendChild(overlay);
+const TEMPLATES = {
+  llama3: { rank:16, alpha:32, lr:'2e-4', scheduler:'cosine', steps:500, batch:4, gradAccum:1, warmup:50, weightDecay:'0.01', modules:'q_proj,v_proj,k_proj,o_proj', dropout:'0.05', ctxLen:2048, flashAttn:true, fp16:true, format:'alpaca', systemPrompt:'You are a helpful AI assistant based on Llama 3.' },
+  mistral: { rank:32, alpha:64, lr:'1e-4', scheduler:'cosine', steps:1000, batch:4, gradAccum:2, warmup:100, weightDecay:'0.01', modules:'q_proj,v_proj,k_proj,o_proj,gate_proj,up_proj,down_proj', dropout:'0.05', ctxLen:4096, flashAttn:true, fp16:true, format:'sharegpt', systemPrompt:'You are a helpful AI assistant based on Mistral.' },
+  qwen: { rank:16, alpha:32, lr:'2e-4', scheduler:'linear', steps:500, batch:4, gradAccum:1, warmup:50, weightDecay:'0.01', modules:'q_proj,v_proj', dropout:'0.05', ctxLen:2048, flashAttn:true, fp16:true, format:'alpaca', systemPrompt:'You are a helpful AI assistant based on Qwen.' },
+  gemma: { rank:16, alpha:32, lr:'2e-4', scheduler:'cosine', steps:500, batch:4, gradAccum:1, warmup:50, weightDecay:'0.01', modules:'q_proj,v_proj,k_proj,o_proj', dropout:'0.05', ctxLen:2048, flashAttn:true, fp16:true, format:'alpaca', systemPrompt:'You are a helpful AI assistant based on Gemma.' },
+  phi: { rank:8, alpha:16, lr:'5e-4', scheduler:'constant', steps:300, batch:4, gradAccum:1, warmup:20, weightDecay:'0.01', modules:'q_proj,v_proj', dropout:'0.1', ctxLen:2048, flashAttn:true, fp16:true, format:'alpaca', systemPrompt:'You are a helpful AI assistant based on Phi-3.' },
+  deepseek: { rank:64, alpha:128, lr:'1e-4', scheduler:'cosine', steps:2000, batch:2, gradAccum:4, warmup:100, weightDecay:'0.005', modules:'q_proj,v_proj,k_proj,o_proj,gate_proj,up_proj,down_proj', dropout:'0.05', ctxLen:4096, flashAttn:true, fp16:true, format:'sharegpt', systemPrompt:'You are a reasoning AI assistant. Think step by step.' },
+};
 
-  document.getElementById('settingsSaveBtn').addEventListener('click', () => {
-    const url = document.getElementById('settingsApiUrl').value.trim();
-    if (url) {
-      localStorage.setItem('mojollama_api_url', url);
-      location.reload();
-    }
-  });
-}
-
-// ─── Refresh backend status + models ────────────────────────────
-async function refreshBackend() {
-  try {
-    const data = await apiFetch('/api/backend');
-    document.getElementById('statusDot').className = 'status-dot online';
-    document.getElementById('backendName').textContent = data.active || data.backend || 'online';
-    document.getElementById('backendName').style.color = 'var(--green)';
-    document.getElementById('backendSpeed').textContent = data.uptime ? `(${data.uptime})` : '';
-  } catch(e) {
-    document.getElementById('statusDot').className = 'status-dot offline';
-    document.getElementById('backendName').textContent = 'offline';
-    document.getElementById('backendName').style.color = 'var(--red)';
-  }
-}
+// ─── State ──────────────────────────────────────────────────────
 let chatAbort = null;
 let chatCount = 0;
+let chatHistory = [];
 let lossChart = null;
+let benchHistoryChart = null;
 let trainingActive = false;
 let trainingSource = null;
+let benchHistory = [];
 
-// ─── Tab switching ───
-document.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+// ─── Tab switching ──────────────────────────────────────────────
+const TAB_ICONS = { chat:'💬 Chat', train:'🎓 Train', dataset:'📊 Dataset', export:'📤 Export',
+                    benchmark:'⚡ Benchmark', evaluate:'🎯 Evaluate', quantize:'🔮 Quantize',
+                    merge:'🔗 Merge', templates:'📋 Templates' };
+document.querySelectorAll('.nav-item').forEach(item => {
+  item.addEventListener('click', () => {
+    document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-    tab.classList.add('active');
-    document.getElementById(`panel-${tab.dataset.tab}`).classList.add('active');
+    item.classList.add('active');
+    const tab = item.dataset.tab;
+    document.getElementById(`panel-${tab}`).classList.add('active');
+    document.getElementById('topbarTitle').textContent = TAB_ICONS[tab] || tab;
   });
 });
 
@@ -552,7 +1053,14 @@ async function apiFetch(path, opts={}) {
   return resp.json();
 }
 
-// ─── Init ───
+// ─── Collapsible ───
+function toggleCollapse(el) {
+  el.classList.toggle('open');
+  const body = el.nextElementSibling;
+  body.classList.toggle('open');
+}
+
+// ─── Refresh ───
 async function refreshAll() {
   await Promise.all([loadBackend(), loadModels(), loadDatasets()]);
 }
@@ -560,13 +1068,10 @@ async function refreshAll() {
 async function loadBackend() {
   try {
     const data = await apiFetch('/api/backend');
-    const dot = document.getElementById('statusDot');
-    const name = document.getElementById('backendName');
-    const speed = document.getElementById('backendSpeed');
-    dot.className = 'status-dot online';
-    name.textContent = data.active || data.backend || 'unknown';
-    name.style.color = 'var(--green)';
-    speed.textContent = data.uptime ? `(${data.uptime})` : '';
+    document.getElementById('statusDot').className = 'status-dot online';
+    document.getElementById('backendName').textContent = data.active || data.backend || 'online';
+    document.getElementById('backendName').style.color = 'var(--green)';
+    document.getElementById('backendSpeed').textContent = data.uptime ? `${data.uptime}` : '';
   } catch(e) {
     document.getElementById('statusDot').className = 'status-dot offline';
     document.getElementById('backendName').textContent = 'offline';
@@ -578,15 +1083,14 @@ async function loadModels() {
   try {
     const data = await apiFetch('/api/models');
     const models = data.models || [];
-    const selects = ['chatModel','trainModel','benchModel','dsModel','mergeBase'];
-    
+    const selects = ['chatModel','trainModel','benchModel','dsModel','mergeBase','evalModel','quantModel'];
     selects.forEach(id => {
       const sel = document.getElementById(id);
       if (!sel) return;
       const current = sel.value;
-      sel.innerHTML = id === 'chatModel' ? '<option value="">Select model...</option>' :
-                      id === 'dsModel' ? '<option value="">Select model...</option>' :
-                      '<option value="">Select a model...</option>';
+      const placeholder = (id === 'chatModel' || id === 'dsModel' || id === 'evalModel' || id === 'quantModel')
+                          ? 'Select model...' : 'Select a model...';
+      sel.innerHTML = `<option value="">${placeholder}</option>`;
       models.forEach(m => {
         const opt = document.createElement('option');
         opt.value = m.path || m.name;
@@ -595,47 +1099,8 @@ async function loadModels() {
         sel.appendChild(opt);
       });
     });
-
-    // Show model grid
-    const grid = document.getElementById('modelGrid');
-    if (!grid) return;
-    grid.innerHTML = '';
-    if (models.length === 0) {
-      grid.innerHTML = '<div style="text-align:center;padding:32px;color:var(--dim);">'
-        + '<div style="font-size:32px;margin-bottom:12px;">📡</div>'
-        + '<div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:8px;">No models found</div>'
-        + '<div style="font-size:13px;margin-bottom:16px;">Could not connect to server or no models available.</div>'
-        + '<button class="btn btn-primary" onclick="showServerSettings()">Configure Server</button>'
-        + '</div>';
-      return;
-    }
-    models.forEach(m => {
-      const card = document.createElement('div');
-      card.className = 'model-card';
-      card.innerHTML = `<h4>${m.name}</h4>
-        <div class="model-meta">${m.path || ''}</div>
-        <div class="model-size">${(m.size_gb || 0).toFixed(1)} GB</div>`;
-      grid.appendChild(card);
-    });
-  } catch(e) {
-    console.error('loadModels:', e);
-    const grid = document.getElementById('modelGrid');
-    if (grid) {
-      grid.innerHTML = '<div style="text-align:center;padding:32px;color:var(--dim);">'
-        + '<div style="font-size:32px;margin-bottom:12px;">🔌</div>'
-        + '<div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:8px;">Server offline</div>'
-        + '<div style="font-size:13px;margin-bottom:16px;">Cannot reach API server. Check your connection or configure the server URL.</div>'
-        + '<div style="display:flex;gap:8px;justify-content:center;">'
-        + '<button class="btn btn-primary" onclick="showServerSettings()">Configure Server</button>'
-        + '<button class="btn btn-dim" onclick="refreshBackend();loadModels()">Retry</button>'
-        + '</div>'
-        + '</div>';
-    }
-  }
+  } catch(e) { console.error('loadModels:', e); }
 }
-
-// ─── Initialization ─────────────────────────────────────────────
-setTimeout(() => { refreshBackend(); loadModels(); }, 100);
 
 async function loadDatasets() {
   try {
@@ -643,93 +1108,134 @@ async function loadDatasets() {
     const datasets = data.datasets || [];
     const container = document.getElementById('datasetList');
     if (datasets.length === 0) {
-      container.innerHTML = '<span class="text-dim">No datasets found. Create one in the Dataset tab.</span>';
+      container.innerHTML = '<span class="text-dim">No datasets found. Create one above.</span>';
       return;
     }
-    container.innerHTML = '<table class="results-table"><thead><tr><th>Name</th><th>Size</th><th>Samples</th></tr></thead><tbody>' +
-      datasets.map(d => `<tr><td>${d.name}</td><td>${d.size || '—'}</td><td>${d.samples || '—'}</td></tr>`).join('') +
+    container.innerHTML = '<table class="results-table"><thead><tr><th>Name</th><th>Size</th><th>Samples</th><th>Actions</th></tr></thead><tbody>' +
+      datasets.map(d => `<tr><td>${d.name}</td><td>${d.size || '—'}</td><td>${d.samples || '—'}</td>
+        <td><button class="btn btn-dim btn-xs" onclick="document.getElementById('trainData').value='${d.path||d.name}';document.querySelector('[data-tab=train]').click()">Use in Train</button></td></tr>`).join('') +
       '</tbody></table>';
   } catch(e) {
     document.getElementById('datasetList').innerHTML = '<span class="text-dim">Could not load datasets.</span>';
   }
 }
 
-// ─── Chat (Streaming via server.py /api/chat) ───
+// ─── Server settings dialog ───
+function showServerSettings() {
+  const overlay = document.createElement('div');
+  overlay.className = 'dialog-overlay';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  const dialog = document.createElement('div');
+  dialog.className = 'dialog';
+  dialog.innerHTML = `
+    <h3>⚙️ Server Settings</h3>
+    <label>API Server URL</label>
+    <input id="settingsApiUrl" type="text" value="${API}" placeholder="http://hostname:8080" style="font-family:monospace;">
+    <div style="font-size:12px;color:var(--dim);margin-bottom:12px;margin-top:-4px;">
+      Enter the URL where your MojoLlama server is running.<br>
+      The Studio fetches models and sends chat requests to this server.
+    </div>
+    <div class="dialog-actions">
+      <button class="btn btn-dim" onclick="this.closest('.dialog-overlay').remove()">Cancel</button>
+      <button class="btn btn-primary" id="settingsSaveBtn">Save &amp; Reload</button>
+    </div>
+  `;
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+  document.getElementById('settingsSaveBtn').addEventListener('click', () => {
+    const url = document.getElementById('settingsApiUrl').value.trim();
+    if (url) { localStorage.setItem('mojollama_api_url', url); location.reload(); }
+  });
+}
+
+// ─── Chat ───
 async function sendChat() {
   const input = document.getElementById('chatInput');
   const msg = input.value.trim();
   if (!msg) return;
-  
   const model = document.getElementById('chatModel').value;
   if (!model) { toast('Select a model first', 'error'); return; }
-  
+
   input.value = '';
+  input.style.height = 'auto';
   chatCount++;
-  
+
   const container = document.getElementById('chatMessages');
-  appendMessage('user', 'You', msg, '');
-  container.scrollTop = container.scrollHeight;
-  
-  // Show typing indicator
+  const systemPrompt = document.getElementById('chatSystemPrompt').value.trim();
+
+  // Add user message to history
+  chatHistory.push({ role: 'user', content: msg });
+  appendMessage('user', 'You', msg);
+
+  // Show typing
   const typingId = 'typing-' + Date.now();
   container.innerHTML += `<div class="typing-indicator" id="${typingId}"><span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span></div>`;
   container.scrollTop = container.scrollHeight;
-  
-  // Add assistant message placeholder
+
+  // Assistant placeholder
   const msgId = 'msg-' + Date.now();
   container.innerHTML += `<div class="msg" id="${msgId}" style="display:none">
-    <div class="msg-header"><div class="msg-avatar assistant">M</div><span class="msg-name assistant">MojoLlama</span><span class="msg-meta">streaming</span></div>
-    <div class="msg-text" id="${msgId}-text"></div>
-  </div>`;
-  
+    <div class="msg-row"><div class="msg-avatar assistant">M</div>
+    <div class="msg-body"><div class="msg-name assistant">MojoLlama <span class="msg-meta">streaming</span></div>
+    <div class="msg-text" id="${msgId}-text"></div></div></div></div>`;
+
   const sendBtn = document.getElementById('chatSendBtn');
+  const stopBtn = document.getElementById('chatStopBtn');
   sendBtn.disabled = true;
-  sendBtn.textContent = '...';
-  
+  sendBtn.style.display = 'none';
+  stopBtn.style.display = '';
+
+  const controller = new AbortController();
+  chatAbort = controller;
+
   try {
+    const messages = [];
+    if (systemPrompt) messages.push({ role: 'system', content: systemPrompt });
+    messages.push(...chatHistory);
+
     const resp = await fetch(`${API}/api/chat`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
-        model: model,
-        messages: [/* We need to track conversation history */],
+        model,
+        messages,
         prompt: msg,
-        max_tokens: 512,
-        stream: true
-      })
+        max_tokens: parseInt(document.getElementById('chatMaxTokens').value) || 512,
+        stream: true,
+        temperature: parseFloat(document.getElementById('chatTemp').value),
+        top_p: parseFloat(document.getElementById('chatTopP').value),
+        frequency_penalty: parseFloat(document.getElementById('chatFreqPen').value),
+        presence_penalty: parseFloat(document.getElementById('chatPresPen').value),
+        repeat_penalty: parseFloat(document.getElementById('chatRepeatPen').value)
+      }),
+      signal: controller.signal
     });
-    
+
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    
-    // Remove typing indicator
+
     const typingEl = document.getElementById(typingId);
     if (typingEl) typingEl.remove();
-    
-    // Show message
     document.getElementById(msgId).style.display = '';
+
     const textEl = document.getElementById(`${msgId}-text`);
     let fullText = '';
-    
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
-    
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
-      
       for (const line of lines) {
         if (line.startsWith('data: ')) {
           const chunk = line.slice(6).trim();
           if (chunk === '[DONE]') continue;
           try {
             const parsed = JSON.parse(chunk);
-            const content = parsed.choices?.[0]?.delta?.content || 
-                          parsed.content || '';
+            const content = parsed.choices?.[0]?.delta?.content || parsed.content || '';
             if (content) {
               fullText += content;
               textEl.innerHTML = renderMarkdown(fullText);
@@ -739,70 +1245,77 @@ async function sendChat() {
         }
       }
     }
-    
-    // Update message meta
+
+    // Save to history
+    chatHistory.push({ role: 'assistant', content: fullText });
     const meta = document.querySelector(`#${msgId} .msg-meta`);
-    if (meta) meta.textContent = `${fullText.split(' ').length} words`;
+    if (meta) {
+      const words = fullText.split(/\s+/).length;
+      const chars = fullText.length;
+      meta.textContent = `${words} words · ${chars} chars`;
+    }
     updateChatStats();
-    
+
   } catch(e) {
     const typingEl = document.getElementById(typingId);
     if (typingEl) typingEl.remove();
-    document.getElementById(msgId).style.display = '';
-    document.getElementById(`${msgId}-text`).innerHTML = `<span style="color:var(--red)">Error: ${e.message}</span>`;
+    const msgEl = document.getElementById(msgId);
+    if (msgEl) {
+      msgEl.style.display = '';
+      document.getElementById(`${msgId}-text`).innerHTML = `<span style="color:var(--red)">${e.name === 'AbortError' ? 'Generation stopped.' : 'Error: ' + e.message}</span>`;
+    }
+    if (e.name !== 'AbortError') {
+      chatHistory.pop(); // Remove user message on error
+    }
   }
-  
+
   sendBtn.disabled = false;
-  sendBtn.textContent = 'Send';
+  sendBtn.style.display = '';
+  stopBtn.style.display = 'none';
+  chatAbort = null;
 }
 
-function appendMessage(role, name, content, meta) {
+function stopChat() {
+  if (chatAbort) { chatAbort.abort(); chatAbort = null; }
+}
+
+function appendMessage(role, name, content) {
   const container = document.getElementById('chatMessages');
-  container.innerHTML += `<div class="msg">
-    <div class="msg-header">
-      <div class="msg-avatar ${role}">${role === 'user' ? 'U' : 'M'}</div>
-      <span class="msg-name ${role}">${name}</span>
-      <span class="msg-meta">${meta}</span>
-    </div>
-    <div class="msg-text">${renderMarkdown(content)}</div>
-  </div>`;
+  const avatar = role === 'user' ? 'U' : 'M';
+  container.innerHTML += `<div class="msg"><div class="msg-row">
+    <div class="msg-avatar ${role}">${avatar}</div>
+    <div class="msg-body"><div class="msg-name ${role}">${name}</div>
+    <div class="msg-text">${renderMarkdown(content)}</div></div></div></div>`;
   container.scrollTop = container.scrollHeight;
 }
 
 function clearChat() {
-  document.getElementById('chatMessages').innerHTML = `
-    <div class="msg">
-      <div class="msg-header">
-        <div class="msg-avatar assistant">M</div>
-        <span class="msg-name assistant">MojoLlama</span><span class="msg-meta">cleared</span>
-      </div>
-      <div class="msg-text">Chat cleared. Select a model and start chatting.</div>
-    </div>`;
+  chatHistory = [];
   chatCount = 0;
+  document.getElementById('chatMessages').innerHTML = `
+    <div class="msg"><div class="msg-row"><div class="msg-avatar assistant">M</div>
+    <div class="msg-body"><div class="msg-name assistant">MojoLlama <span class="msg-meta">cleared</span></div>
+    <div class="msg-text">Chat cleared. Select a model and start chatting.</div></div></div></div>`;
   updateChatStats();
 }
 
 function updateChatStats() {
-  document.getElementById('chatStats').textContent = `${chatCount} messages`;
+  document.getElementById('chatStats').textContent = `${chatCount} messages · ${chatHistory.length} context entries`;
 }
 
 document.getElementById('chatInput').addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
 });
 
-// Simple markdown renderer
+// Markdown renderer
 function renderMarkdown(text) {
   if (!text) return '';
   let html = escapeHtml(text);
-  // Code blocks
   html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
-  // Inline code
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-  // Bold
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  // Italic
   html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-  // Line breaks
+  html = html.replace(/^&gt;\s(.+)$/gm, '<blockquote style="border-left:3px solid var(--accent);padding-left:12px;color:var(--dim)">$1</blockquote>');
   html = html.replace(/\n/g, '<br>');
   return html;
 }
@@ -816,63 +1329,100 @@ function escapeHtml(text) {
 // ─── Training ───
 function initLossChart() {
   const ctx = document.getElementById('lossChart').getContext('2d');
+  const gradient = ctx.createLinearGradient(0, 0, 0, 240);
+  gradient.addColorStop(0, 'rgba(91,141,239,0.2)');
+  gradient.addColorStop(1, 'rgba(91,141,239,0)');
   lossChart = new Chart(ctx, {
     type: 'line',
-    data: {
-      labels: [],
-      datasets: [{
-        label: 'Loss',
-        data: [],
-        borderColor: '#58a6ff',
-        backgroundColor: 'rgba(88,166,255,0.1)',
-        fill: true,
-        tension: 0.3,
-        pointRadius: 2,
-        pointHoverRadius: 5,
-        borderWidth: 2
-      }]
-    },
+    data: { labels: [], datasets: [{
+      label: 'Loss', data: [],
+      borderColor: '#5b8def', backgroundColor: gradient,
+      fill: true, tension: 0.4, pointRadius: 1.5, pointHoverRadius: 5, borderWidth: 2
+    }]},
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      animation: { duration: 200 },
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 150 },
       scales: {
-        x: { grid: { color: 'rgba(48,54,61,0.5)' }, ticks: { color: '#8b949e', font: { size: 10 } } },
-        y: { grid: { color: 'rgba(48,54,61,0.5)' }, ticks: { color: '#8b949e', font: { size: 10 } }, beginAtZero: false }
+        x: { grid: { color: 'rgba(37,45,58,0.5)' }, ticks: { color: '#7d8590', font: { size: 10 } } },
+        y: { grid: { color: 'rgba(37,45,58,0.5)' }, ticks: { color: '#7d8590', font: { size: 10 } }, beginAtZero: false }
       },
-      plugins: {
-        legend: { display: false }
+      plugins: { legend: { display: false },
+        tooltip: { backgroundColor: 'rgba(18,22,30,0.9)', borderColor: 'rgba(91,141,239,0.3)', borderWidth: 1, titleFont: { size: 11 }, bodyFont: { size: 12 }, padding: 10 }
       }
     }
   });
+}
+
+function applyTrainTemplate(name) {
+  if (!name) return;
+  const t = TEMPLATES[name];
+  if (!t) return;
+  document.getElementById('trainRank').value = t.rank;
+  document.getElementById('trainRankVal').textContent = t.rank;
+  document.getElementById('trainAlpha').value = t.alpha;
+  document.getElementById('trainLR').value = t.lr;
+  document.getElementById('trainScheduler').value = t.scheduler;
+  document.getElementById('trainSteps').value = t.steps;
+  document.getElementById('trainBatch').value = t.batch;
+  document.getElementById('trainGradAccum').value = t.gradAccum;
+  document.getElementById('trainWarmup').value = t.warmup;
+  document.getElementById('trainWeightDecay').value = t.weightDecay;
+  document.getElementById('trainModules').value = t.modules;
+  document.getElementById('trainDropout').value = t.dropout;
+  document.getElementById('trainCtxLen').value = t.ctxLen;
+  document.getElementById('trainFlashAttn').checked = t.flashAttn;
+  document.getElementById('trainFp16').checked = t.fp16;
+  document.getElementById('chatSystemPrompt').value = t.systemPrompt;
+  toast(`Applied ${name} template`, 'success');
+}
+
+function resetTrainConfig() {
+  document.getElementById('trainTemplate').value = '';
+  document.getElementById('trainRank').value = 16;
+  document.getElementById('trainRankVal').textContent = '16';
+  document.getElementById('trainAlpha').value = 32;
+  document.getElementById('trainLR').value = '2e-4';
+  document.getElementById('trainScheduler').value = 'cosine';
+  document.getElementById('trainSteps').value = 100;
+  document.getElementById('trainBatch').value = 4;
+  document.getElementById('trainGradAccum').value = 1;
+  document.getElementById('trainWarmup').value = 10;
+  document.getElementById('trainWeightDecay').value = '0.01';
+  document.getElementById('trainModules').value = 'q_proj,v_proj';
+  document.getElementById('trainDropout').value = '0.05';
+  document.getElementById('trainCtxLen').value = 2048;
+  document.getElementById('trainFlashAttn').checked = true;
+  document.getElementById('trainFp16').checked = true;
+  document.getElementById('trainGradientCheckpointing').checked = false;
+  document.getElementById('trainCheckpointEvery').value = 100;
+  document.getElementById('trainResume').value = '';
+  document.getElementById('trainSeed').value = 42;
+  document.getElementById('trainEvalSteps').value = 0;
+  toast('Training config reset', 'info');
 }
 
 async function startTraining() {
   const model = document.getElementById('trainModel').value;
   const data = document.getElementById('trainData').value;
   if (!model || !data) { toast('Select model and dataset', 'error'); return; }
-  
+
   document.getElementById('trainStartBtn').disabled = true;
   document.getElementById('trainStopBtn').disabled = false;
   document.getElementById('trainStatusBadge').textContent = 'running';
+  document.getElementById('trainStatusBadge').className = 'badge badge-new';
   document.getElementById('trainStatusBadge').style.color = 'var(--green)';
   trainingActive = true;
-  
+
   if (!lossChart) initLossChart();
-  
   const log = document.getElementById('trainLog');
   log.textContent = 'Starting training...\n';
-  
-  // Connect to metrics SSE
+
   if (trainingSource) trainingSource.close();
   trainingSource = new EventSource(`${API}/api/train/metrics`);
   trainingSource.onmessage = (e) => {
-    try {
-      const data = JSON.parse(e.data);
-      updateTrainingMetrics(data);
-    } catch(err) {}
+    try { updateTrainingMetrics(JSON.parse(e.data)); } catch(err) {}
   };
-  
+
   try {
     const resp = await fetch(`${API}/train`, {
       method: 'POST',
@@ -880,9 +1430,24 @@ async function startTraining() {
       body: JSON.stringify({
         model, data,
         lora_rank: parseInt(document.getElementById('trainRank').value),
+        lora_alpha: parseInt(document.getElementById('trainAlpha').value),
         lr: document.getElementById('trainLR').value,
+        scheduler: document.getElementById('trainScheduler').value,
         steps: parseInt(document.getElementById('trainSteps').value),
-        batch: parseInt(document.getElementById('trainBatch').value)
+        batch: parseInt(document.getElementById('trainBatch').value),
+        grad_accum: parseInt(document.getElementById('trainGradAccum').value),
+        warmup: parseInt(document.getElementById('trainWarmup').value),
+        weight_decay: document.getElementById('trainWeightDecay').value,
+        modules: document.getElementById('trainModules').value,
+        dropout: document.getElementById('trainDropout').value,
+        ctx_len: parseInt(document.getElementById('trainCtxLen').value),
+        flash_attn: document.getElementById('trainFlashAttn').checked,
+        fp16: document.getElementById('trainFp16').checked,
+        gradient_checkpointing: document.getElementById('trainGradientCheckpointing').checked,
+        checkpoint_every: parseInt(document.getElementById('trainCheckpointEvery').value),
+        resume: document.getElementById('trainResume').value || '',
+        seed: parseInt(document.getElementById('trainSeed').value),
+        eval_steps: parseInt(document.getElementById('trainEvalSteps').value)
       })
     });
     const reader = resp.body.getReader();
@@ -890,14 +1455,11 @@ async function startTraining() {
     while (true) {
       const {done, value} = await reader.read();
       if (done) break;
-      const text = decoder.decode(value, {stream: true});
-      log.textContent += text;
+      log.textContent += decoder.decode(value, {stream: true});
       log.scrollTop = log.scrollHeight;
     }
-  } catch(e) {
-    log.textContent += `\nError: ${e.message}`;
-  }
-  
+  } catch(e) { log.textContent += `\nError: ${e.message}`; }
+
   trainingActive = false;
   document.getElementById('trainStartBtn').disabled = false;
   document.getElementById('trainStopBtn').disabled = true;
@@ -919,7 +1481,6 @@ function updateTrainingMetrics(data) {
   document.getElementById('trainLoss').textContent = data.loss ? data.loss.toFixed(4) : '—';
   document.getElementById('trainProgress').textContent = data.progress || '—';
   document.getElementById('trainSpeed').textContent = data.speed || '—';
-  
   if (data.loss && lossChart) {
     lossChart.data.labels.push(data.step || lossChart.data.labels.length);
     lossChart.data.datasets[0].data.push(data.loss);
@@ -933,61 +1494,61 @@ function updateTrainingMetrics(data) {
 
 // ─── Dataset ───
 function createDataset() {
-  const prompts = document.getElementById('dsPrompts').value.split('\n').filter(p => p.trim());
+  const format = document.getElementById('dsFormat').value;
+  const field1 = document.getElementById('dsField1').value.split('\n').filter(p => p.trim());
+  const field2 = document.getElementById('dsField2').value.split('\n').filter(p => p.trim());
   const output = document.getElementById('dsOutput').value || 'dataset.jsonl';
   const log = document.getElementById('dsLog');
-  
-  if (prompts.length === 0) { toast('Enter at least one prompt', 'error'); return; }
-  
-  let jsonl = prompts.map(p => JSON.stringify({prompt: p, completion: ''})).join('\n');
-  log.textContent = `Generated ${prompts.length} samples for ${output}:\n${jsonl}`;
-  
-  // Download via data URI
+  if (field1.length === 0) { toast('Enter at least one entry', 'error'); return; }
+
+  let jsonl;
+  if (format === 'alpaca') {
+    jsonl = field1.map((instr, i) => JSON.stringify({
+      instruction: instr, input: field2[i] || '', output: ''
+    })).join('\n');
+  } else if (format === 'sharegpt') {
+    jsonl = field1.map((msg, i) => JSON.stringify({
+      conversations: [
+        { from: 'human', value: msg },
+        { from: 'gpt', value: field2[i] || '' }
+      ]
+    })).join('\n');
+  } else {
+    jsonl = field1.map((p, i) => JSON.stringify({prompt: p, completion: field2[i] || ''})).join('\n');
+  }
+
+  log.textContent = `Generated ${field1.length} samples (${format} format) for ${output}:\n${jsonl.slice(0, 500)}...`;
   const blob = new Blob([jsonl], {type: 'application/jsonl'});
   const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = output;
-  a.click();
+  const a = document.createElement('a'); a.href = url; a.download = output; a.click();
   URL.revokeObjectURL(url);
-  toast(`Created ${prompts.length} samples`, 'success');
+  toast(`Created ${field1.length} samples in ${format} format`, 'success');
 }
 
 async function autoLabel() {
   const model = document.getElementById('dsModel').value;
   const inputFile = document.getElementById('dsInputFile').value;
   const outputFile = document.getElementById('dsOutputFile').value || 'labeled.jsonl';
+  const maxTokens = parseInt(document.getElementById('dsMaxTokens').value) || 256;
   const btn = document.getElementById('dsAutoBtn');
   const log = document.getElementById('dsAutoLog');
-  
   if (!model || !inputFile) { toast('Select model and input file', 'error'); return; }
-  
-  btn.disabled = true;
-  btn.textContent = '⏳ Labeling...';
-  log.textContent = 'Starting auto-label...\n';
-  
+
+  btn.disabled = true; btn.textContent = '⏳ Labeling...'; log.textContent = 'Starting auto-label...\n';
   try {
     const resp = await fetch(`${API}/api/dataset/auto-label`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({model, input: inputFile, output: outputFile})
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model, input: inputFile, output: outputFile, max_tokens: maxTokens})
     });
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     while (true) {
-      const {done, value} = await reader.read();
-      if (done) break;
-      log.textContent += decoder.decode(value, {stream: true});
-      log.scrollTop = log.scrollHeight;
+      const {done, value} = await reader.read(); if (done) break;
+      log.textContent += decoder.decode(value, {stream: true}); log.scrollTop = log.scrollHeight;
     }
-    toast('Auto-label complete!', 'success');
-    loadDatasets();
-  } catch(e) {
-    log.textContent += `\nError: ${e.message}`;
-    toast('Auto-label failed: ' + e.message, 'error');
-  }
-  
-  btn.disabled = false;
-  btn.textContent = '✨ Auto-Label Dataset';
+    toast('Auto-label complete!', 'success'); loadDatasets();
+  } catch(e) { log.textContent += `\nError: ${e.message}`; toast('Auto-label failed', 'error'); }
+  btn.disabled = false; btn.textContent = '✨ Auto-Label Dataset';
 }
 
 // ─── Export ───
@@ -997,71 +1558,51 @@ async function startExport() {
   const outfile = document.getElementById('exportOutput').value || `${model.split('/').pop()}-${outtype}.gguf`;
   const btn = document.getElementById('exportBtn');
   const log = document.getElementById('exportLog');
-  
   if (!model) { toast('Enter a HuggingFace model ID', 'error'); return; }
-  
-  btn.disabled = true;
-  btn.textContent = '⏳ Exporting...';
-  log.textContent = 'Starting export...\n';
-  
+
+  btn.disabled = true; btn.textContent = '⏳ Exporting...'; log.textContent = 'Starting export...\n';
   try {
     const resp = await fetch(`${API}/api/export`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({model, outtype, outfile})
     });
     const result = await resp.json();
     const jobId = result.job_id;
     log.textContent += `Job ID: ${jobId}\n`;
-    
-    // Poll for status
     while (true) {
       await new Promise(r => setTimeout(r, 1000));
       const status = await apiFetch(`/api/export/${jobId}`);
-      log.textContent = status.log || log.textContent;
-      log.scrollTop = log.scrollHeight;
-      if (status.status === 'done') {
-        toast('Export complete!', 'success');
-        break;
-      }
-      if (status.status === 'error') {
-        toast('Export failed!', 'error');
-        break;
-      }
+      log.textContent = status.log || log.textContent; log.scrollTop = log.scrollHeight;
+      if (status.status === 'done') { toast('Export complete!', 'success'); break; }
+      if (status.status === 'error') { toast('Export failed!', 'error'); break; }
     }
-  } catch(e) {
-    log.textContent += `\nError: ${e.message}`;
-    toast('Export failed: ' + e.message, 'error');
-  }
-  
-  btn.disabled = false;
-  btn.textContent = '📤 Start Export';
-  loadModels();
+  } catch(e) { log.textContent += `\nError: ${e.message}`; toast('Export failed', 'error'); }
+  btn.disabled = false; btn.textContent = '📤 Start Export'; loadModels();
 }
 
 // ─── Benchmark ───
 async function runBenchmark() {
   const model = document.getElementById('benchModel').value;
   const tokens = parseInt(document.getElementById('benchTokens').value) || 128;
-  const prompt = document.getElementById('benchPrompt').value || 'Hello';
+  const promptTokens = parseInt(document.getElementById('benchPromptTokens').value) || 512;
+  const threads = parseInt(document.getElementById('benchThreads').value) || 0;
+  const prompt = document.getElementById('benchPrompt').value || '';
   const btn = document.getElementById('benchBtn');
   const results = document.getElementById('benchResults');
-  
   if (!model) { toast('Select a model', 'error'); return; }
-  
-  btn.disabled = true;
-  btn.textContent = '⏳ Benchmarking...';
+
+  btn.disabled = true; btn.textContent = '⏳ Benchmarking...';
   results.innerHTML = '<tr><td class="text-dim">Running benchmark...</td><td></td></tr>';
-  
   try {
     const data = await apiFetch('/api/benchmark', {
       method: 'POST',
-      body: JSON.stringify({model, prompt, max_tokens: tokens})
+      body: JSON.stringify({model, prompt, max_tokens: tokens, prompt_tokens: promptTokens, threads})
     });
-    
+    const ppSpeed = data.prompt_tokens_per_second || '—';
+    const tgSpeed = data.tokens_per_second || '—';
     results.innerHTML = `
-      <tr><td>Prompt Processing</td><td class="text-green">${data.prompt_tokens_per_second || '—'} tok/s</td></tr>
-      <tr><td>Text Generation</td><td class="text-green">${data.tokens_per_second || '—'} tok/s</td></tr>
+      <tr><td>Prompt Processing</td><td class="text-green" style="font-weight:700">${ppSpeed} tok/s</td></tr>
+      <tr><td>Text Generation</td><td class="text-green" style="font-weight:700">${tgSpeed} tok/s</td></tr>
       <tr><td>Total Time</td><td>${(data.total_time_seconds || 0).toFixed(2)}s</td></tr>
       <tr><td>Prompt Tokens</td><td>${data.prompt_tokens || 0}</td></tr>
       <tr><td>Generated Tokens</td><td>${data.generated_tokens || 0}</td></tr>
@@ -1069,13 +1610,124 @@ async function runBenchmark() {
       <tr><td>Response Preview</td><td class="text-dim" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml((data.response || '').slice(0,100))}</td></tr>
     `;
     toast('Benchmark complete!', 'success');
+
+    // Add to history
+    benchHistory.push({ pp: parseFloat(ppSpeed) || 0, tg: parseFloat(tgSpeed) || 0, model: model.split('/').pop() });
+    if (benchHistory.length > 1) showBenchHistory();
   } catch(e) {
     results.innerHTML = `<tr><td class="text-red">Error: ${e.message}</td><td></td></tr>`;
-    toast('Benchmark failed: ' + e.message, 'error');
+    toast('Benchmark failed', 'error');
   }
-  
-  btn.disabled = false;
-  btn.textContent = '⚡ Run Benchmark';
+  btn.disabled = false; btn.textContent = '⚡ Run Benchmark';
+}
+
+function showBenchHistory() {
+  document.getElementById('benchHistoryCard').style.display = '';
+  if (!benchHistoryChart) {
+    const ctx = document.getElementById('benchHistoryChart').getContext('2d');
+    benchHistoryChart = new Chart(ctx, {
+      type: 'bar', data: { labels: [], datasets: [
+        { label: 'Prompt tok/s', data: [], backgroundColor: 'rgba(91,141,239,0.7)', borderRadius: 4 },
+        { label: 'Gen tok/s', data: [], backgroundColor: 'rgba(63,185,80,0.7)', borderRadius: 4 }
+      ]},
+      options: { responsive: true, maintainAspectRatio: false, scales: {
+        x: { grid: { display: false }, ticks: { color: '#7d8590', font: { size: 9 } } },
+        y: { grid: { color: 'rgba(37,45,58,0.5)' }, ticks: { color: '#7d8590', font: { size: 9 } } }
+      }, plugins: { legend: { labels: { color: '#7d8590', font: { size: 10 } } } } }
+    });
+  }
+  benchHistoryChart.data.labels = benchHistory.map(b => b.model.slice(0, 20));
+  benchHistoryChart.data.datasets[0].data = benchHistory.map(b => b.pp);
+  benchHistoryChart.data.datasets[1].data = benchHistory.map(b => b.tg);
+  benchHistoryChart.update();
+}
+
+// ─── Evaluate ───
+async function runEvaluation() {
+  const model = document.getElementById('evalModel').value;
+  const evalType = document.getElementById('evalType').value;
+  const evalData = document.getElementById('evalData').value;
+  const maxSamples = parseInt(document.getElementById('evalMaxSamples').value) || 100;
+  if (!model) { toast('Select a model', 'error'); return; }
+  if (!evalData && evalType === 'accuracy') { toast('Provide evaluation dataset for accuracy test', 'error'); return; }
+
+  const btn = document.getElementById('evalBtn');
+  const results = document.getElementById('evalResults');
+  const log = document.getElementById('evalLog');
+  btn.disabled = true; btn.textContent = '⏳ Evaluating...';
+  log.style.display = ''; log.textContent = 'Starting evaluation...\n';
+  results.innerHTML = '<div style="font-size:32px;margin-bottom:12px">⏳</div><div style="font-size:14px">Evaluating...</div>';
+
+  try {
+    const resp = await fetch(`${API}/api/evaluate`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model, type: evalType, data: evalData, max_samples: maxSamples})
+    });
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let fullLog = '';
+    while (true) {
+      const {done, value} = await reader.read(); if (done) break;
+      const chunk = decoder.decode(value, {stream: true});
+      fullLog += chunk; log.textContent += chunk; log.scrollTop = log.scrollHeight;
+    }
+    // Try to parse final result
+    try {
+      const lastLine = fullLog.trim().split('\n').pop();
+      const result = JSON.parse(lastLine);
+      if (result.perplexity) {
+        results.innerHTML = `
+          <div style="font-size:40px;font-weight:800;color:var(--accent);margin-bottom:4px">${result.perplexity.toFixed(2)}</div>
+          <div class="stat-label" style="margin-bottom:16px">Perplexity (lower = better)</div>
+          <div class="stats-grid">
+            <div class="stat-card"><div class="stat-value c1">${result.tokens || '—'}</div><div class="stat-label">Tokens</div></div>
+            <div class="stat-card"><div class="stat-value c2">${result.loss?.toFixed(4) || '—'}</div><div class="stat-label">Avg Loss</div></div>
+            <div class="stat-card"><div class="stat-value c3">${result.samples || '—'}</div><div class="stat-label">Samples</div></div>
+          </div>`;
+      } else if (result.accuracy !== undefined) {
+        results.innerHTML = `
+          <div style="font-size:40px;font-weight:800;color:var(--green);margin-bottom:4px">${(result.accuracy * 100).toFixed(1)}%</div>
+          <div class="stat-label" style="margin-bottom:16px">Accuracy</div>
+          <div class="stats-grid">
+            <div class="stat-card"><div class="stat-value c1">${result.correct || '—'}</div><div class="stat-label">Correct</div></div>
+            <div class="stat-card"><div class="stat-value c3">${result.total || '—'}</div><div class="stat-label">Total</div></div>
+          </div>`;
+      }
+    } catch(e) {
+      results.innerHTML = `<div style="font-size:14px;color:var(--dim)">Evaluation complete. See log for details.</div>`;
+    }
+    toast('Evaluation complete!', 'success');
+  } catch(e) {
+    results.innerHTML = `<div class="text-red">Error: ${e.message}</div>`;
+    toast('Evaluation failed', 'error');
+  }
+  btn.disabled = false; btn.textContent = '🎯 Run Evaluation';
+}
+
+// ─── Quantize ───
+async function runQuantize() {
+  const model = document.getElementById('quantModel').value;
+  const target = document.getElementById('quantTarget').value;
+  const output = document.getElementById('quantOutput').value || `quantized-${target}.gguf`;
+  if (!model) { toast('Select a model', 'error'); return; }
+
+  const btn = document.getElementById('quantBtn');
+  const log = document.getElementById('quantLog');
+  btn.disabled = true; btn.textContent = '⏳ Quantizing...'; log.textContent = 'Starting quantization...\n';
+  try {
+    const resp = await fetch(`${API}/api/quantize`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model, target, output})
+    });
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const {done, value} = await reader.read(); if (done) break;
+      log.textContent += decoder.decode(value, {stream: true}); log.scrollTop = log.scrollHeight;
+    }
+    toast('Quantization complete!', 'success'); loadModels();
+  } catch(e) { log.textContent += `\nError: ${e.message}`; toast('Quantization failed', 'error'); }
+  btn.disabled = false; btn.textContent = '🔮 Quantize & Compare';
 }
 
 // ─── Merge ───
@@ -1084,41 +1736,43 @@ async function runMerge() {
   const lora = document.getElementById('mergeLora').value;
   const type = document.getElementById('mergeType').value;
   const outfile = document.getElementById('mergeOutput').value || 'merged.gguf';
+  if (!base || !lora) { toast('Select base model and LoRA adapter', 'error'); return; }
+
   const btn = document.getElementById('mergeBtn');
   const log = document.getElementById('mergeLog');
-  
-  if (!base || !lora) { toast('Select base model and LoRA adapter', 'error'); return; }
-  
-  btn.disabled = true;
-  btn.textContent = '⏳ Merging...';
-  log.textContent = 'Starting merge...\n';
-  
+  btn.disabled = true; btn.textContent = '⏳ Merging...'; log.textContent = 'Starting merge...\n';
   try {
     const resp = await fetch(`${API}/api/merge`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({base, lora, output: outfile, type})
     });
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     while (true) {
-      const {done, value} = await reader.read();
-      if (done) break;
-      log.textContent += decoder.decode(value, {stream: true});
-      log.scrollTop = log.scrollHeight;
+      const {done, value} = await reader.read(); if (done) break;
+      log.textContent += decoder.decode(value, {stream: true}); log.scrollTop = log.scrollHeight;
     }
-    toast('Merge complete!', 'success');
-    loadModels();
-  } catch(e) {
-    log.textContent += `\nError: ${e.message}`;
-    toast('Merge failed: ' + e.message, 'error');
-  }
-  
-  btn.disabled = false;
-  btn.textContent = '🔗 Merge Models';
+    toast('Merge complete!', 'success'); loadModels();
+  } catch(e) { log.textContent += `\nError: ${e.message}`; toast('Merge failed', 'error'); }
+  btn.disabled = false; btn.textContent = '🔗 Merge Models';
 }
 
-// ─── Init on load ───
+// ─── Templates ───
+function selectTemplate(name) {
+  const t = TEMPLATES[name];
+  if (!t) return;
+  document.querySelectorAll('.template-card').forEach(c => c.classList.remove('selected'));
+  event.currentTarget.classList.add('selected');
+  applyTrainTemplate(name);
+  // Switch to train tab
+  document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelector('[data-tab="train"]').classList.add('active');
+  document.getElementById('panel-train').classList.add('active');
+  document.getElementById('topbarTitle').textContent = TAB_ICONS.train;
+}
+
+// ─── Init ───
 initLossChart();
 refreshAll();
 setInterval(loadBackend, 15000);
