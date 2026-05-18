@@ -119,17 +119,19 @@ jobs:
 
             echo ""
             echo "=== Verify Studio UI is served ==="
-            STUDIO_OK=$(curl -sf http://localhost:8080/studio.html 2>/dev/null | head -c 100)
-            if echo "$STUDIO_OK" | grep -qi "doctype\|MojoLlama\|html"; then
+            STUDIO_OK=$(curl -sf http://localhost:8080/studio.html 2>/dev/null || true)
+            STUDIO_OK_TRUNC=$(echo "$STUDIO_OK" | head -c 100)
+            if echo "$STUDIO_OK_TRUNC" | grep -qi "doctype\|MojoLlama\|html"; then
               echo "Studio UI: SERVED on port 8080"
             else
               echo "Studio UI: FAILED"
-              echo "Response was: $STUDIO_OK"
+              echo "Response was: $STUDIO_OK_TRUNC"
               exit 1
             fi
 
-            CHAT_OK=$(curl -sf http://localhost:8080/chat.html 2>/dev/null | head -c 100)
-            if echo "$CHAT_OK" | grep -qi "doctype\|MojoLlama\|html"; then
+            CHAT_OK=$(curl -sf http://localhost:8080/chat.html 2>/dev/null || true)
+            CHAT_OK_TRUNC=$(echo "$CHAT_OK" | head -c 100)
+            if echo "$CHAT_OK_TRUNC" | grep -qi "doctype\|MojoLlama\|html"; then
               echo "Chat UI: SERVED on port 8080"
             else
               echo "Chat UI: FAILED"
