@@ -1,186 +1,169 @@
-"""MojoLlama Normalization Kernels — RMSNorm and RoPE.
+"""MojoLlama Normalization Kernels v2 — stride-8 SIMD loops.
 
 RMSNorm: x / sqrt(mean(x^2) + eps) * weight
 RoPE: rotary position embeddings via complex rotation
+SiLU: x * sigmoid(x) = x / (1 + exp(-x))
 
-Both use SIMD vector types. Works on stack data in Mojo 0.26.2.
-Becomes pointer-based when heap APIs land.
+All use stride-8 F32x8 loops for full-dimension vectorization.
+Memory layout: pointer-based for interoperability with C kernels.
 """
-
-from std.sys.info import CompilationTarget
-from std.math import exp, sqrt
+from std.memory.unsafe_pointer import alloc
+from std.math import exp, sqrt, cos, sin, pow
 
 alias F32x8 = SIMD[DType.float32, 8]
 
+# ─── RMSNorm (full-dimension stride-8 SIMD) ────────────────────────────
 
-# ─── RMSNorm (single vector) ────────────────────────────────────────────
-
-@always_inline
-fn rms_norm_vec(x: F32x8, weight: F32x8, eps: Float32) -> F32x8:
-    """RMSNorm for one vector of 8 float32 values.
-    
-    out[i] = x[i] / sqrt(mean(x^2) + eps) * weight[i]
-    
-    Reference: MAX's rms_norm_ops.mojo
+def rms_norm(
+    x: UnsafePointer[Float32, MutAnyOrigin],
+    weight: UnsafePointer[Float32, MutAnyOrigin],
+    out: UnsafePointer[Float32, MutAnyOrigin],
+    n: Int,
+):
+    """Vectorized RMS norm over full dimension n.
+    Uses F32x8 SIMD for sum-of-squares and output.
+    Matches C kernel's hadd-based reduction pattern.
     """
-    # mean(x^2)
     var ss: Float32 = 0.0
-    for i in range(8):
-        ss += x[i] * x[i]
-    var mean_sq = ss / 8.0
-    
-    # 1 / sqrt(mean_sq + eps)
-    var inv_rms = 1.0 / sqrt(mean_sq + eps)
-    
-    # out = x * inv_rms * weight
-    var out = F32x8()
-    for i in range(8):
-        out[i] = x[i] * inv_rms * weight[i]
-    return out
+    var i = 0
+    # SIMD sum of squares
+    while i + 8 <= n:
+        var v = x.load[width=8](i)
+        ss += (v * v).reduce_add()
+        i += 8
+    # Scalar tail
+    while i < n:
+        ss += x.load(i) * x.load(i)
+        i += 1
+    var inv_rms = 1.0 / sqrt(ss / Float32(n) + 1e-6)
+    var inv_v = F32x8(inv_rms)
+    # SIMD output: out[i] = x[i] * inv_rms * weight[i]
+    i = 0
+    while i + 8 <= n:
+        var v = x.load[width=8](i)
+        var w = weight.load[width=8](i)
+        out.store[width=8](i, v * inv_v * w)
+        i += 8
+    while i < n:
+        out.store(i, x.load(i) * inv_rms * weight.load(i))
+        i += 1
 
+# ─── SiLU (full-dimension stride-8, scalar exp) ───────────────────────
 
-# ─── RMSNorm (pointer-based, future) ────────────────────────────────────
-# When heap APIs land: takes pointer to N floats, returns pointer to output.
-# For now: use rms_norm_vec for fixed-size SIMD vectors.
-
-
-# ─── RoPE (single vector pair) ──────────────────────────────────────────
-
-@always_inline
-fn rope_pair(x0: Float32, x1: Float32, cos_val: Float32, sin_val: Float32) -> F32x8:
-    """Apply RoPE rotation to one pair of dimensions.
-    
-    RoPE rotates a 2D vector (x0, x1) by angle theta:
-        out0 = x0 * cos(theta) - x1 * sin(theta)
-        out1 = x0 * sin(theta) + x1 * cos(theta)
-    
-    Reference: MAX's rotary_embedding.mojo
+def silu(
+    x: UnsafePointer[Float32, MutAnyOrigin],
+    out: UnsafePointer[Float32, MutAnyOrigin],
+    n: Int,
+):
+    """SiLU activation: out[i] = x[i] / (1 + exp(-x[i]))
+    Uses F32x8 load/store, scalar exp per lane (AVX2 has no vector exp).
+    Matches C kernel's approach.
     """
-    var out = F32x8()
-    out[0] = x0 * cos_val - x1 * sin_val
-    out[1] = x0 * sin_val + x1 * cos_val
-    return out
+    var one = F32x8(1.0)
+    var i = 0
+    while i + 8 <= n:
+        var v = x.load[width=8](i)
+        var result = F32x8()
+        for j in range(8):
+            result[j] = v[j] / (1.0 + exp(-v[j]))
+        out.store[width=8](i, result)
+        i += 8
+    while i < n:
+        var val = x.load(i)
+        out.store(i, val / (1.0 + exp(-val)))
+        i += 1
 
+# ─── RoPE (rotary position embeddings) ────────────────────────────────
 
-@always_inline
-fn rope_vec(x: F32x8, cos_vals: F32x8, sin_vals: F32x8) -> F32x8:
-    """Apply RoPE to an 8-dim vector (4 pairs of dims).
-    
-    x has shape [d0, d1, d2, d3, d4, d5, d6, d7]
-    RoPE rotates pairs (d0,d1), (d2,d3), (d4,d5), (d6,d7)
-    cos_vals has cos(theta/2) for each pair
-    sin_vals has sin(theta/2) for each pair
-    
-    Using complex rotation:
-        out[2i]   = x[2i] * cos[i] - x[2i+1] * sin[i]
-        out[2i+1] = x[2i] * sin[i] + x[2i+1] * cos[i]
+def rope(
+    x: UnsafePointer[Float32, MutAnyOrigin],
+    out: UnsafePointer[Float32, MutAnyOrigin],
+    pos: Int, head_dim: Int,
+):
+    """Apply rotary position embeddings.
+    For each pair (x[i], x[i+half]):
+      out[i]      = x[i] * cos(pos * freq_i) - x[i+half] * sin(pos * freq_i)
+      out[i+half] = x[i] * sin(pos * freq_i) + x[i+half] * cos(pos * freq_i)
+    where freq_i = 1 / 10000^(2i/d)
     """
-    var out = F32x8()
-    for i in range(4):
-        var c = cos_vals[i]
-        var s = sin_vals[i]
-        out[i * 2]     = x[i * 2] * c - x[i * 2 + 1] * s
-        out[i * 2 + 1] = x[i * 2] * s + x[i * 2 + 1] * c
-    return out
+    var half = head_dim // 2
+    var i = 0
+    while i + 8 <= half:
+        for j in range(8):
+            var idx = Float32(i + j)
+            var freq = 1.0 / pow(10000.0, 2.0 * idx / Float32(head_dim))
+            var angle = Float32(pos) * freq
+            var cos_a = cos(angle)
+            var sin_a = sin(angle)
+            var x0 = x.load(i + j)
+            var x1 = x.load(i + j + half)
+            out.store(i + j, x0 * cos_a - x1 * sin_a)
+            out.store(i + j + half, x0 * sin_a + x1 * cos_a)
+        i += 8
+    while i < half:
+        var idx = Float32(i)
+        var freq = 1.0 / pow(10000.0, 2.0 * idx / Float32(head_dim))
+        var angle = Float32(pos) * freq
+        var cos_a = cos(angle)
+        var sin_a = sin(angle)
+        var x0 = x.load(i)
+        var x1 = x.load(i + half)
+        out.store(i, x0 * cos_a - x1 * sin_a)
+        out.store(i + half, x0 * sin_a + x1 * cos_a)
+        i += 1
+    # Copy remaining dimensions unchanged
+    while i < head_dim:
+        out.store(i, x.load(i))
+        i += 1
 
+# ─── Softmax (stride-8 max/sum, scalar exp) ─────────────────────────────
 
-# ─── SiLU activation ────────────────────────────────────────────────────
-
-@always_inline
-fn silu_vec(x: F32x8) -> F32x8:
-    """SiLU activation: x * sigmoid(x) = x / (1 + exp(-x))"""
-    var out = F32x8()
-    for i in range(8):
-        out[i] = x[i] / (1.0 + exp(-x[i]))
-    return out
-
-
-# ─── Tests ──────────────────────────────────────────────────────────────
-
-fn approx_eq(a: Float32, b: Float32, tol: Float32 = 0.01) -> Bool:
-    var d = a - b
-    if d < 0.0:
-        d = -d
-    return d < tol
-
-fn test_rms_norm():
-    """RMSNorm with known values.
-    
-    x = [3, 1, 0, 0, 0, 0, 0, 0], weight = [1,1,1,...], eps = 1e-6
-    mean_sq = (9 + 1 + 0 + ...) / 8 = 10/8 = 1.25
-    inv_rms = 1/sqrt(1.25 + 1e-6) = 0.8944
-    out[0] = 3 * 0.8944 * 1 = 2.683
-    out[1] = 1 * 0.8944 * 1 = 0.894
+def softmax(
+    x: UnsafePointer[Float32, MutAnyOrigin],
+    out: UnsafePointer[Float32, MutAnyOrigin],
+    n: Int,
+):
+    """Vectorized softmax: find max (SIMD), exp(x-max) (scalar), normalize (SIMD).
+    Matches C kernel's AVX2 hadd-based max reduction pattern.
     """
-    var x = F32x8(3.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    var w = F32x8(1.0)
-    var out = rms_norm_vec(x, w, 1e-6)
-    print("rms_norm[0]:", out[0], "(expect 2.683)")
-    print("rms_norm[1]:", out[1], "(expect 0.894)")
-    if approx_eq(out[0], 2.683) and approx_eq(out[1], 0.894):
-        print("  PASS")
-    else:
-        print("  FAIL")
+    # Find max for numerical stability
+    var max_val: Float32 = -1e30
+    var i = 0
+    while i + 8 <= n:
+        var v = x.load[width=8](i)
+        # SIMD max reduction
+        var m = v.reduce_max()
+        if m > max_val: max_val = m
+        i += 8
+    while i < n:
+        if x.load(i) > max_val: max_val = x.load(i)
+        i += 1
 
-fn test_rope():
-    """RoPE with known values.
-    
-    x = [1, 0, 0, 0, 0, 0, 0, 0]  (unit vector along dim 0)
-    theta = 0 (cos=1, sin=0) → no rotation
-    Expected: output = input = [1, 0, 0, ...]
-    
-    theta = pi/2 (cos=0, sin=1):
-    out[0] = 1*0 - 0*1 = 0
-    out[1] = 1*1 + 0*0 = 1
-    Expected: [0, 1, 0, ...]
-    """
-    var x = F32x8(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    
-    # No rotation
-    var cos0 = F32x8(1.0)
-    var sin0 = F32x8(0.0)
-    var out0 = rope_vec(x, cos0, sin0)
-    print("rope(theta=0)[0]:", out0[0], "(expect 1.0)")
-    print("rope(theta=0)[1]:", out0[1], "(expect 0.0)")
-    
-    # 90 degree rotation (pi/2)
-    var cos1 = F32x8(0.0)
-    var sin1 = F32x8(1.0)
-    var out1 = rope_vec(x, cos1, sin1)
-    print("rope(theta=pi/2)[0]:", out1[0], "(expect 0.0)")
-    print("rope(theta=pi/2)[1]:", out1[1], "(expect 1.0)")
-    
-    if approx_eq(out0[0], 1.0) and approx_eq(out1[1], 1.0):
-        print("  PASS")
-    else:
-        print("  FAIL")
+    # exp(x - max) and sum
+    var sum: Float32 = 0.0
+    i = 0
+    while i + 8 <= n:
+        var v = x.load[width=8](i)
+        var result = F32x8()
+        for j in range(8):
+            result[j] = exp(v[j] - max_val)
+        out.store[width=8](i, result)
+        sum += result.reduce_add()
+        i += 8
+    while i < n:
+        var val = exp(x.load(i) - max_val)
+        out.store(i, val)
+        sum += val
+        i += 1
 
-fn test_silu():
-    """SiLU with known values.
-    
-    silu(0) = 0 / (1 + exp(0)) = 0 / 2 = 0
-    silu(1) = 1 / (1 + exp(-1)) = 1 / (1 + 0.368) = 0.731
-    silu(-1) = -1 / (1 + exp(1)) = -1 / (1 + 2.718) = -0.269
-    """
-    var x = F32x8(0.0, 1.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    var out = silu_vec(x)
-    print("silu(0):", out[0], "(expect 0.0)")
-    print("silu(1):", out[1], "(expect 0.731)")
-    print("silu(-1):", out[2], "(expect -0.269)")
-    if approx_eq(out[0], 0.0) and approx_eq(out[1], 0.731) and approx_eq(out[2], -0.269):
-        print("  PASS")
-    else:
-        print("  FAIL")
-
-
-fn main():
-    print("=== MojoLlama Normalization Kernels ===")
-    print()
-    
-    test_rms_norm()
-    print()
-    test_rope()
-    print()
-    test_silu()
-    print()
-    print("Done.")
+    # Normalize
+    var inv_sum = 1.0 / sum
+    var inv_v = F32x8(inv_sum)
+    i = 0
+    while i + 8 <= n:
+        var v = out.load[width=8](i)
+        out.store[width=8](i, v * inv_v)
+        i += 8
+    while i < n:
+        out.store(i, out.load(i) * inv_sum)
+        i += 1
