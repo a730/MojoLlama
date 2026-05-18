@@ -10,6 +10,7 @@
   --bg: #0a0d14; --surface: #11161e; --border: #1e2533;
   --text: #e4e8ee; --dim: #7a8395; --accent: #5b8def;
   --green: #3fb950; --purple: #a37cf0; --orange: #f0883e;
+  --red: #f85149;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: 'Inter', -apple-system, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
@@ -25,9 +26,14 @@ nav .nav-links a { font-size: 14px; font-weight: 500; color: var(--dim); transit
 nav .nav-links a:hover { color: var(--text); text-decoration: none; }
 .btn-nav { padding: 7px 18px; border-radius: 8px; background: var(--accent); color: #fff !important; font-weight: 600 !important; }
 .btn-nav:hover { filter: brightness(1.15); text-decoration: none !important; }
+#serverStatus { font-size: 12px; padding: 4px 10px; border-radius: 12px; border: 1px solid var(--border); display: flex; align-items: center; gap: 6px; cursor: pointer; transition: all .2s; }
+#serverStatus:hover { border-color: var(--accent); }
+.status-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.status-dot.online { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.status-dot.offline { background: var(--red); }
 
 /* Hero */
-.hero { padding: 80px 40px 60px; text-align: center; max-width: 800px; margin: 0 auto; }
+.hero { padding: 80px 40px 40px; text-align: center; max-width: 800px; margin: 0 auto; }
 .hero h1 { font-size: 52px; font-weight: 800; letter-spacing: -1.5px; line-height: 1.1; margin-bottom: 16px; }
 .hero h1 span { background: linear-gradient(135deg, var(--accent), var(--purple)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
 .hero p { font-size: 18px; color: var(--dim); line-height: 1.6; margin-bottom: 32px; }
@@ -37,6 +43,15 @@ nav .nav-links a:hover { color: var(--text); text-decoration: none; }
 .btn-primary-lg:hover { filter: brightness(1.15); transform: translateY(-1px); }
 .btn-outline-lg { background: transparent; border: 1px solid var(--border); color: var(--text); }
 .btn-outline-lg:hover { border-color: var(--accent); transform: translateY(-1px); }
+
+/* Connection panel */
+.connect-panel { max-width: 700px; margin: 0 auto; padding: 0 40px; }
+.connect-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px 28px; margin-bottom: 12px; }
+.connect-card h3 { font-size: 15px; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+.connect-card p, .connect-card ol { font-size: 13px; color: var(--dim); line-height: 1.7; }
+.connect-card ol { padding-left: 20px; }
+.connect-card code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 12px; color: var(--accent); }
+.connect-card input { width: 100%; padding: 8px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; font-family: monospace; margin: 6px 0 4px; }
 
 /* Features */
 .features { max-width: 1200px; margin: 0 auto; padding: 40px; }
@@ -64,13 +79,18 @@ nav .nav-links a:hover { color: var(--text); text-decoration: none; }
 footer { text-align: center; padding: 40px; color: var(--dim); font-size: 13px; border-top: 1px solid var(--border); margin-top: 60px; }
 footer a { color: var(--accent); }
 
+/* Toast */
+.toast { position: fixed; bottom: 20px; right: 20px; padding: 10px 18px; border-radius: 8px; font-size: 13px; z-index: 100; max-width: 400px; animation: fadeIn .3s ease; }
+.toast.info { background: var(--surface); border: 1px solid var(--border); color: var(--text); }
+.toast.success { background: #1f3f2a; border: 1px solid var(--green); color: var(--green); }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
 @media (max-width: 768px) {
   .hero h1 { font-size: 32px; }
   .feature-grid { grid-template-columns: 1fr; }
-  .feature-card { padding: 20px; }
   nav { padding: 12px 16px; flex-wrap: wrap; }
-  .benchmarks { padding: 0 16px; }
-  .features { padding: 20px; }
+  .benchmarks, .features, .connect-panel { padding: 0 16px; }
+  .hero { padding: 40px 16px; }
 }
 </style>
 </head>
@@ -80,17 +100,41 @@ footer a { color: var(--accent); }
   <div class="nav-links">
     <a href="chat.html">Chat</a>
     <a href="studio.html">Studio</a>
-    <a href="https://github.com/mojollama">GitHub</a>
+    <a href="https://git.bamse.cloud/a730/MojoLlama">Git</a>
+    <span id="serverStatus" onclick="showServerInfo()" title="Click for details">
+      <span class="status-dot offline" id="statusDot"></span>
+      <span id="statusLabel">checking...</span>
+    </span>
     <a href="studio.html" class="btn-nav">Launch Studio</a>
   </div>
 </nav>
 
 <section class="hero">
   <h1>Inference <span>at the speed</span> of Mojo</h1>
-  <p>MojoLlama is a high-performance LLM inference engine combining GGUF support, continuous batching, and PagedAttention. Built in Mojo/MAX to exceed llama.cpp speed while being simpler to deploy.</p>
+  <p>MojoLlama is a high-performance LLM inference engine combining GGUF support, continuous batching, and PagedAttention. Built to run on CPU today with a path to GPU acceleration through MAX.</p>
   <div class="hero-btns">
     <a href="studio.html" class="btn-lg btn-primary-lg">▲ Launch Studio</a>
     <a href="chat.html" class="btn-lg btn-outline-lg">💬 Try Chat</a>
+  </div>
+</section>
+
+<section class="connect-panel">
+  <div class="connect-card">
+    <h3>🔌 Connect to Live Server</h3>
+    <p>This is a static site. To chat with a model, the Studio needs to connect to a running MojoLlama server.</p>
+    <ol>
+      <li>Open <a href="studio.html"><strong>Studio</strong></a></li>
+      <li>Click the <strong>⚙ gear icon</strong> (top-right) or the <strong>offline badge</strong></li>
+      <li>Enter the server URL and click <strong>Save &amp; Reload</strong></li>
+    </ol>
+    <p style="margin-top:8px">
+      🔗 <strong>Direct access</strong> (no config needed): 
+      <code><span id="directUrl">http://hostname:8080/studio.html</span></code>
+    </p>
+  </div>
+  <div class="connect-card" id="serverDetails" style="display:none;">
+    <h3>📡 Server Details</h3>
+    <p id="serverInfoContent">Loading...</p>
   </div>
 </section>
 
@@ -106,7 +150,7 @@ footer a { color: var(--accent); }
     <div class="feature-card">
       <div class="feature-icon">💬</div>
       <h3>Streaming Chat</h3>
-      <p>Real-time token-by-token streaming via SSE. OpenAI-compatible API so it works with any client.</p>
+      <p>Real-time token-by-token streaming via SSE. OpenAI-compatible API works with any client.</p>
       <span class="feature-badge badge-new">Streaming</span>
     </div>
     <div class="feature-card">
@@ -118,18 +162,18 @@ footer a { color: var(--accent); }
     <div class="feature-card">
       <div class="feature-icon">📤</div>
       <h3>HF → GGUF Export</h3>
-      <p>Convert any HuggingFace model to GGUF with one command. Supports all quantization types (Q4_0 through Q8_0).</p>
+      <p>Convert any HuggingFace model to GGUF with one command. All quantization types supported.</p>
     </div>
     <div class="feature-card">
       <div class="feature-icon">📊</div>
       <h3>Dataset Studio</h3>
-      <p>Create, view, and auto-label datasets. Use the running model to generate completions for unlabeled prompts.</p>
+      <p>Create, view, and auto-label datasets. Use the running model to generate completions for unlabeled data.</p>
       <span class="feature-badge badge-new">Auto-Label</span>
     </div>
     <div class="feature-card">
       <div class="feature-icon">🔬</div>
       <h3>Benchmark Suite</h3>
-      <p>Compare models and quantization levels. Real tok/s metrics for prompt processing and text generation.</p>
+      <p>Compare models and quantization levels. Real tok/s metrics for prompt processing and generation.</p>
     </div>
   </div>
 </section>
@@ -138,21 +182,77 @@ footer a { color: var(--accent); }
   <h2>Performance Benchmarks</h2>
   <table class="bench-table">
     <thead>
-      <tr><th>Model</th><th>Backend</th><th>Prompt</th><th>Generation</th><th>Concurrent</th></tr>
+      <tr><th>Model</th><th>Backend</th><th>Prompt</th><th>Generation</th></tr>
     </thead>
     <tbody>
-      <tr><td>Llama 3.2 1B (Q4_0)</td><td>llama.cpp</td><td class="highlight">1,514 tok/s</td><td class="highlight">162 tok/s</td><td>272 tok/s (4x)</td></tr>
-      <tr><td>Qwen3-30B-A3B (Q4_K_M)</td><td>llama.cpp</td><td>150 tok/s</td><td>28.5 tok/s</td><td>—</td></tr>
-      <tr><td>Llama 3.2 1B (Q4_0)</td><td>MAX CPU</td><td>—</td><td>14.5 tok/s</td><td>—</td></tr>
-      <tr><td>Mojo SIMD Q4_0 (2048×2048)</td><td>Mojo</td><td>—</td><td>172 tok/s (matmul)</td><td>—</td></tr>
-      <tr><td>Custom — Q4_0 @ 1024×4096</td><td>Mojo SIMD</td><td>—</td><td>86 tok/s (matmul)</td><td>—</td></tr>
+      <tr><td>Llama 3.2 1B (Q4_0)</td><td>llama.cpp</td><td class="highlight">1,514 tok/s</td><td class="highlight">162 tok/s</td></tr>
+      <tr><td>Gemma 4 E2B (Q4_K_M)</td><td>llama.cpp</td><td>408 tok/s</td><td>34.5 tok/s</td></tr>
+      <tr><td>Qwen3-30B-A3B (Q4_K_M)</td><td>llama.cpp</td><td>150 tok/s</td><td>28.5 tok/s</td></tr>
+      <tr><td>Mojo SIMD Q4_0 (2048×2048)</td><td>Mojo</td><td>—</td><td>0.86 ms matmul</td></tr>
     </tbody>
   </table>
 </section>
 
 <footer>
   <p>Built with <a href="https://www.modular.com/max">MAX</a> + <a href="https://github.com/ggml-org/llama.cpp">llama.cpp</a> + <a href="https://www.modular.com/mojo">Mojo</a> 🔥</p>
-  <p style="margin-top:8px">MojoLlama Studio v0.2.0 — Train · Export · Dataset · Chat · Benchmark · Merge</p>
+  <p style="margin-top:8px">MojoLlama v0.2.0 — Threadripper 3970X (64c) · DDR4 · AVX2</p>
 </footer>
+
+<script>
+// Check if the running server is accessible from this browser
+(async function checkServer() {
+  const dot = document.getElementById('statusDot');
+  const label = document.getElementById('statusLabel');
+
+  // Try to reach the server via localStorage/Fallback logic (same as Studio)
+  const stored = localStorage.getItem('mojollama_api_url');
+  const baseUrl = stored || `http://${location.hostname}:8080`;
+
+  try {
+    const resp = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(3000) });
+    const data = await resp.json();
+    dot.className = 'status-dot online';
+    label.textContent = `🟢 ${data.backend || 'online'} (${data.uptime || ''})`;
+    label.style.color = 'var(--green)';
+
+    // Show server details
+    const details = document.getElementById('serverDetails');
+    details.style.display = 'block';
+    document.getElementById('serverInfoContent').innerHTML = `
+      <strong>Backend:</strong> ${data.backend || 'unknown'}<br>
+      <strong>Uptime:</strong> ${data.uptime || 'unknown'}<br>
+      <strong>URL:</strong> <code>${baseUrl}</code><br>
+      <strong>Models:</strong> <span id="modelCount">loading...</span>
+    `;
+    // Fetch models too
+    try {
+      const mresp = await fetch(`${baseUrl}/v1/models`, { signal: AbortSignal.timeout(3000) });
+      const mdata = await mresp.json();
+      document.getElementById('modelCount').textContent = (mdata.data || []).length + ' loaded';
+    } catch(e) {
+      document.getElementById('modelCount').textContent = 'unreachable';
+    }
+  } catch(e) {
+    dot.className = 'status-dot offline';
+    label.textContent = '⚫ offline';
+    label.style.color = 'var(--red)';
+  }
+})();
+
+function showServerInfo() {
+  const stored = localStorage.getItem('mojollama_api_url');
+  const url = stored || `http://${location.hostname}:8080`;
+  const details = document.getElementById('serverDetails');
+  if (details.style.display === 'block') {
+    details.style.display = 'none';
+    return;
+  }
+  details.style.display = 'block';
+  details.scrollIntoView({ behavior: 'smooth' });
+}
+
+// Show direct URL on page
+document.getElementById('directUrl').textContent = `${location.protocol}//${location.hostname}:8080/studio.html`;
+</script>
 </body>
 </html>

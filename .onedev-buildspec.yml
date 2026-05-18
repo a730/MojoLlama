@@ -119,6 +119,23 @@ jobs:
             echo "www/ files present:"
             ls -la /onedev-build/work/www/
 
+            echo ""
+            echo "=========================================="
+            echo "  MojoLlama Studio deployed to OneDev"
+            echo "  Static UI: https://git.bamse.cloud/a730/MojoLlama/~site/"
+            echo ""
+            echo "  To connect Studio to a live backend:"
+            echo "  1. Open the Studio site"
+            echo "  2. Click the gear icon ⚙"
+            echo "  3. Enter your server URL (e.g. http://hostname:8080)"
+            echo "  4. The server should be: localhost:8080"
+            echo ""
+            echo "  Server status (from this machine):"
+            curl -sf http://localhost:8080/health 2>/dev/null \
+              && echo "  ✅ Server on :8080 is UP" \
+              || echo "  ⚠️  Server on :8080 unreachable (expected in build container)"
+            echo "=========================================="
+
     triggers:
       - type: BranchUpdateTrigger
         branches: main
