@@ -174,5 +174,7 @@ jobs:
     triggers:
       - type: BranchUpdateTrigger
         branches: main
+      - type: BranchUpdateTrigger
+        branches: dev
 
     retryCondition: never
