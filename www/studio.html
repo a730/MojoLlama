@@ -23,7 +23,8 @@ body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
 .header h1 span { color: var(--accent); }
 .header .ver { color: var(--dim); font-size: 12px; }
 .header-actions { margin-left: auto; display: flex; align-items: center; gap: 16px; }
-.backend-badge { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 4px 10px; border-radius: 12px; border: 1px solid var(--border); }
+.backend-badge { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 4px 10px; border-radius: 12px; border: 1px solid var(--border); cursor: pointer; transition: all .2s; }
+.backend-badge:hover { border-color: var(--accent); }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
 .status-dot.online { background: var(--green); box-shadow: 0 0 6px var(--green); }
 .status-dot.offline { background: var(--red); }
@@ -182,14 +183,15 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 14p
   <div class="header">
     <h1><span>▲</span> MojoLlama Studio</h1>
     <span class="ver">v0.2.0</span>
-    <div class="header-actions">
-      <span class="backend-badge">
-        <span class="status-dot offline" id="statusDot"></span>
-        <span id="backendName">detecting...</span>
-        <span style="color:var(--dim);font-size:10px" id="backendSpeed"></span>
-      </span>
-      <span class="refresh-btn" onclick="refreshAll()" title="Refresh">↻</span>
+  <div class="header-actions">
+    <div class="backend-badge" onclick="showServerSettings()" title="Click to configure server">
+      <span class="status-dot offline" id="statusDot"></span>
+      <span id="backendName" style="color:var(--red)">offline</span>
+      <span id="backendSpeed" style="color:var(--dim);font-size:11px;"></span>
     </div>
+    <span class="refresh-btn" onclick="refreshBackend();loadModels()" title="Refresh">↻</span>
+    <span class="refresh-btn" onclick="showServerSettings()" title="Server settings">⚙</span>
+  </div>
   </div>
 
   <!-- Tabs -->
@@ -446,17 +448,72 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 14p
 </div>
 
 <script>
+// ─── API URL resolution ──────────────────────────────────────────
 const API = (() => {
-  // Check URL param: ?api=http://hostname:8080
+  // 1. localStorage override (persistent)
+  const stored = localStorage.getItem('mojollama_api_url');
+  if (stored) return stored;
+  // 2. URL param: ?api=http://hostname:8080
   const params = new URLSearchParams(location.search);
   const apiParam = params.get('api');
-  if (apiParam) return apiParam;
-  // If served from same origin as API (port 8080), use relative
-  if (location.port === '8080') return '';
-  // Fallback: try hostname:8080
+  if (apiParam) {
+    localStorage.setItem('mojollama_api_url', apiParam);
+    return apiParam;
+  }
+  // 3. Served from same origin as API (port 8080)
+  if (location.port === '8080' || location.port === '') {
+    return '';
+  }
+  // 4. Fallback: try hostname:8080
   return `http://${location.hostname}:8080`;
 })();
 const MODELS_DIR = '/onedev-workspace/work';
+
+// ─── Server settings dialog ─────────────────────────────────────
+function showServerSettings() {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;display:flex;align-items:center;justify-content:center;';
+  const box = document.createElement('div');
+  box.style.cssText = 'background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:28px;max-width:480px;width:90%;';
+  box.innerHTML = `
+    <h3 style="margin-bottom:16px;font-size:17px;">⚙️ Server Settings</h3>
+    <label>API Server URL</label>
+    <input id="settingsApiUrl" type="text" value="${API}" placeholder="http://hostname:8080" style="margin-bottom:8px;font-family:monospace;">
+    <div style="font-size:12px;color:var(--dim);margin-bottom:16px;">
+      Enter the URL where your MojoLlama server is running.
+      The Studio fetches models and sends chat requests to this server.
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-dim" onclick="this.closest('div[style]').parentElement.remove()">Cancel</button>
+      <button class="btn btn-primary" id="settingsSaveBtn">Save &amp; Reload</button>
+    </div>
+  `;
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+
+  document.getElementById('settingsSaveBtn').addEventListener('click', () => {
+    const url = document.getElementById('settingsApiUrl').value.trim();
+    if (url) {
+      localStorage.setItem('mojollama_api_url', url);
+      location.reload();
+    }
+  });
+}
+
+// ─── Refresh backend status + models ────────────────────────────
+async function refreshBackend() {
+  try {
+    const data = await apiFetch('/api/backend');
+    document.getElementById('statusDot').className = 'status-dot online';
+    document.getElementById('backendName').textContent = data.active || data.backend || 'online';
+    document.getElementById('backendName').style.color = 'var(--green)';
+    document.getElementById('backendSpeed').textContent = data.uptime ? `(${data.uptime})` : '';
+  } catch(e) {
+    document.getElementById('statusDot').className = 'status-dot offline';
+    document.getElementById('backendName').textContent = 'offline';
+    document.getElementById('backendName').style.color = 'var(--red)';
+  }
+}
 let chatAbort = null;
 let chatCount = 0;
 let lossChart = null;
@@ -538,11 +595,20 @@ async function loadModels() {
         sel.appendChild(opt);
       });
     });
-    
-    // Model cards
+
+    // Show model grid
     const grid = document.getElementById('modelGrid');
     if (!grid) return;
     grid.innerHTML = '';
+    if (models.length === 0) {
+      grid.innerHTML = '<div style="text-align:center;padding:32px;color:var(--dim);">'
+        + '<div style="font-size:32px;margin-bottom:12px;">📡</div>'
+        + '<div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:8px;">No models found</div>'
+        + '<div style="font-size:13px;margin-bottom:16px;">Could not connect to server or no models available.</div>'
+        + '<button class="btn btn-primary" onclick="showServerSettings()">Configure Server</button>'
+        + '</div>';
+      return;
+    }
     models.forEach(m => {
       const card = document.createElement('div');
       card.className = 'model-card';
@@ -553,8 +619,23 @@ async function loadModels() {
     });
   } catch(e) {
     console.error('loadModels:', e);
+    const grid = document.getElementById('modelGrid');
+    if (grid) {
+      grid.innerHTML = '<div style="text-align:center;padding:32px;color:var(--dim);">'
+        + '<div style="font-size:32px;margin-bottom:12px;">🔌</div>'
+        + '<div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:8px;">Server offline</div>'
+        + '<div style="font-size:13px;margin-bottom:16px;">Cannot reach API server. Check your connection or configure the server URL.</div>'
+        + '<div style="display:flex;gap:8px;justify-content:center;">'
+        + '<button class="btn btn-primary" onclick="showServerSettings()">Configure Server</button>'
+        + '<button class="btn btn-dim" onclick="refreshBackend();loadModels()">Retry</button>'
+        + '</div>'
+        + '</div>';
+    }
   }
 }
+
+// ─── Initialization ─────────────────────────────────────────────
+setTimeout(() => { refreshBackend(); loadModels(); }, 100);
 
 async function loadDatasets() {
   try {
