@@ -50,25 +50,37 @@ _export_jobs_lock = threading.Lock()
 _training_queues = []
 _training_queues_lock = threading.Lock()
 
-# Connection pool to llama.cpp backend (thread-safe queue)
-_llama_conn_pool = queue.Queue()
-_llama_pool_size = 16  # max concurrent connections to backend
+# Connection pool to llama.cpp backend — bounded, health-checked
+_llama_pool_size = 32  # max concurrent connections (matches n_parallel * 8)
+_llama_conn_pool = queue.Queue(maxsize=_llama_pool_size)
 
 def _get_llama_conn():
-    """Get a persistent HTTP connection from the pool (or create new)."""
+    """Get a persistent HTTP connection from the pool (or create new).
+    
+    Connections are recycled after _MAX_POOL_AGE seconds to avoid stale sockets.
+    """
+    conn = None
     try:
-        return _llama_conn_pool.get_nowait()
+        conn = _llama_conn_pool.get_nowait()
+        # Discard stale connections (older than 60s idle)
+        if hasattr(conn, '_pool_age') and time.time() - conn._pool_age > 60:
+            try: conn.close()
+            except: pass
+            conn = None
     except queue.Empty:
+        pass
+    if conn is None:
         llama_port = backend.backend.port if hasattr(backend.backend, 'port') else 8081
-        return http.client.HTTPConnection("127.0.0.1", llama_port, timeout=300)
+        conn = http.client.HTTPConnection("127.0.0.1", llama_port, timeout=120)
+    conn._pool_age = time.time()
+    return conn
 
 def _return_llama_conn(conn):
-    """Return connection to pool (or close if pool is full)."""
+    """Return connection to pool, or close if pool is full / connection is broken."""
     try:
         _llama_conn_pool.put_nowait(conn)
     except queue.Full:
-        try:
-            conn.close()
+        try: conn.close()
         except: pass
 
 LLAMA_SERVER_PATH = "/tmp/llama.cpp/build/bin/llama-server"
