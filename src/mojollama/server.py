@@ -52,7 +52,18 @@ _training_queues_lock = threading.Lock()
 
 # Connection pool to llama.cpp backend (thread-safe queue)
 _llama_conn_pool = queue.Queue()
-_llama_pool_size = 16  # max concurrent connections to backend
+_llama_pool_size = 32  # max concurrent connections to backend (match max_workers)
+_metrics_lock = threading.Lock()
+_request_times = []  # rolling window of request latencies (seconds)
+_metrics_max_samples = 1000
+
+def _record_latency(t0):
+    """Record request latency for metrics."""
+    elapsed = time.time() - t0
+    with _metrics_lock:
+        _request_times.append(elapsed)
+        if len(_request_times) > _metrics_max_samples:
+            _request_times.pop(0)
 
 def _get_llama_conn():
     """Get a persistent HTTP connection from the pool (or create new)."""
@@ -184,6 +195,95 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
         """Send the [DONE] signal to terminate the SSE stream."""
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
+
+    def _proxy_stream_from_llamacpp(self, request_data):
+        """Proxy streaming through llama.cpp /completion?stream=true.
+
+        Reads the SSE stream from llama.cpp line-by-line (buffered readline)
+        and re-emits as OpenAI-format SSE events. Uses pooled HTTP connection.
+        """
+        prompt = request_data.get("prompt", "")
+
+    def _build_tools_prompt(self, tools, tool_choice="auto"):
+        """Build a system-level instruction from OpenAI tool definitions.
+
+        Injects available functions into the conversation so the model
+        can call them. Returns a system message dict or empty dict.
+        """
+        if not tools:
+            return {}
+
+        # Build a function list description
+        func_descs = []
+        for tool in tools:
+            if tool.get("type") == "function":
+                fn = tool.get("function", {})
+                params = fn.get("parameters", {})
+                props_desc = ", ".join(params.get("properties", {}).keys())
+                required = params.get("required", [])
+                func_descs.append(
+                    f"- {fn.get('name')}: {fn.get('description', '')} "
+                    f"(parameters: {props_desc}, required: {', '.join(required)})"
+                )
+
+        instruction = (
+            "You have access to the following functions. Use them when the user's "
+            "request requires calling an external tool or retrieving information.\n\n"
+            "Available functions:\n"
+            + "\n".join(func_descs) +
+            "\n\n"
+            "To call a function, respond with ONLY a valid JSON object in this exact "
+            'format, with no other text: {"name": "function_name", "arguments": {"arg1": "value1"}}\n'
+            'If you need to call a function, respond with ONLY that JSON. Do not include '
+            "any other explanation or text. If you don't need to call a function, "
+            "respond normally with your answer."
+        )
+
+        if tool_choice == "none":
+            return {}  # Skip function calling entirely
+        elif isinstance(tool_choice, dict):
+            # Force a specific function: {"type":"function","function":{"name":"..."}}
+            fn_name = tool_choice.get("function", {}).get("name", "")
+            instruction += (
+                f"\n\nIMPORTANT: You MUST use the '{fn_name}' function for this request. "
+                f"Respond with ONLY the function call JSON."
+            )
+            return {"role": "system", "content": instruction, "_force_tool": fn_name}
+        else:
+            return {"role": "system", "content": instruction}
+
+    @staticmethod
+    def _parse_tool_call_response(text):
+        """Parse a model response for function call JSON.
+
+        Returns (tool_name, args_dict) if a function call is detected,
+        or (None, None) if it's a normal response.
+        """
+        text = text.strip()
+        # Try to parse the entire response as JSON
+        if text.startswith("{") and text.endswith("}"):
+            try:
+                obj = json.loads(text)
+                if "name" in obj and "arguments" in obj:
+                    args = obj["arguments"]
+                    if isinstance(args, str):
+                        args = json.loads(args)
+                    return obj["name"], args
+            except (json.JSONDecodeError, TypeError):
+                pass
+        # Try to find JSON embedded in text
+        json_match = re.search(r'\{[^{}]*"name"\s*:\s*"[^"]*"\s*,[^{}]*"arguments"\s*:', text, re.DOTALL)
+        if json_match:
+            try:
+                obj = json.loads(json_match.group())
+                if "name" in obj and "arguments" in obj:
+                    args = obj["arguments"]
+                    if isinstance(args, str):
+                        args = json.loads(args)
+                    return obj["name"], args
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return None, None
 
     def _proxy_stream_from_llamacpp(self, request_data):
         """Proxy streaming through llama.cpp /completion?stream=true.
@@ -374,6 +474,47 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
                     if q in _training_queues:
                         _training_queues.remove(q)
 
+        # ── Metrics endpoint ──────────────────────────────────
+        elif path == "/metrics":
+            with _metrics_lock:
+                n = len(_request_times)
+                avg = sum(_request_times) / n if n else 0
+                p95 = sorted(_request_times)[int(n * 0.95)] if n > 10 else 0
+            self._send_json({
+                "prompts_served": prompts_served,
+                "uptime_seconds": time.time() - start_time,
+                "requests_total": prompts_served,
+                "avg_latency_seconds": round(avg, 3),
+                "p95_latency_seconds": round(p95, 3),
+                "samples": n,
+                "backend": backend.info["active"] if hasattr(backend, 'info') else "unknown",
+                "connection_pool_size": _llama_pool_size,
+                "pool_available": _llama_conn_pool.qsize(),
+            })
+
+        # ── Model info endpoint ───────────────────────────────
+        elif path == "/api/model-info":
+            model_path = query.get("path", [None])[0] or ""
+            if not model_path or not os.path.exists(model_path):
+                self._send_error("No model path specified or file not found", 400)
+                return
+            try:
+                from mojollama.quantizer import get_info as _gi
+                info = _gi(model_path)
+                self._send_json({
+                    "status": "ok",
+                    "path": info.get("path"),
+                    "file_size_human": info.get("file_size_human"),
+                    "file_size_bytes": info.get("file_size_bytes"),
+                    "tensor_count": info.get("tensor_count"),
+                    "total_parameters": info.get("total_parameters"),
+                    "primary_quantization": info.get("primary_quantization"),
+                    "metadata": info.get("metadata"),
+                    "tensor_type_counts": info.get("tensor_type_counts"),
+                })
+            except Exception as e:
+                self._send_error(str(e), 500)
+
         # ── Serve static UI files ─────────────────────────────
         elif path in ("/", "/index.html", "/studio.html", "/chat.html"):
             www_dir = Path(__file__).resolve().parent.parent.parent / "www"
@@ -396,7 +537,7 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
             else:
                 self._send_error("not found", 404)
 
-        # ── Not found ─────────────────────────────────────────
+# ── Not found ──────────────────────────────────────────────────────────────
         else:
             self._send_error("not found", 404)
 
@@ -414,14 +555,16 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
             temperature = body.get("temperature", 0.7)
             stream = body.get("stream", False)
 
+            t0 = time.time()
+
             if stream:
                 # Streaming response
                 return self._handle_streaming_completion(prompt, max_tokens, temperature)
 
-            t0 = time.time()
             result = backend.generate(prompt, max_tokens=max_tokens, temperature=temperature)
             elapsed = time.time() - t0
             prompts_served += 1
+            _record_latency(t0)
 
             self._send_json({
                 "id": f"cmpl-{prompts_served}",
@@ -437,21 +580,33 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
                 "timings": {"total": f"{elapsed:.2f}s"},
             })
 
-        # ── Existing: /v1/chat/completions (with SSE streaming) ──
+        # ── Updated: /v1/chat/completions (with tool calling + latency tracking) ──
         elif path == "/v1/chat/completions":
-            messages = body.get("messages", [])
+            messages = list(body.get("messages", []))
             max_tokens = body.get("max_tokens", 256)
             temperature = body.get("temperature", 0.7)
             stream = body.get("stream", False)
+            tools = body.get("tools", [])
+            tool_choice = body.get("tool_choice", "auto")
+
+            t0 = time.time()
+
+            # Handle tool calling: inject function definitions into the conversation
+            if tools:
+                tool_msg = self._build_tools_prompt(tools, tool_choice)
+                if tool_msg:
+                    # Insert the tool system message at the beginning
+                    messages.insert(0, tool_msg)
 
             if stream:
                 # SSE streaming response
-                return self._handle_streaming_chat_completion(
+                result = self._handle_streaming_chat_completion(
                     messages, max_tokens, temperature
                 )
+                _record_latency(t0)
+                return result
 
             # Non-streaming: proxy directly to llama.cpp's /v1/chat/completions
-            # This gets proper chat template handling and is faster
             llama_chat_data = json.dumps({
                 "messages": messages,
                 "max_tokens": max_tokens,
@@ -475,10 +630,29 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
                         f"llama.cpp error: {resp.status} {raw.decode('utf-8', errors='replace')}",
                         resp.status,
                     )
+                    _record_latency(t0)
                     return
 
                 result = json.loads(raw.decode("utf-8"))
                 prompts_served += 1
+
+                # Check if tools were provided — try to parse a function call
+                if tools:
+                    content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    fn_name, fn_args = self._parse_tool_call_response(content)
+                    if fn_name and fn_args:
+                        # Convert to tool_calls format
+                        result["choices"][0]["message"]["content"] = None
+                        result["choices"][0]["message"]["tool_calls"] = [{
+                            "id": f"call_{uuid.uuid4().hex[:12]}",
+                            "type": "function",
+                            "function": {
+                                "name": fn_name,
+                                "arguments": json.dumps(fn_args),
+                            },
+                        }]
+                        result["choices"][0]["finish_reason"] = "tool_calls"
+
                 # Preserve the model name from the backend response
                 if "model" not in result:
                     result["model"] = "mojollama-llama-3.2-1b"
@@ -486,6 +660,7 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_error(f"Failed to proxy chat completion: {e}", 502)
             finally:
+                _record_latency(t0)
                 _return_llama_conn(conn)
 
         # ── Studio API: /api/chat (streaming for web UI) ─────────
@@ -600,6 +775,31 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
                 "status": "running",
                 "message": f"Export job {job_id} started",
             })
+
+        # ── Quantizer API: /api/quantize ───────────────────────────
+        elif path == "/api/quantize":
+            input_path = body.get("input", "")
+            quant_type = body.get("type", "q4_k_m")
+            output_path = body.get("output", "")
+
+            if not input_path or not os.path.exists(input_path):
+                self._send_error(f"input file not found: {input_path}", 400)
+                return
+
+            try:
+                from mojollama.quantizer import quantize as _q
+                result = _q(input_path, quant_type=quant_type, output_path=output_path or None)
+                self._send_json({
+                    "status": "ok",
+                    "output_path": result.get("output_path"),
+                    "quant_type": result.get("quant_type"),
+                    "input_size_bytes": result.get("input_size_bytes"),
+                    "output_size_bytes": result.get("output_size_bytes"),
+                    "compression_ratio": result.get("compression_ratio"),
+                    "elapsed_seconds": result.get("elapsed_seconds"),
+                })
+            except Exception as e:
+                self._send_error(str(e), 500)
 
         # ── Not found ─────────────────────────────────────────
         else:

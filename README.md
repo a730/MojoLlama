@@ -251,6 +251,78 @@ www/
 
 ---
 
+## 🐳 Docker
+
+### Build the Image
+
+```bash
+docker build -t mojollama:latest .
+```
+
+Multi-stage build: Stage 1 compiles `llama-server` from source, Stage 2 builds the
+runtime image on `python:3.11-slim` (~500 MB final image).
+
+### Run
+
+Mount your GGUF model file and expose the API port:
+
+```bash
+docker run --rm -it \
+  -p 8080:8080 \
+  -v /path/to/models:/models:ro \
+  mojollama:latest --model /models/my-model.gguf
+```
+
+**Auto-detection:** If you omit `--model`, the entrypoint scans `/models/` and `/app/`
+for `.gguf` files and picks the first one found.
+
+```bash
+# Auto-detect model in /models volume
+docker run --rm -it \
+  -p 8080:8080 \
+  -v /path/to/models:/models:ro \
+  mojollama:latest
+```
+
+### Configuration
+
+Mount a custom `~/.mojollama/config.json` for llama.cpp tuning:
+
+```bash
+docker run --rm -it \
+  -p 8080:8080 \
+  -v /path/to/models:/models:ro \
+  -v /path/to/config.json:/home/mojollama/.mojollama/config.json:ro \
+  mojollama:latest
+```
+
+If no config is mounted, the entrypoint creates a sensible default.
+
+### Options
+
+| Argument | Env var | Default | Description |
+|----------|---------|---------|-------------|
+| `--model` | `MODEL_PATH` | auto-detect | Path to GGUF model |
+| `--port` | `PORT` | `8080` | MojoLlama API port |
+| `--llama-port` | `LLAMA_PORT` | `8081` | llama.cpp backend port |
+| `--max-workers` | — | `32` | Max concurrent requests |
+| `--weight` | `WEIGHT_PATH` | — | MAX weight file path |
+
+### Health Check
+
+```bash
+curl http://localhost:8080/health
+```
+
+### Volumes
+
+| Mount point | Purpose |
+|-------------|---------|
+| `/models` | GGUF model files (ro recommended) |
+| `~/.mojollama` | Server config (`config.json`) |
+
+---
+
 ## 📄 License
 
 Apache 2.0

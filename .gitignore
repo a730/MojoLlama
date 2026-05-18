@@ -13,3 +13,9 @@ model.bin
 mojollama_forward
 mojollama_bench
 .coding-context
+
+# Electron desktop wrapper
+desktop/node_modules/
+desktop/build/
+desktop/out/
+desktop/dist/

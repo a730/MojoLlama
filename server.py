@@ -19,6 +19,7 @@ from flask import Flask, request, jsonify, render_template_string, send_from_dir
 
 from src.mojollama.model.inference import LLMInference
 from src.mojollama.model.device import list_devices
+from src.mojollama.quantizer import convert, quantize, get_info, validate, benchmark
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 DEFAULT_HOST = "0.0.0.0"
@@ -275,6 +276,146 @@ def completions():
             "finish_reason": "stop",
         }],
     })
+
+
+# ─── Export / Quantize API ──────────────────────────────────────────────────
+
+
+@app.route("/api/export", methods=["POST"])
+def api_export():
+    """Convert a HuggingFace model to GGUF format."""
+    data = request.get_json(force=True)
+    model_name = data.get("model", "")
+    outtype = data.get("outtype", "f16")
+    outfile = data.get("outfile", "")
+
+    if not model_name:
+        return jsonify({"error": "model is required"}), 400
+    if outtype not in ("f32", "f16", "bf16", "q8_0", "auto"):
+        return jsonify({"error": f"unsupported outtype: {outtype}"}), 400
+
+    try:
+        result = convert(
+            model_name,
+            outtype=outtype,
+            outfile=outfile if outfile else None,
+        )
+        return jsonify({
+            "status": "ok",
+            "output_path": result.get("output_path"),
+            "size_bytes": result.get("size_bytes"),
+            "size_human": result.get("size_human"),
+            "elapsed_seconds": result.get("elapsed_seconds"),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/quantize", methods=["POST"])
+def api_quantize():
+    """Quantize an existing GGUF file."""
+    data = request.get_json(force=True)
+    input_path = data.get("input", "")
+    quant_type = data.get("type", "q4_k_m")
+    output_path = data.get("output", "")
+
+    if not input_path or not os.path.exists(input_path):
+        return jsonify({"error": f"input file not found: {input_path}"}), 400
+
+    try:
+        result = quantize(
+            input_path,
+            quant_type=quant_type,
+            output_path=output_path if output_path else None,
+        )
+        return jsonify({
+            "status": "ok",
+            "output_path": result.get("output_path"),
+            "quant_type": result.get("quant_type"),
+            "input_size_bytes": result.get("input_size_bytes"),
+            "output_size_bytes": result.get("output_size_bytes"),
+            "compression_ratio": result.get("compression_ratio"),
+            "elapsed_seconds": result.get("elapsed_seconds"),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/model-info", methods=["GET"])
+def api_model_info():
+    """Get info about the currently loaded or specified model."""
+    model_path = request.args.get("path", current_model_path or "")
+    if not model_path or not os.path.exists(model_path):
+        return jsonify({"error": "No model loaded and no path specified"}), 400
+
+    try:
+        info = get_info(model_path)
+        return jsonify({
+            "status": "ok",
+            "path": info.get("path"),
+            "file_size_human": info.get("file_size_human"),
+            "file_size_bytes": info.get("file_size_bytes"),
+            "tensor_count": info.get("tensor_count"),
+            "total_parameters": info.get("total_parameters"),
+            "primary_quantization": info.get("primary_quantization"),
+            "metadata": info.get("metadata"),
+            "tensor_type_counts": info.get("tensor_type_counts"),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/validate", methods=["POST"])
+def api_validate():
+    """Validate a quantized model against a reference."""
+    data = request.get_json(force=True)
+    input_path = data.get("input", "")
+    reference_path = data.get("reference", "")
+
+    if not input_path or not os.path.exists(input_path):
+        return jsonify({"error": f"input file not found: {input_path}"}), 400
+
+    try:
+        result = validate(
+            input_path,
+            reference_path=reference_path if reference_path and os.path.exists(reference_path) else None,
+        )
+        return jsonify({
+            "status": result.get("status"),
+            "checks": result.get("checks"),
+            "tensor_count": result.get("tensor_count"),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/benchmark", methods=["POST"])
+def api_benchmark():
+    """Benchmark a GGUF model."""
+    data = request.get_json(force=True)
+    model_path = data.get("model", current_model_path or "")
+    prompt = data.get("prompt", "Hello")
+    max_tokens = int(data.get("max_tokens", 10))
+
+    if not model_path or not os.path.exists(model_path):
+        return jsonify({"error": f"model not found: {model_path}"}), 400
+
+    try:
+        result = benchmark(
+            model_path,
+            prompt=prompt,
+            max_tokens=max_tokens,
+        )
+        return jsonify({
+            "status": "ok",
+            "tokens_per_second": result.get("tokens_per_second"),
+            "generated_tokens": result.get("generated_tokens"),
+            "elapsed_seconds": result.get("elapsed_seconds"),
+            "output": result.get("output"),
+            "architecture": result.get("architecture"),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 def _format_chat_prompt(messages: list) -> str:

@@ -1,0 +1,101 @@
+{
+  "name": "mojollama-studio",
+  "version": "0.2.0",
+  "description": "MojoLlama Studio — Desktop application wrapper for MojoLlama AI inference engine",
+  "license": "MIT",
+  "main": "main.js",
+  "author": {
+    "name": "MojoLlama",
+    "email": "dev@mojollama.ai"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://git.bamse.cloud/a730/MojoLlama"
+  },
+  "scripts": {
+    "start": "electron .",
+    "dev": "ELECTRON_DEV=1 electron .",
+    "build:linux": "electron-builder --linux",
+    "build:mac": "electron-builder --mac",
+    "build:all": "electron-builder --linux --mac",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "ai.mojollama.studio",
+    "productName": "MojoLlama Studio",
+    "copyright": "Copyright © 2025 MojoLlama",
+    "directories": {
+      "output": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "icons/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../server.py",
+        "to": "server.py"
+      },
+      {
+        "from": "../src",
+        "to": "src"
+      },
+      {
+        "from": "../www",
+        "to": "www"
+      }
+    ],
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        },
+        {
+          "target": "deb",
+          "arch": ["x64"]
+        }
+      ],
+      "category": "Development",
+      "icon": "icons/icon.png",
+      "maintainer": "MojoLlama <dev@mojollama.ai>",
+      "synopsis": "MojoLlama Studio — LLM inference desktop app",
+      "description": "Desktop wrapper for MojoLlama, a high-performance LLM inference engine combining GGUF support, continuous batching, and PagedAttention.",
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "executableArgs": ["--no-sandbox"]
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "category": "public.app-category.developer-tools",
+      "icon": "icons/icon.png",
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "minimumSystemVersion": "12.0"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "publish": {
+      "provider": "generic",
+      "url": "https://releases.mojollama.ai/desktop"
+    },
+    "electronDownload": {
+      "mirror": "https://npmmirror.com/mirrors/electron/"
+    }
+  }
+}

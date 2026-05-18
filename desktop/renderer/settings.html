@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MojoLlama Studio — Settings</title>
+<style>
+:root {
+  --bg: #0d1117; --surface: #161b22; --border: #30363d;
+  --text: #e6edf3; --dim: #8b949e; --accent: #58a6ff;
+  --green: #3fb950; --red: #f85149;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg); color: var(--text); font-size: 13px;
+  padding: 20px; user-select: none;
+}
+h2 { font-size: 16px; font-weight: 600; margin-bottom: 16px; color: var(--accent); }
+.section { margin-bottom: 20px; }
+.section-title {
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.5px; color: var(--dim); margin-bottom: 12px;
+  padding-bottom: 6px; border-bottom: 1px solid var(--border);
+}
+.field { margin-bottom: 12px; }
+label {
+  display: block; font-size: 12px; color: var(--dim);
+  margin-bottom: 4px; font-weight: 500;
+}
+input, select {
+  width: 100%; padding: 7px 10px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 6px; color: var(--text);
+  font-size: 13px; font-family: 'SF Mono', 'Monaco', 'Menlo', monospace; outline: none;
+  transition: border-color .2s;
+}
+input:focus, select:focus { border-color: var(--accent); }
+input[type="checkbox"] {
+  width: auto; margin-right: 8px; accent-color: var(--accent);
+  vertical-align: middle; cursor: pointer;
+}
+.checkbox-row { display: flex; align-items: center; margin-bottom: 12px; }
+.checkbox-row label { margin-bottom: 0; cursor: pointer; }
+.help-text { font-size: 10px; color: var(--dim); margin-top: 2px; line-height: 1.4; }
+.buttons { display: flex; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.btn {
+  padding: 7px 18px; border: none; border-radius: 6px; cursor: pointer;
+  font-size: 13px; font-weight: 600; transition: all .2s;
+}
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { filter: brightness(1.15); }
+.btn-dim { background: var(--border); color: var(--text); }
+.btn-dim:hover { background: #464f5c; }
+.btn-green { background: var(--green); color: #fff; }
+.btn-green:hover { filter: brightness(1.15); }
+.btn-red { background: var(--red); color: #fff; }
+.btn-red:hover { filter: brightness(1.15); }
+.status-bar {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 16px;
+  padding: 8px 12px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; font-size: 12px;
+}
+.status-dot {
+  width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+}
+.status-dot.running { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.status-dot.stopped { background: var(--dim); }
+.status-dot.starting,
+.status-dot.stopping { background: #d29922; animation: pulse 1s infinite; }
+.status-dot.error { background: var(--red); }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.actions { display: flex; gap: 6px; margin-left: auto; }
+.btn-sm { padding: 4px 10px; font-size: 11px; }
+</style>
+</head>
+<body>
+
+<h2>⚙ MojoLlama Settings</h2>
+
+<!-- Server Status -->
+<div class="status-bar">
+  <span class="status-dot stopped" id="statusDot"></span>
+  <span id="statusText">Checking server status...</span>
+  <div class="actions">
+    <button class="btn btn-sm btn-green" id="btnStart" onclick="startServer()">Start</button>
+    <button class="btn btn-sm btn-red" id="btnStop" onclick="stopServer()" disabled>Stop</button>
+    <button class="btn btn-sm btn-dim" id="btnRestart" onclick="restartServer()" disabled>Restart</button>
+  </div>
+</div>
+
+<!-- Server Section -->
+<div class="section">
+  <div class="section-title">Server Configuration</div>
+  <div class="field">
+    <label for="serverPort">Server Port</label>
+    <input type="number" id="serverPort" min="1024" max="65535" value="8080">
+    <div class="help-text">Port for the MojoLlama HTTP server (default: 8080)</div>
+  </div>
+  <div class="field">
+    <label for="llamaPort">llama.cpp Port</label>
+    <input type="number" id="llamaPort" min="1024" max="65535" value="8081">
+    <div class="help-text">Port for llama.cpp backend if used separately (default: 8081)</div>
+  </div>
+  <div class="field">
+    <label for="modelPath">Model Path (GGUF file)</label>
+    <input type="text" id="modelPath" placeholder="/path/to/model.gguf or leave empty for auto-detect">
+    <div class="help-text">Path to a GGUF model file. Leave empty for auto-discovery.</div>
+  </div>
+</div>
+
+<!-- Behavior Section -->
+<div class="section">
+  <div class="section-title">Behavior</div>
+  <div class="checkbox-row">
+    <input type="checkbox" id="autoStart" checked>
+    <label for="autoStart">Auto-start server on launch</label>
+  </div>
+  <div class="checkbox-row">
+    <input type="checkbox" id="minimizeToTray" checked>
+    <label for="minimizeToTray">Minimize to system tray instead of closing</label>
+  </div>
+  <div class="checkbox-row">
+    <input type="checkbox" id="notifications" checked>
+    <label for="notifications">Show desktop notifications for server events</label>
+  </div>
+  <div class="checkbox-row">
+    <input type="checkbox" id="debug">
+    <label for="debug">Debug mode (verbose logging)</label>
+  </div>
+</div>
+
+<!-- Buttons -->
+<div class="buttons">
+  <button class="btn btn-primary" onclick="saveSettings()">Save</button>
+  <button class="btn btn-dim" onclick="cancel()">Cancel</button>
+  <div style="flex:1"></div>
+  <button class="btn btn-dim" onclick="openLog()">View Log</button>
+</div>
+
+<script src="settings.js"></script>
+</body>
+</html>
