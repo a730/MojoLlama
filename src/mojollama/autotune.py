@@ -297,18 +297,9 @@ def main():
             print("llama-server -m model.gguf -c 4096 -t 32 -b 2048 -ub 512 -np 4 --mlock --cont-batching")
             return
         
-        s = config.get("llama_server", {})
-        mlock_flag = " --mlock" if s.get('mlock', True) else ""
-        cmd = (
-            f"llama-server -m model.gguf -c 4096"
-            f" -t {s.get('threads', 32)}"
-            f" -b {s.get('batch_size', 2048)}"
-            f" -ub {s.get('ubatch_size', 512)}"
-            f" -np {s.get('n_parallel', 4)}"
-            f"{mlock_flag}"
-            f" --cont-batching"
-        )
-        print(cmd)
+        from mojollama.backends import build_server_cmd
+        cmd = build_server_cmd("llama-server", "model.gguf", 8081)
+        print(' '.join(cmd))
         return
 
     print("╔══════════════════════════════════════════════╗")
