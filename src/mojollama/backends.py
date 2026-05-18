@@ -64,6 +64,13 @@ def build_server_cmd(server_path: str, model_path: str, port: int,
         cmd.append("--mlock")
     if config.get("cont_batching", True):
         cmd.append("--cont-batching")
+    if config.get("flash_attn", False):
+        cmd.append("-fa")
+        cmd.append("1")
+    cpu_mask = config.get("cpu_mask", "")
+    if cpu_mask and cpu_mask != "0x0":
+        cmd.append("-C")
+        cmd.append(cpu_mask)
 
     return cmd
 
