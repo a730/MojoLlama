@@ -44,10 +44,11 @@ python3 -m mojollama.studio chat --model model.gguf --port 8080
 ### Inference Server (`server.py`)
 - **OpenAI-compatible API** — `/v1/chat/completions`, `/v1/completions`, `/v1/models`
 - **SSE streaming** — token-by-token response via EventSource
-- **Threaded concurrency** — handles multiple requests in parallel
-- **Connection pooling** — persistent HTTP connections to llama.cpp backend
+- **Bounded thread pool** — configurable `--max-workers` (default 32) with request queue and 503 backpressure
+- **Connection pooling** — thread-safe pool of 16 persistent HTTP connections to llama.cpp backend
 - **CORS support** — works with browser-based clients
 - **Health checks** — `/health`, `/backend`, `/api/backend`
+- **Port isolation** — `--llama-port` (default 8081) avoids conflicts with proxy port
 
 ### MojoLlama Studio (`studio.py`)
 | Command | Description |
@@ -62,6 +63,17 @@ python3 -m mojollama.studio chat --model model.gguf --port 8080
 | `dataset auto-label` | Auto-generate completions using loaded model |
 | `merge` | Merge LoRA adapter into base GGUF model |
 | `benchmark` | Measure tok/s for prompt processing and generation |
+| `autotune` | Auto-tune server settings with hardware detection (`--deep`) |
+
+### Hardware Detector (`detect.py`)
+- **CPU**: Architecture (x86_64/ARM), ISA features (AVX2, AVX-512, AMX, NEON, SVE, FMA, F16C)
+- **GPU**: NVIDIA CUDA (version + VRAM), AMD ROCm, Intel SYCL, Vulkan, Apple Metal
+- **Memory**: Total/available RAM, DDR type/speed/channel estimation, bandwidth
+- **Storage**: NVMe vs SSD, sequential read benchmark
+- **Network**: Interface detection, RDMA capability
+- **Power**: TDP estimation, thermal throttling risk
+- **Outputs**: Recommended llama-server flags, JSON for automation, persistent save
+- **Usage**: `python3 -m mojollama.detect` or `studio autotune --deep`
 
 ### Web UI (`www/`)
 - **`studio.html`** — Full dark-theme SPA with 6 tabs:
@@ -166,8 +178,15 @@ Backends are swappable: Python (works now) → Mojo SIMD (kernels ready) → MAX
 ## 🧪 Test Commands
 
 ```bash
-# Start server
+# Start server (with auto-tuned settings)
 python3 -m mojollama.server --model model.gguf --port 8080 --llama-port 8081
+
+# Hardware detection
+python3 -m mojollama.detect
+python3 -m mojollama.detect --model model.gguf --json --save
+
+# Auto-tune server settings  
+python3 -m mojollama.studio autotune --model model.gguf --deep --quick
 
 # Chat via curl
 curl -X POST http://localhost:8080/v1/chat/completions \
@@ -182,6 +201,9 @@ curl -N -X POST http://localhost:8080/api/chat \
 # Benchmark quants
 ./llama-bench -m model.gguf -p 512 -n 128 -t 64
 
+# Concurrent benchmark
+python3 bench_concurrency.py --url http://localhost:8080 --concurrency "1,4,8,16,32"
+
 # Parallel matmul benchmark
 python3 src/mojollama/kernels/parallel_q4.py --rows 2048 --cols 2048
 ```
@@ -194,8 +216,11 @@ python3 src/mojollama/kernels/parallel_q4.py --rows 2048 --cols 2048
 src/mojollama/
 ├── server.py           OpenAI API server (SSE streaming, REST API)
 ├── backends.py         AutoBackend (llama.cpp, MAX, numpy)
-├── studio.py           CLI Studio (train, export, dataset, merge, chat)
+├── studio.py           CLI Studio (train, export, dataset, merge, chat, autotune)
 ├── bridge.py           Python forward pass + GGUF loader
+├── detect.py           Hardware detector (CPU/GPU/memory/storage/power)
+├── autotune.py         Auto-tuning benchmark sweeper
+├── scheduler.py        Request batcher for high throughput
 ├── llama_backend.py    llama.cpp server bridge
 ├── graph/ops.mojo      Op graph definitions (Mojo)
 ├── kernels/
