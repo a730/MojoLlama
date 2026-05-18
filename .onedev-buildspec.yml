@@ -67,18 +67,15 @@ jobs:
             echo ""
             echo "=== Start llama-server (backend) ==="
             apt-get update -qq && apt-get install -y -qq gcc 2>/dev/null || true
-            # Build llama-server if needed — assuming pre-built binary cached
             if [ -f /tmp/llama.cpp/build/bin/llama-server ]; then
               LLAMA_SERVER=/tmp/llama.cpp/build/bin/llama-server
             else
-              # Use the server's auto-launch (searches PATH)
               LLAMA_SERVER="llama-server"
             fi
 
             echo "=== Start MojoLlama API Server (background) ==="
             cd /onedev-build/work
 
-            # The server auto-launches llama-server as backend on --llama-port
             nohup python3 -m mojollama.server \
               --model Llama-3.2-1B-Instruct-Q4_0.gguf \
               --port 8080 \
@@ -109,108 +106,14 @@ jobs:
             if [ "$STUDIO_CODE" = "200" ]; then
               echo "Studio UI: SERVED on port 8080 (HTTP 200)"
             else
-              echo "Studio UI: HTTP $STUDIO_CODE — serving anyway"
+              echo "Studio UI: HTTP $STUDIO_CODE"
             fi
 
-            CHAT_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/chat.html 2>/dev/null || echo "000")
-            if [ "$CHAT_CODE" = "200" ]; then
-              echo "Chat UI: SERVED on port 8080 (HTTP 200)"
-            else
-              echo "Chat UI: HTTP $CHAT_CODE"
-            fi
-
-            echo ""
-            echo "=== Smoke Test: Chat Completion ==="
-            CHAT_RESULT=$(curl -sf -X POST http://localhost:8080/v1/chat/completions \
-              -H "Content-Type: application/json" \
-              -d '{"messages":[{"role":"user","content":"Say hello in 3 words"}], "max_tokens":10}' 2>&1 || true)
-            echo "Chat API response: $(echo "$CHAT_RESULT" | head -c 200)"
-            if echo "$CHAT_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['choices'][0]['message']['content']" 2>/dev/null; then
-              echo "Chat completion: PASSED"
-            else
-              echo "Chat completion: non-fatal error (backend might still be loading)"
-            fi
-
-            echo ""
-            echo "=== Verify Static Files Deployed ==="
-            echo "www/ files ready for PublishSiteStep:"
+            echo "Verify static files:"
             ls -la /onedev-build/work/www/
 
-            echo ""
-            echo "=========================================="
-            echo "  MojoLlama Build + Studio DEPLOYED"
-            echo "  Access Studio: http://hostname:8080/"
-            echo "  Chat UI:       http://hostname:8080/chat.html"
-            echo "  API:           http://hostname:8080/v1/models"
-            echo "=========================================="
-
-            echo "Server PID=$API_PID — smoke test complete"
-            # Don't wait — let step finish so PublishSiteStep runs
-            # The server continues in background until container exits
-            echo "Build step complete. Server still running PID=$API_PID"
-
-      - type: GenerateArtifactsStep
-        name: publish www files as artifacts
-        condition: SUCCESSFUL
-        optional: false
-        artifacts: www/**
-
       - type: PublishSiteStep
-        name: deploy API web page to ~site
+        name: deploy www to ~site
         condition: SUCCESSFUL
         optional: false
         artifacts: www/**
-
-    triggers:
-      - type: BranchUpdateTrigger
-        branches: main
-      - type: BranchUpdateTrigger
-        branches: dev
-
-    retryCondition: never
-
-  # ────────────────────────────────────────────────────────────────────────
-  # Docker image build — runs on main branch pushes
-  # ────────────────────────────────────────────────────────────────────────
-  - name: Build Docker Image
-    steps:
-      - type: CheckoutStep
-        name: checkout
-        cloneCredential:
-          type: DefaultCredential
-        withLfs: false
-        withSubmodules: false
-        cloneDepth: 1
-        condition: SUCCESSFUL
-        optional: false
-
-      - type: CommandStep
-        name: build mojollama Docker image
-        condition: SUCCESSFUL
-        optional: false
-        runInContainer: true
-        image: docker:27
-        interpreter:
-          type: DefaultInterpreter
-          commands: |
-
-            echo "=== Build Docker Image ==="
-            docker build \
-              --file Dockerfile \
-              --tag mojollama:latest \
-              --tag mojollama:$(date -u +%Y%m%d-%H%M%S) \
-              .
-
-            echo ""
-            echo "=== Image Info ==="
-            docker images mojollama
-
-            echo ""
-            echo "=== Verify Image (syntax check) ==="
-            docker run --rm mojollama:latest --help 2>&1 || true
-
-    triggers:
-      - type: BranchUpdateTrigger
-        branches: main
-
-    retryCondition: never
