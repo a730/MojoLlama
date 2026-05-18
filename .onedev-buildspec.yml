@@ -149,14 +149,20 @@ jobs:
             # The server continues in background until container exits
             echo "Build step complete. Server still running PID=$API_PID"
 
-      - type: PublishSiteStep
-        name: deploy API web page to ~site
+      - type: GenerateArtifactsStep
+        name: publish www files as artifacts
         condition: SUCCESSFUL
         optional: false
         artifacts: |
           www/index.html
           www/studio.html
           www/chat.html
+
+      - type: PublishSiteStep
+        name: deploy API web page to ~site
+        condition: SUCCESSFUL
+        optional: false
+        artifacts: www/index.html, www/studio.html, www/chat.html
 
     triggers:
       - type: BranchUpdateTrigger
