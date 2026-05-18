@@ -377,6 +377,9 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
         # ── Serve static UI files ─────────────────────────────
         elif path in ("/", "/index.html", "/studio.html", "/chat.html"):
             www_dir = Path(__file__).resolve().parent.parent.parent / "www"
+            # Fallback: relative to cwd (for build containers)
+            if not www_dir.exists():
+                www_dir = Path.cwd() / "www"
             filename = "index.html" if path == "/" else path.lstrip("/")
             filepath = www_dir / filename
             if filepath.exists():
