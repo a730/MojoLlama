@@ -113,7 +113,15 @@ select:focus { outline: none; border-color: var(--accent); }
 </div>
 
 <script>
-const API = `http://${location.hostname}:8080`;
+const API = (() => {
+  // Check URL param: ?api=http://hostname:8080
+  const params = new URLSearchParams(location.search);
+  const apiParam = params.get('api');
+  if (apiParam) return apiParam;
+  // If served from same origin as API (port 8080), use relative
+  if (location.port === '8080') return '';
+  return `http://${location.hostname}:8080`;
+})();
 let msgCount = 0;
 const history = [];
 

@@ -53,7 +53,7 @@ jobs:
             echo "C kernel build complete"
 
       - type: CommandStep
-        name: verify model + smoke test
+        name: verify model + smoke test + deploy Studio
         condition: SUCCESSFUL
         optional: false
         runInContainer: true
@@ -79,31 +79,59 @@ jobs:
             fi
 
             echo ""
-            echo "=== Start API Server (background) ==="
+            echo "=== Start llama-server (backend) ==="
+            apt-get update -qq && apt-get install -y -qq gcc 2>/dev/null || true
+            # Build llama-server if needed — assuming pre-built binary cached
+            if [ -f /tmp/llama.cpp/build/bin/llama-server ]; then
+              LLAMA_SERVER=/tmp/llama.cpp/build/bin/llama-server
+            else
+              # Use the server's auto-launch (searches PATH)
+              LLAMA_SERVER="llama-server"
+            fi
+
+            echo "=== Start MojoLlama API Server (background) ==="
             cd /onedev-build/work
 
+            # The server auto-launches llama-server as backend on --llama-port
             nohup python3 -m mojollama.server \
               --model Llama-3.2-1B-Instruct-Q4_0.gguf \
               --port 8080 \
+              --llama-port 8081 \
               > /tmp/mojollama-api.log 2>&1 &
             API_PID=$!
-            echo "API server PID=$API_PID on port 8080"
+            echo "MojoLlama server PID=$API_PID on port 8080"
 
             echo ""
-            echo "=== Wait for Model Load + Health Check ==="
-            for i in $(seq 1 60); do
-              if curl -sf http://localhost:8080/v1/models > /dev/null 2>&1; then
-                echo "API ready after ~${i}s"
+            echo "=== Wait for Server Ready ==="
+            for i in $(seq 1 120); do
+              if curl -sf http://localhost:8080/health > /dev/null 2>&1; then
+                echo "Server ready after ~${i}s"
                 break
               fi
-              if [ $i -eq 60 ]; then
-                echo "API failed to start within 120s"
-                cat /tmp/mojollama-api.log | tail -20
+              if [ $i -eq 120 ]; then
+                echo "Server failed to start within 240s"
+                cat /tmp/mojollama-api.log | tail -30
                 kill $API_PID 2>/dev/null || true
                 exit 1
               fi
               sleep 2
             done
+
+            echo ""
+            echo "=== Verify Studio UI is served ==="
+            if curl -sf http://localhost:8080/studio.html | head -1 | grep -q "html"; then
+              echo "Studio UI: SERVED on port 8080"
+            else
+              echo "Studio UI: FAILED"
+              exit 1
+            fi
+
+            if curl -sf http://localhost:8080/chat.html | head -1 | grep -q "html"; then
+              echo "Chat UI: SERVED on port 8080"
+            else
+              echo "Chat UI: FAILED"
+              exit 1
+            fi
 
             echo ""
             echo "=== Smoke Test: Chat Completion ==="
@@ -113,23 +141,29 @@ jobs:
             echo "Response: $(echo "$RESULT" | head -c 200)"
             echo ""
             if echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['choices'][0]['message']['content']" 2>/dev/null; then
-              echo "Smoke test passed"
+              echo "Chat completion: PASSED"
             else
-              echo "Smoke test failed"
+              echo "Chat completion: FAILED"
               kill $API_PID 2>/dev/null || true
               exit 1
             fi
 
             echo ""
-            echo "=== Smoke Test: List Models ==="
-            curl -sf http://localhost:8080/v1/models | python3 -m json.tool | head -10
+            echo "=== Verify Static Files Deployed ==="
+            echo "www/ files ready for PublishSiteStep:"
+            ls -la /onedev-build/work/www/
 
             echo ""
             echo "=========================================="
-            echo "  MojoLlama Build + Smoke Test PASSED"
+            echo "  MojoLlama Build + Studio DEPLOYED"
+            echo "  Access Studio: http://hostname:8080/"
+            echo "  Chat UI:       http://hostname:8080/chat.html"
+            echo "  API:           http://hostname:8080/v1/models"
             echo "=========================================="
 
-            kill $API_PID 2>/dev/null || true
+            # Keep running for OneDev service port exposure
+            echo "Server PID=$API_PID — keeping alive for service"
+            wait $API_PID
 
       - type: PublishSiteStep
         name: deploy API web page to ~site

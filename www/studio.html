@@ -446,7 +446,16 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 14p
 </div>
 
 <script>
-const API = `http://${location.hostname}:8080`;
+const API = (() => {
+  // Check URL param: ?api=http://hostname:8080
+  const params = new URLSearchParams(location.search);
+  const apiParam = params.get('api');
+  if (apiParam) return apiParam;
+  // If served from same origin as API (port 8080), use relative
+  if (location.port === '8080') return '';
+  // Fallback: try hostname:8080
+  return `http://${location.hostname}:8080`;
+})();
 const MODELS_DIR = '/onedev-workspace/work';
 let chatAbort = null;
 let chatCount = 0;

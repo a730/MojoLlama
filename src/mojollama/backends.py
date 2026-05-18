@@ -64,6 +64,11 @@ def build_server_cmd(server_path: str, model_path: str, port: int,
         cmd.append("--mlock")
     if config.get("cont_batching", True):
         cmd.append("--cont-batching")
+    ct = config.get("chat_template", "")
+    if ct:
+        cmd.append("--chat-template"); cmd.append(ct)
+    if config.get("reasoning", True) == False:
+        cmd.append("--reasoning"); cmd.append("off")
     if config.get("flash_attn", False):
         cmd.append("-fa")
         cmd.append("1")

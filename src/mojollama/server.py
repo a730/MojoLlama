@@ -374,6 +374,25 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
                     if q in _training_queues:
                         _training_queues.remove(q)
 
+        # ── Serve static UI files ─────────────────────────────
+        elif path in ("/", "/index.html", "/studio.html", "/chat.html"):
+            www_dir = Path(__file__).resolve().parent.parent.parent / "www"
+            filename = "index.html" if path == "/" else path.lstrip("/")
+            filepath = www_dir / filename
+            if filepath.exists():
+                content = filepath.read_bytes()
+                ext = filename.rsplit(".", 1)[-1] if "." in filename else "html"
+                mime = {"html": "text/html", "js": "application/javascript",
+                        "css": "text/css", "png": "image/png", "svg": "image/svg+xml"}.get(ext, "text/plain")
+                self.send_response(200)
+                self._set_cors()
+                self.send_header("Content-Type", mime)
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+            else:
+                self._send_error("not found", 404)
+
         # ── Not found ─────────────────────────────────────────
         else:
             self._send_error("not found", 404)
