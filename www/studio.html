@@ -298,6 +298,12 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
   .row { flex-direction: column; }
   .chat-container { height: 400px; }
 }
+
+/* Dataset stats */
+.stat { padding: 6px 0; display: flex; justify-content: space-between; border-bottom: 1px solid var(--border); }
+.stat:last-child { border-bottom: none; }
+.stat-label { color: var(--dim); font-size: 12px; }
+.stat-value { color: var(--text); font-weight: 600; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -340,6 +346,17 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
         <span class="nav-icon">📋</span><span>Templates</span>
         <span class="nav-badge">New</span>
       </div>
+      <div class="nav-item" data-tab="hub">
+        <span class="nav-icon">🤗</span><span>HF Hub</span>
+      </div>
+      <div class="nav-item" data-tab="experiments">
+        <span class="nav-icon">🔬</span><span>Experiments</span>
+        <span class="nav-badge">New</span>
+      </div>
+      <div class="nav-item" data-tab="model-cards">
+        <span class="nav-icon">🆔</span><span>Model Cards</span>
+        <span class="nav-badge">New</span>
+      </div>
     </div>
     <div class="sidebar-footer">
       <div class="backend-status" onclick="showServerSettings()" title="Click to configure server">
@@ -364,6 +381,26 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
     </div>
 
     <div class="content">
+
+      <!-- ═══════════ OFFLINE BANNER ═══════════ -->
+      <div id="offlineBanner" class="card" style="display:none;border-color:var(--red);margin-bottom:16px;padding:16px 20px;">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <span style="font-size:24px;">🔌</span>
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:14px;">Server Offline</div>
+            <div style="font-size:12px;color:var(--dim);margin-top:2px;">
+              Cannot connect to the MojoLlama API server.
+              Configure the server URL or start your server.
+            </div>
+          </div>
+          <button class="btn btn-primary" onclick="showServerSettings()" style="flex-shrink:0;">
+            Configure Server
+          </button>
+          <button class="btn btn-dim" onclick="refreshAll()" style="flex-shrink:0;">
+            Retry
+          </button>
+        </div>
+      </div>
 
       <!-- ═══════════ CHAT ═══════════ -->
       <div class="panel active" id="panel-chat">
@@ -399,6 +436,19 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
           </div>
         </div>
 
+        <!-- No models hint -->
+        <div id="noModelsHint" class="card" style="display:none;border-color:var(--orange);padding:12px 16px;margin-bottom:12px;">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span style="font-size:18px;">📡</span>
+            <div style="flex:1;font-size:13px;">
+              <strong>No models found</strong> —
+              Start the MojoLlama server with GGUF models in the working directory,
+              or <a href="#" onclick="showServerSettings();return false" style="color:var(--accent)">configure a different server URL</a>.
+            </div>
+            <button class="btn btn-dim btn-xs" onclick="refreshAll()">Retry</button>
+          </div>
+        </div>
+
         <div class="card" style="padding:0;margin-bottom:12px">
           <div class="chat-container">
             <div class="chat-messages" id="chatMessages">
@@ -407,7 +457,7 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
                   <div class="msg-avatar assistant">M</div>
                   <div class="msg-body">
                     <div class="msg-name assistant">MojoLlama <span class="msg-meta">ready</span></div>
-                    <div class="msg-text">Hello! I'm <strong>MojoLlama</strong>. Select a model and start chatting. I support <strong>streaming</strong>, configurable <strong>temperature</strong>, and <strong>system prompts</strong>.</div>
+                    <div class="msg-text">Hello! I'm <strong>MojoLlama</strong>. Select a model and start chatting.</div>
                   </div>
                 </div>
               </div>
@@ -629,32 +679,58 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
       <!-- ═══════════ DATASET ═══════════ -->
       <div class="panel" id="panel-dataset">
         <div class="row mb-8 gap-16">
+          <!-- Create Dataset -->
           <div class="col-2">
             <div class="card">
               <div class="card-header"><h3><span class="icon">📝</span> Create Dataset</h3></div>
               <label>Format</label>
-              <select id="dsFormat">
+              <select id="dsFormat" onchange="updateDatasetForm()">
                 <option value="alpaca">Alpaca (instruction/input/output)</option>
                 <option value="sharegpt">ShareGPT (conversations)</option>
+                <option value="openai">OpenAI (messages)</option>
+                <option value="preference">Preference (chosen/rejected)</option>
                 <option value="jsonl">Simple JSONL (prompt/completion)</option>
               </select>
-              <label id="dsField1Label">Instruction</label>
-              <textarea id="dsField1" rows="5" placeholder="What is machine learning?&#10;Explain transformers&#10;How does attention work?"></textarea>
-              <label id="dsField2Label">Input (optional)</label>
-              <textarea id="dsField2" rows="2" placeholder="Context or input text per line (leave blank if none)"></textarea>
+              <div id="dsFormFields">
+                <label id="dsField1Label">Instruction</label>
+                <textarea id="dsField1" rows="5" placeholder="What is machine learning?&#10;Explain transformers&#10;How does attention work?"></textarea>
+                <label id="dsField2Label">Input (optional)</label>
+                <textarea id="dsField2" rows="2" placeholder="Context or input text per line (leave blank if none)"></textarea>
+              </div>
               <label>Output file</label>
               <input type="text" id="dsOutput" value="dataset.jsonl">
               <button class="btn btn-primary" onclick="createDataset()">Create Dataset</button>
               <div class="log mt-8" id="dsLog" style="max-height:120px">Ready.</div>
             </div>
+
+            <!-- Format Converter -->
+            <div class="card">
+              <div class="card-header"><h3><span class="icon">🔄</span> Format Converter</h3></div>
+              <label>Input file</label>
+              <input type="text" id="convInput" placeholder="dataset.jsonl">
+              <label>Target format</label>
+              <select id="convFormat">
+                <option value="openai">OpenAI (messages)</option>
+                <option value="alpaca">Alpaca (instruction/input/output)</option>
+                <option value="sharegpt">ShareGPT (conversations)</option>
+                <option value="preference">Preference (chosen/rejected)</option>
+                <option value="jsonl">Simple JSONL</option>
+              </select>
+              <label>Output file</label>
+              <input type="text" id="convOutput" value="converted.jsonl">
+              <button class="btn btn-primary" onclick="convertDataset()">🔄 Convert</button>
+              <div class="log mt-8" id="convLog" style="max-height:80px">Ready.</div>
+            </div>
           </div>
+
           <div style="flex:1">
+            <!-- Auto-Label -->
             <div class="card">
               <div class="card-header">
                 <h3><span class="icon">✨</span> Auto-Label Dataset</h3>
                 <span class="badge badge-new">Auto</span>
               </div>
-              <label>Use a loaded model to auto-generate completions for your prompts</label>
+              <label>Use a loaded model to auto-generate completions with confidence scoring</label>
               <div class="row mb-8">
                 <div>
                   <label>Model</label>
@@ -669,15 +745,58 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
                   <input type="text" id="dsOutputFile" value="labeled.jsonl">
                 </div>
               </div>
-              <label>Completion max tokens</label>
-              <input type="number" id="dsMaxTokens" value="256" style="width:120px">
+              <div class="row mb-8">
+                <div>
+                  <label>Max tokens</label>
+                  <input type="number" id="dsMaxTokens" value="256" style="width:100px">
+                </div>
+                <div>
+                  <label>Temperature</label>
+                  <input type="number" id="dsTemperature" value="0.7" step="0.1" min="0" max="2" style="width:80px">
+                </div>
+                <div>
+                  <label>Confidence threshold</label>
+                  <input type="number" id="dsConfThreshold" value="0.0" step="0.05" min="0" max="1" style="width:80px">
+                </div>
+                <div>
+                  <label>Batch size</label>
+                  <input type="number" id="dsBatchSize" value="1" min="1" max="8" style="width:80px">
+                </div>
+              </div>
               <button class="btn btn-green" onclick="autoLabel()" id="dsAutoBtn">✨ Auto-Label Dataset</button>
               <div class="log mt-8" id="dsAutoLog" style="max-height:120px">Ready.</div>
             </div>
+
+            <!-- Dataset Stats -->
+            <div class="card" id="dsStatsCard" style="display:none">
+              <div class="card-header">
+                <h3><span class="icon">📊</span> Dataset Statistics</h3>
+                <button class="btn btn-dim btn-xs" onclick="document.getElementById('dsStatsCard').style.display='none'">✕</button>
+              </div>
+              <div id="dsStatsContent">Loading...</div>
+            </div>
+
+            <!-- Dataset Split -->
+            <div class="card">
+              <div class="card-header"><h3><span class="icon">✂️</span> Split Dataset</h3></div>
+              <div class="row mb-8">
+                <div><label>Dataset</label><input type="text" id="splitInput" placeholder="dataset.jsonl"></div>
+                <div><label>Train</label><input type="number" id="splitTrain" value="80" style="width:70px"></div>
+                <div><label>Val</label><input type="number" id="splitVal" value="10" style="width:70px"></div>
+                <div><label>Test</label><input type="number" id="splitTest" value="10" style="width:70px"></div>
+              </div>
+              <button class="btn btn-primary" onclick="splitDataset()">✂️ Split Dataset</button>
+              <div class="log mt-8" id="splitLog" style="max-height:80px">Ready.</div>
+            </div>
           </div>
         </div>
+
+        <!-- Available Datasets -->
         <div class="card">
-          <div class="card-header"><h3><span class="icon">📂</span> Available Datasets</h3></div>
+          <div class="card-header">
+            <h3><span class="icon">📂</span> Available Datasets</h3>
+            <button class="btn btn-dim btn-xs" onclick="loadDatasets()">🔄 Refresh</button>
+          </div>
           <div id="datasetList"><span class="text-dim">Loading datasets...</span></div>
         </div>
       </div>
@@ -771,8 +890,8 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
           <div style="flex:1">
             <div class="card">
               <div class="card-header">
-                <h3><span class="icon">🎯</span> Model Evaluation</h3>
-                <span class="badge badge-beta">Beta</span>
+                <h3><span class="icon">🎯</span> Benchmark Evaluation</h3>
+                <span class="badge badge-new">New</span>
               </div>
               <div class="row mb-8">
                 <div>
@@ -780,31 +899,60 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
                   <select id="evalModel"><option value="">Select model...</option></select>
                 </div>
                 <div>
-                  <label>Evaluation Type</label>
-                  <select id="evalType">
-                    <option value="perplexity">Perplexity</option>
-                    <option value="accuracy">Accuracy (MMLU-style)</option>
-                  </select>
+                  <label>Benchmarks</label>
+                  <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">
+                    <label class="bench-check"><input type="checkbox" id="b-mmlu" checked> MMLU</label>
+                    <label class="bench-check"><input type="checkbox" id="b-gsm8k" checked> GSM8K</label>
+                    <label class="bench-check"><input type="checkbox" id="b-ceval"> CEval</label>
+                    <label class="bench-check"><input type="checkbox" id="b-hellaswag" checked> HellaSwag</label>
+                    <label class="bench-check"><input type="checkbox" id="b-arc"> ARC</label>
+                    <label class="bench-check"><input type="checkbox" id="b-bbh"> BBH</label>
+                    <label class="bench-check"><input type="checkbox" id="b-humaneval"> HumanEval</label>
+                  </div>
                 </div>
               </div>
-              <label>Evaluation Dataset (JSONL with prompt+expected)</label>
-              <input type="text" id="evalData" placeholder="evaluation.jsonl">
-              <label>Max Samples</label>
-              <input type="number" id="evalMaxSamples" value="100" style="width:120px">
-              <div style="display:flex;gap:8px;margin-top:8px">
-                <button class="btn btn-primary" onclick="runEvaluation()" id="evalBtn">🎯 Run Evaluation</button>
-                <button class="btn btn-dim btn-sm" onclick="document.getElementById('evalData').value='/tmp/e2e_test.jsonl'">Use test data</button>
+              <div class="row mb-8">
+                <div>
+                  <label>Max Samples (0 = all)</label>
+                  <input type="number" id="evalMaxSamples" value="20" style="width:100px">
+                </div>
+                <div style="display:flex;align-items:flex-end;gap:8px">
+                  <button class="btn btn-primary" onclick="runBenchmarkEval()" id="evalBtn">🎯 Run Benchmarks</button>
+                  <button class="btn btn-dim btn-sm" onclick="downloadEvalDatasets()">📥 Download Datasets</button>
+                </div>
               </div>
+              <div style="display:flex;gap:8px;margin-top:4px">
+                <button class="btn btn-dim btn-sm" onclick="document.getElementById('b-mmlu').checked=true;document.getElementById('b-gsm8k').checked=true;document.getElementById('b-ceval').checked=false;document.getElementById('b-hellaswag').checked=true;document.getElementById('b-arc').checked=false;document.getElementById('b-bbh').checked=false;document.getElementById('b-humaneval').checked=false">Quick (3 benches)</button>
+                <button class="btn btn-dim btn-sm" onclick="document.querySelectorAll('.bench-check input').forEach(c=>c.checked=true)">Select All</button>
+                <button class="btn btn-dim btn-sm" onclick="document.querySelectorAll('.bench-check input').forEach(c=>c.checked=false)">Clear</button>
+              </div>
+            </div>
+            <div class="card" style="margin-top:8px">
+              <div class="card-header"><h3><span class="icon">🎯</span> Classic Evaluation</h3></div>
+              <div class="row mb-8">
+                <div>
+                  <label>Type</label>
+                  <select id="evalType">
+                    <option value="perplexity">Perplexity</option>
+                    <option value="accuracy">Accuracy (custom JSONL)</option>
+                  </select>
+                </div>
+                <div>
+                  <label>Dataset (for accuracy)</label>
+                  <input type="text" id="evalData" placeholder="evaluation.jsonl">
+                </div>
+              </div>
+              <button class="btn btn-dim" onclick="runClassicEval()">▶ Run Classic</button>
             </div>
           </div>
           <div class="col-2">
             <div class="card">
-              <div class="card-header"><h3><span class="icon">📊</span> Evaluation Results</h3></div>
-              <div id="evalResults" style="text-align:center;padding:32px;color:var(--dim)">
-                <div style="font-size:32px;margin-bottom:12px">🎯</div>
-                <div style="font-size:14px">Run an evaluation to see results</div>
+              <div class="card-header"><h3><span class="icon">📊</span> Results</h3></div>
+              <div id="evalResults" style="text-align:center;padding:16px;color:var(--dim)">
+                <div style="font-size:32px;margin-bottom:8px">🎯</div>
+                <div style="font-size:13px">Run benchmarks to see results</div>
               </div>
-              <div class="log" id="evalLog" style="max-height:200px;display:none">Evaluating...</div>
+              <div class="log" id="evalLog" style="max-height:300px;display:none;font-size:11px">Starting evaluation...</div>
             </div>
           </div>
         </div>
@@ -977,11 +1125,144 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
                 <span class="chip">r=64</span><span class="chip">cosine</span><span class="chip">sharegpt</span>
               </div>
             </div>
+            <div class="template-card" onclick="selectTemplate('chatglm')" style="flex:1;min-width:240px">
+              <h4>📞 ChatGLM / GLM-4</h4>
+              <p>ChatGLM prefix-encoder architecture. Custom attention masking, different tokenizer.</p>
+              <div class="template-tags">
+                <span class="chip">r=16</span><span class="chip">cosine</span><span class="chip">prefix-encoder</span>
+              </div>
+            </div>
+            <div class="template-card" onclick="selectTemplate('command-r')" style="flex:1;min-width:240px">
+              <h4>🧠 Command R / R+</h4>
+              <p>Cohere Command R models. Large FFN layers, high capacity, grounded responses.</p>
+              <div class="template-tags">
+                <span class="chip">r=32</span><span class="chip">cosine</span><span class="chip">large-ffn</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
 
     </div>
+  </div>
+</div>
+
+<!-- ═══════════ EXPERIMENTS ═══════════ -->
+    <div class="panel" id="panel-experiments">
+      <div class="row mb-8 gap-16">
+        <div style="flex:1">
+          <div class="card">
+            <div class="card-header">
+              <h3><span class="icon">🔬</span> Experiment Tracking</h3>
+              <div style="display:flex;gap:6px;align-items:center">
+                <button class="btn btn-green btn-sm" onclick="startExperiment()" id="expStartBtn">▶ New Run</button>
+                <button class="btn btn-red btn-sm" onclick="stopExperiment()" id="expStopBtn" disabled>■ Stop</button>
+                <button class="btn btn-dim btn-xs" onclick="loadExperiments()">🔄 Refresh</button>
+              </div>
+            </div>
+            <div class="row mb-12">
+              <div><label>Experiment Name</label><input type="text" id="expName" value="default" placeholder="experiment-name"></div>
+              <div><label>Description</label><input type="text" id="expDesc" placeholder="Optional description"></div>
+              <div><label>Tags (key=val)</label><input type="text" id="expTags" placeholder="model=Llama-3.2,lr=1e-4"></div>
+            </div>
+            <div class="row mb-12" style="align-items:center">
+              <label style="margin-bottom:0;display:flex;align-items:center;gap:6px;cursor:pointer">
+                <input type="checkbox" id="expWandb" checked style="width:auto;margin:0"> W&B
+              </label>
+              <label style="margin-bottom:0;display:flex;align-items:center;gap:6px;cursor:pointer">
+                <input type="checkbox" id="expMlflow" checked style="width:auto;margin:0"> MLflow
+              </label>
+              <span class="text-dim" style="font-size:12px" id="expStatusLabel">No active experiment</span>
+              <input type="hidden" id="expCurrentRunId" value="">
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <h3><span class="icon">📊</span> Metric Chart</h3>
+              <div style="display:flex;gap:6px">
+                <select id="expChartMetric" style="width:auto;margin:0;padding:4px 10px;font-size:12px">
+                  <option value="loss">loss</option>
+                  <option value="accuracy">accuracy</option>
+                  <option value="eval_loss">eval_loss</option>
+                </select>
+                <button class="btn btn-dim btn-xs" onclick="refreshExpChart()">↻</button>
+              </div>
+            </div>
+            <div class="chart-wrapper" style="height:250px"><canvas id="expChart"></canvas></div>
+            <div class="text-dim" style="font-size:12px;margin-top:8px;text-align:center" id="expChartHint">
+              Start an experiment run and log metrics to see the chart
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <h3><span class="icon">📉</span> Compare Runs</h3>
+              <button class="btn btn-dim btn-xs" onclick="refreshComparison()">↻ Refresh</button>
+            </div>
+            <div class="row mb-8">
+              <div><label>Metric</label><select id="compMetric" style="width:auto;margin:0;padding:4px 10px;font-size:12px"><option value="loss">loss</option><option value="accuracy">accuracy</option></select></div>
+              <div><label>Run IDs (comma-separated)</label><input type="text" id="compRunIds" placeholder="abc123,def456" style="font-family:monospace;font-size:12px"></div>
+              <div style="display:flex;align-items:flex-end"><button class="btn btn-primary btn-sm" onclick="compareRuns()">Compare</button></div>
+            </div>
+            <div class="chart-wrapper" style="height:200px"><canvas id="compChart"></canvas></div>
+          </div>
+        </div>
+        <div class="col-2">
+          <div class="card">
+            <div class="card-header"><h3><span class="icon">📋</span> Experiment Runs</h3><button class="btn btn-dim btn-xs" onclick="loadExperiments()">🔄</button></div>
+            <div id="expRunList" style="max-height:500px;overflow-y:auto"><span class="text-dim">Loading experiments...</span></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><h3><span class="icon">📄</span> Run Details</h3></div>
+            <div id="expRunDetail" class="text-dim" style="font-size:12px;line-height:1.6">Click a run to view details</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════ MODEL CARDS ═══════════ -->
+    <div class="panel" id="panel-model-cards">
+      <div class="row mb-8 gap-16">
+        <div class="col-2">
+          <div class="card">
+            <div class="card-header"><h3><span class="icon">🆔</span> Create Model Card</h3></div>
+            <div class="row mb-8">
+              <div><label>Model Name</label><input type="text" id="mcName" placeholder="My Awesome Model"></div>
+              <div><label>Architecture</label>
+                <select id="mcArch"><option value="llama">Llama</option><option value="mistral">Mistral</option><option value="qwen">Qwen</option><option value="gemma">Gemma</option><option value="phi">Phi</option><option value="deepseek">DeepSeek</option></select>
+              </div>
+            </div>
+            <div class="row mb-8">
+              <div><label>Base Model</label><input type="text" id="mcBase" placeholder="meta-llama/Llama-3.2-1B"></div>
+              <div><label>Dataset</label><input type="text" id="mcDataset" placeholder="my-dataset.jsonl"></div>
+            </div>
+            <div class="row mb-8">
+              <div><label>Quantization</label>
+                <select id="mcQuant"><option value="">None</option><option value="Q4_0">Q4_0</option><option value="Q4_K_M">Q4_K_M</option><option value="Q5_K_M">Q5_K_M</option><option value="Q8_0">Q8_0</option><option value="F16">F16</option></select>
+              </div>
+              <div><label>License</label>
+                <select id="mcLicense"><option value="MIT">MIT</option><option value="Apache-2.0">Apache 2.0</option><option value="CC-BY-4.0">CC-BY-4.0</option><option value="Llama3">Llama 3</option></select>
+              </div>
+            </div>
+            <label>Description</label><textarea id="mcDesc" rows="3" placeholder="Briefly describe your model..."></textarea>
+            <label>Training Config (JSON)</label><textarea id="mcConfig" rows="3" placeholder='{"lr": "2e-4", "batch_size": 4, "lora_rank": 16}'></textarea>
+            <label>Tags (comma-separated)</label><input type="text" id="mcTags" placeholder="fine-tuned, chat, instruct">
+            <button class="btn btn-green" onclick="createModelCard()" id="mcBtn">🆔 Create Model Card</button>
+            <div class="log mt-8" id="mcLog" style="max-height:80px">Ready.</div>
+          </div>
+        </div>
+        <div style="flex:1">
+          <div class="card">
+            <div class="card-header"><h3><span class="icon">📇</span> Model Cards</h3><button class="btn btn-dim btn-xs" onclick="loadModelCards()">🔄</button></div>
+            <div id="mcList"><span class="text-dim">No model cards yet.</span></div>
+          </div>
+          <div class="card" id="mcReadmeCard" style="display:none">
+            <div class="card-header"><h3><span class="icon">📝</span> Generated README</h3><button class="btn btn-dim btn-xs" onclick="copyMcReadme()">📋 Copy</button></div>
+            <div class="log" id="mcReadme" style="max-height:400px;white-space:pre-wrap;font-family:monospace;font-size:12px"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -993,7 +1274,10 @@ const API = (() => {
   const params = new URLSearchParams(location.search);
   const apiParam = params.get('api');
   if (apiParam) { localStorage.setItem('mojollama_api_url', apiParam); return apiParam; }
-  if (location.port === '8080' || location.port === '') return '';
+  // Same-origin: served directly from the API server on port 8080
+  if (location.port === '8080') return '';
+  // For static sites (OneDev ~site, GitHub Pages, etc.) or any other origin,
+  // default to hostname:8080 for LAN setups. User can override via settings.
   return `http://${location.hostname}:8080`;
 })();
 
@@ -1004,6 +1288,20 @@ const TEMPLATES = {
   gemma: { rank:16, alpha:32, lr:'2e-4', scheduler:'cosine', steps:500, batch:4, gradAccum:1, warmup:50, weightDecay:'0.01', modules:'q_proj,v_proj,k_proj,o_proj', dropout:'0.05', ctxLen:2048, flashAttn:true, fp16:true, format:'alpaca', systemPrompt:'You are a helpful AI assistant based on Gemma.' },
   phi: { rank:8, alpha:16, lr:'5e-4', scheduler:'constant', steps:300, batch:4, gradAccum:1, warmup:20, weightDecay:'0.01', modules:'q_proj,v_proj', dropout:'0.1', ctxLen:2048, flashAttn:true, fp16:true, format:'alpaca', systemPrompt:'You are a helpful AI assistant based on Phi-3.' },
   deepseek: { rank:64, alpha:128, lr:'1e-4', scheduler:'cosine', steps:2000, batch:2, gradAccum:4, warmup:100, weightDecay:'0.005', modules:'q_proj,v_proj,k_proj,o_proj,gate_proj,up_proj,down_proj', dropout:'0.05', ctxLen:4096, flashAttn:true, fp16:true, format:'sharegpt', systemPrompt:'You are a reasoning AI assistant. Think step by step.' },
+  chatglm: { rank:16, alpha:32, lr:'2e-4', scheduler:'cosine', steps:500, batch:4, gradAccum:2, warmup:50, weightDecay:'0.01', modules:'q_proj,v_proj,k_proj,o_proj', dropout:'0.05', ctxLen:2048, flashAttn:true, fp16:true, format:'alpaca', systemPrompt:'You are a helpful AI assistant based on ChatGLM.' },
+  'command-r': { rank:32, alpha:64, lr:'1e-4', scheduler:'cosine', steps:1000, batch:2, gradAccum:2, warmup:100, weightDecay:'0.01', modules:'q_proj,v_proj,k_proj,o_proj,gate_proj,up_proj,down_proj', dropout:'0.05', ctxLen:4096, flashAttn:true, fp16:true, format:'sharegpt', systemPrompt:'You are a helpful AI assistant by Cohere. Provide accurate and grounded responses.' },
+};
+
+// Architecture → template mapping for auto-suggest
+const ARCH_TO_TEMPLATE = {
+  llama: 'llama3', llama2: 'llama3', llama3: 'llama3', codellama: 'llama3',
+  mistral: 'mistral', mistral3: 'mistral', mixtral: 'mistral',
+  qwen: 'qwen', qwen2: 'qwen', qwen2moe: 'qwen', qwen3moe: 'qwen',
+  gemma: 'gemma', gemma2: 'gemma', gemma4: 'gemma',
+  phi: 'phi', phi2: 'phi', phi3: 'phi',
+  deepseek: 'deepseek', deepseek2: 'deepseek', deepseek3: 'deepseek',
+  chatglm: 'chatglm', glm: 'chatglm',
+  'command-r': 'command-r', commandr: 'command-r',
 };
 
 // ─── State ──────────────────────────────────────────────────────
@@ -1019,7 +1317,8 @@ let benchHistory = [];
 // ─── Tab switching ──────────────────────────────────────────────
 const TAB_ICONS = { chat:'💬 Chat', train:'🎓 Train', dataset:'📊 Dataset', export:'📤 Export',
                     benchmark:'⚡ Benchmark', evaluate:'🎯 Evaluate', quantize:'🔮 Quantize',
-                    merge:'🔗 Merge', templates:'📋 Templates' };
+                    merge:'🔗 Merge', templates:'📋 Templates', experiments:'🔬 Experiments',
+                    'model-cards':'🆔 Model Cards' };
 document.querySelectorAll('.nav-item').forEach(item => {
   item.addEventListener('click', () => {
     document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
@@ -1072,10 +1371,16 @@ async function loadBackend() {
     document.getElementById('backendName').textContent = data.active || data.backend || 'online';
     document.getElementById('backendName').style.color = 'var(--green)';
     document.getElementById('backendSpeed').textContent = data.uptime ? `${data.uptime}` : '';
+    // Hide any offline banner
+    const banner = document.getElementById('offlineBanner');
+    if (banner) banner.style.display = 'none';
   } catch(e) {
     document.getElementById('statusDot').className = 'status-dot offline';
     document.getElementById('backendName').textContent = 'offline';
     document.getElementById('backendName').style.color = 'var(--red)';
+    // Show offline banner
+    const banner = document.getElementById('offlineBanner');
+    if (banner) banner.style.display = 'block';
   }
 }
 
@@ -1083,6 +1388,9 @@ async function loadModels() {
   try {
     const data = await apiFetch('/api/models');
     const models = data.models || [];
+    // Store model metadata for auto-suggest
+    window._modelData = {};
+    models.forEach(m => { window._modelData[m.path || m.name] = m; });
     const selects = ['chatModel','trainModel','benchModel','dsModel','mergeBase','evalModel','quantModel'];
     selects.forEach(id => {
       const sel = document.getElementById(id);
@@ -1099,8 +1407,38 @@ async function loadModels() {
         sel.appendChild(opt);
       });
     });
-  } catch(e) { console.error('loadModels:', e); }
+    // Show/hide no-models hint
+    const hint = document.getElementById('noModelsHint');
+    if (hint) hint.style.display = models.length === 0 ? 'flex' : 'none';
+  } catch(e) {
+    console.error('loadModels:', e);
+    const hint = document.getElementById('noModelsHint');
+    if (hint) hint.style.display = 'flex';
+  }
 }
+
+// Auto-suggest template when user selects a model in the Train tab
+document.addEventListener('DOMContentLoaded', () => {
+  const trainModel = document.getElementById('trainModel');
+  if (trainModel) {
+    trainModel.addEventListener('change', () => {
+      const modelName = trainModel.value;
+      if (!modelName || !window._modelData) return;
+      const meta = window._modelData[modelName];
+      if (!meta || !meta.architecture) return;
+      const arch = meta.architecture.toLowerCase();
+      // Match architecture to template
+      for (const [archPrefix, templateId] of Object.entries(ARCH_TO_TEMPLATE)) {
+        if (arch.startsWith(archPrefix) || archPrefix.startsWith(arch)) {
+          applyTrainTemplate(templateId);
+          document.getElementById('trainTemplate').value = templateId;
+          toast(`Auto-suggested ${templateId} template for ${arch} model`, 'info');
+          break;
+        }
+      }
+    });
+  }
+});
 
 async function loadDatasets() {
   try {
@@ -1111,9 +1449,17 @@ async function loadDatasets() {
       container.innerHTML = '<span class="text-dim">No datasets found. Create one above.</span>';
       return;
     }
-    container.innerHTML = '<table class="results-table"><thead><tr><th>Name</th><th>Size</th><th>Samples</th><th>Actions</th></tr></thead><tbody>' +
-      datasets.map(d => `<tr><td>${d.name}</td><td>${d.size || '—'}</td><td>${d.samples || '—'}</td>
-        <td><button class="btn btn-dim btn-xs" onclick="document.getElementById('trainData').value='${d.path||d.name}';document.querySelector('[data-tab=train]').click()">Use in Train</button></td></tr>`).join('') +
+    container.innerHTML = '<table class="results-table"><thead><tr><th>Name</th><th>Format</th><th>Size</th><th>Samples</th><th>Actions</th></tr></thead><tbody>' +
+      datasets.map(d => `<tr>
+        <td>${d.name}</td>
+        <td><span class="badge badge-${d.format === 'unknown' ? 'beta' : 'new'}">${d.format}</span></td>
+        <td>${d.size_mb || (d.size_bytes / 1024 / 1024).toFixed(1) || '—'} MB</td>
+        <td>${d.samples || '—'}</td>
+        <td>
+          <button class="btn btn-dim btn-xs" onclick="showDatasetStats('${d.name}')">📊 Stats</button>
+          <button class="btn btn-dim btn-xs" onclick="document.getElementById('convInput').value='${d.name}';document.querySelector('[data-tab=dataset]').click();document.getElementById('convInput').focus()">🔄 Convert</button>
+          <button class="btn btn-dim btn-xs" onclick="document.getElementById('trainData').value='${d.path||d.name}';document.querySelector('[data-tab=train]').click()">🎓 Train</button>
+        </td></tr>`).join('') +
       '</tbody></table>';
   } catch(e) {
     document.getElementById('datasetList').innerHTML = '<span class="text-dim">Could not load datasets.</span>';
@@ -1417,10 +1763,52 @@ async function startTraining() {
   const log = document.getElementById('trainLog');
   log.textContent = 'Starting training...\n';
 
+  // Auto-start experiment tracking
+  let trainExpId = document.getElementById('expCurrentRunId').value;
+  if (!trainExpId) {
+    try {
+      const steps = parseInt(document.getElementById('trainSteps').value) || 100;
+      const run = await apiFetch('/api/experiments/start', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: `train-${model.split('/').pop().replace('.gguf','')}`,
+          description: `Auto-tracked training: ${model}, ${data}`,
+          tags: {model: model.split('/').pop(), dataset: data.split('/').pop()},
+          params: {
+            lora_rank: parseInt(document.getElementById('trainRank').value),
+            lora_alpha: parseInt(document.getElementById('trainAlpha').value),
+            lr: document.getElementById('trainLR').value,
+            steps,
+            batch: parseInt(document.getElementById('trainBatch').value),
+          },
+          auto_wandb: true,
+          auto_mlflow: true,
+        })
+      });
+      trainExpId = run.id;
+      document.getElementById('expCurrentRunId').value = run.id;
+      document.getElementById('expStatusLabel').textContent = `▶ Training: ${run.display_name}`;
+      document.getElementById('expStopBtn').disabled = false;
+      log.textContent += `📊 Experiment ${run.id} started\n`;
+    } catch(e) {
+      log.textContent += `⚠️  Experiment tracking init failed: ${e.message}\n`;
+    }
+  }
+
   if (trainingSource) trainingSource.close();
   trainingSource = new EventSource(`${API}/api/train/metrics`);
   trainingSource.onmessage = (e) => {
-    try { updateTrainingMetrics(JSON.parse(e.data)); } catch(err) {}
+    try { 
+      const data = JSON.parse(e.data);
+      updateTrainingMetrics(data);
+      // Auto-log metrics to experiment tracker
+      if (trainExpId) {
+        apiFetch(`/api/experiments/${trainExpId}/log-multi`, {
+          method: 'POST',
+          body: JSON.stringify({step: data.step || 0, metrics: {loss: data.loss || 0, accuracy: data.accuracy || 0, eval_loss: data.eval_loss || 0}})
+        }).catch(() => {});
+      }
+    } catch(err) {}
   };
 
   try {
@@ -1465,6 +1853,20 @@ async function startTraining() {
   document.getElementById('trainStopBtn').disabled = true;
   document.getElementById('trainStatusBadge').textContent = 'done';
   if (trainingSource) { trainingSource.close(); trainingSource = null; }
+  // Auto-stop experiment
+  const expRunId = document.getElementById('expCurrentRunId').value;
+  if (expRunId) {
+    apiFetch(`/api/experiments/${expRunId}/stop`, {
+      method: 'POST',
+      body: JSON.stringify({status: 'completed'})
+    }).then(() => {
+      document.getElementById('expCurrentRunId').value = '';
+      document.getElementById('expStatusLabel').textContent = 'No active experiment';
+      document.getElementById('expStopBtn').disabled = true;
+      toast('Experiment auto-stopped', 'success');
+      loadExperiments();
+    }).catch(() => {});
+  }
 }
 
 function stopTraining() {
@@ -1474,6 +1876,19 @@ function stopTraining() {
   document.getElementById('trainStatusBadge').textContent = 'stopped';
   document.getElementById('trainStatusBadge').style.color = 'var(--yellow)';
   if (trainingSource) { trainingSource.close(); trainingSource = null; }
+  // Auto-stop experiment on cancel
+  const expRunId = document.getElementById('expCurrentRunId').value;
+  if (expRunId) {
+    apiFetch(`/api/experiments/${expRunId}/stop`, {
+      method: 'POST',
+      body: JSON.stringify({status: 'cancelled'})
+    }).then(() => {
+      document.getElementById('expCurrentRunId').value = '';
+      document.getElementById('expStatusLabel').textContent = 'No active experiment';
+      document.getElementById('expStopBtn').disabled = true;
+      loadExperiments();
+    }).catch(() => {});
+  }
 }
 
 function updateTrainingMetrics(data) {
@@ -1493,6 +1908,39 @@ function updateTrainingMetrics(data) {
 }
 
 // ─── Dataset ───
+
+function updateDatasetForm() {
+  const format = document.getElementById('dsFormat').value;
+  const fields = document.getElementById('dsFormFields');
+  if (format === 'alpaca') {
+    fields.innerHTML = '<label id="dsField1Label">Instruction</label>' +
+      '<textarea id="dsField1" rows="5" placeholder="What is machine learning?\nExplain transformers\nHow does attention work?"></textarea>' +
+      '<label id="dsField2Label">Input (optional)</label>' +
+      '<textarea id="dsField2" rows="2" placeholder="Context or input text per line (leave blank if none)"></textarea>';
+  } else if (format === 'sharegpt') {
+    fields.innerHTML = '<label id="dsField1Label">Human messages (one per line)</label>' +
+      '<textarea id="dsField1" rows="5" placeholder="What is ML?\nExplain attention\nHow do transformers work?"></textarea>' +
+      '<label id="dsField2Label">Assistant responses (one per line)</label>' +
+      '<textarea id="dsField2" rows="5" placeholder="Machine learning is...\nAttention is...\nTransformers work by..."></textarea>';
+  } else if (format === 'openai') {
+    fields.innerHTML = '<label id="dsField1Label">User messages (one per line)</label>' +
+      '<textarea id="dsField1" rows="5" placeholder="What is ML?\nExplain attention"></textarea>' +
+      '<label id="dsField2Label">Assistant responses (one per line)</label>' +
+      '<textarea id="dsField2" rows="5" placeholder="Machine learning is...\nAttention is a mechanism..."></textarea>';
+  } else if (format === 'preference') {
+    fields.innerHTML = '<label id="dsField1Label">Chosen (preferred) response (one per line)</label>' +
+      '<textarea id="dsField1" rows="3" placeholder="The correct answer is..."></textarea>' +
+      '<label id="dsField2Label">Rejected response (one per line)</label>' +
+      '<textarea id="dsField2" rows="3" placeholder="The wrong answer is..."></textarea>' +
+      '<div class="text-dim" style="font-size:11px;margin-top:4px">For DPO/ORPO/KTO training — pairs of chosen vs rejected responses</div>';
+  } else {
+    fields.innerHTML = '<label id="dsField1Label">Prompts (one per line)</label>' +
+      '<textarea id="dsField1" rows="5" placeholder="What is ML?\nExplain attention"></textarea>' +
+      '<label id="dsField2Label">Completions (one per line, optional)</label>' +
+      '<textarea id="dsField2" rows="2" placeholder="Leave blank for auto-label"></textarea>';
+  }
+}
+
 function createDataset() {
   const format = document.getElementById('dsFormat').value;
   const field1 = document.getElementById('dsField1').value.split('\n').filter(p => p.trim());
@@ -1513,6 +1961,18 @@ function createDataset() {
         { from: 'gpt', value: field2[i] || '' }
       ]
     })).join('\n');
+  } else if (format === 'openai') {
+    jsonl = field1.map((msg, i) => JSON.stringify({
+      messages: [
+        { role: 'user', content: msg },
+        { role: 'assistant', content: field2[i] || '' }
+      ]
+    })).join('\n');
+  } else if (format === 'preference') {
+    jsonl = field1.map((chosen, i) => JSON.stringify({
+      chosen: [{ role: 'user', content: 'Instruction' }, { role: 'assistant', content: chosen }],
+      rejected: [{ role: 'user', content: 'Instruction' }, { role: 'assistant', content: field2[i] || '' }]
+    })).join('\n');
   } else {
     jsonl = field1.map((p, i) => JSON.stringify({prompt: p, completion: field2[i] || ''})).join('\n');
   }
@@ -1525,11 +1985,32 @@ function createDataset() {
   toast(`Created ${field1.length} samples in ${format} format`, 'success');
 }
 
+async function convertDataset() {
+  const input = document.getElementById('convInput').value;
+  const format = document.getElementById('convFormat').value;
+  const output = document.getElementById('convOutput').value || 'converted.jsonl';
+  const log = document.getElementById('convLog');
+  if (!input) { toast('Enter input file', 'error'); return; }
+  log.textContent = 'Converting...\n';
+  try {
+    const result = await apiFetch('/api/dataset/convert', {
+      method: 'POST',
+      body: JSON.stringify({input, format, output})
+    });
+    log.textContent = `✅ Converted: ${result.input_format} → ${result.output_format}\n${result.samples} samples\nOutput: ${result.output_path}`;
+    toast('Conversion complete!', 'success');
+    loadDatasets();
+  } catch(e) { log.textContent += `\nError: ${e.message}`; toast('Conversion failed', 'error'); }
+}
+
 async function autoLabel() {
   const model = document.getElementById('dsModel').value;
   const inputFile = document.getElementById('dsInputFile').value;
   const outputFile = document.getElementById('dsOutputFile').value || 'labeled.jsonl';
   const maxTokens = parseInt(document.getElementById('dsMaxTokens').value) || 256;
+  const temperature = parseFloat(document.getElementById('dsTemperature').value) || 0.7;
+  const confThreshold = parseFloat(document.getElementById('dsConfThreshold').value) || 0.0;
+  const batchSize = parseInt(document.getElementById('dsBatchSize').value) || 1;
   const btn = document.getElementById('dsAutoBtn');
   const log = document.getElementById('dsAutoLog');
   if (!model || !inputFile) { toast('Select model and input file', 'error'); return; }
@@ -1538,7 +2019,11 @@ async function autoLabel() {
   try {
     const resp = await fetch(`${API}/api/dataset/auto-label`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({model, input: inputFile, output: outputFile, max_tokens: maxTokens})
+      body: JSON.stringify({
+        model, input: inputFile, output: outputFile,
+        max_tokens: maxTokens, temperature,
+        confidence_threshold: confThreshold, batch_size: batchSize
+      })
     });
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
@@ -1549,6 +2034,60 @@ async function autoLabel() {
     toast('Auto-label complete!', 'success'); loadDatasets();
   } catch(e) { log.textContent += `\nError: ${e.message}`; toast('Auto-label failed', 'error'); }
   btn.disabled = false; btn.textContent = '✨ Auto-Label Dataset';
+}
+
+async function splitDataset() {
+  const input = document.getElementById('splitInput').value;
+  const trainPct = parseInt(document.getElementById('splitTrain').value) || 80;
+  const valPct = parseInt(document.getElementById('splitVal').value) || 10;
+  const testPct = parseInt(document.getElementById('splitTest').value) || 10;
+  const log = document.getElementById('splitLog');
+  if (!input) { toast('Enter dataset path', 'error'); return; }
+  log.textContent = `Splitting ${input}...\n`;
+
+  // Client-side: call the stats endpoint to confirm the dataset exists
+  try {
+    const info = await apiFetch(`/api/dataset/info?dataset=${encodeURIComponent(input)}`);
+    log.textContent += `Dataset: ${info.name}\nFormat: ${info.format}\nSamples: ${info.line_count}\n\n`;
+    log.textContent += `Split: ${trainPct}% train, ${valPct}% val, ${testPct}% test\n`;
+    log.textContent += `Output prefix: ${input.replace('.jsonl', '')}\n\n`;
+    log.textContent += '✅ Split configuration ready. Run in CLI:\n';
+    log.textContent += `mojollama dataset split --input ${input} --train-ratio 0.${trainPct} --val-ratio 0.${valPct} --test-ratio 0.${testPct}`;
+    toast('Split config shown in log', 'success');
+  } catch(e) {
+    log.textContent += `\nError: ${e.message}`;
+    toast('Failed to read dataset info', 'error');
+  }
+}
+
+async function showDatasetStats(name) {
+  const card = document.getElementById('dsStatsCard');
+  const content = document.getElementById('dsStatsContent');
+  card.style.display = 'block';
+  content.innerHTML = 'Loading...';
+  try {
+    const stats = await apiFetch(`/api/dataset/stats?dataset=${encodeURIComponent(name)}`);
+    content.innerHTML = `
+      <div class="row">
+        <div style="flex:1">
+          <div class="stat"><span class="stat-label">Samples</span><span class="stat-value">${stats.total_samples || 0}</span></div>
+          <div class="stat"><span class="stat-label">Est. Tokens</span><span class="stat-value">${(stats.estimated_tokens || 0).toLocaleString()}</span></div>
+          <div class="stat"><span class="stat-label">Vocab Size</span><span class="stat-value">${(stats.vocab_size || 0).toLocaleString()}</span></div>
+        </div>
+        <div style="flex:1">
+          <div class="stat"><span class="stat-label">Avg Length</span><span class="stat-value">${stats.length?.mean || '—'}</span></div>
+          <div class="stat"><span class="stat-label">Median Length</span><span class="stat-value">${stats.length?.median || '—'}</span></div>
+          <div class="stat"><span class="stat-label">Max Length</span><span class="stat-value">${stats.length?.max || '—'}</span></div>
+        </div>
+        <div style="flex:1">
+          <div class="stat"><span class="stat-label">Avg Prompt</span><span class="stat-value">${stats.prompt_length?.mean || '—'}</span></div>
+          <div class="stat"><span class="stat-label">Avg Completion</span><span class="stat-value">${stats.completion_length?.mean || '—'}</span></div>
+        </div>
+      </div>
+    `;
+  } catch(e) {
+    content.innerHTML = `<span class="text-red">Failed to load stats: ${e.message}</span>`;
+  }
 }
 
 // ─── Export ───
@@ -1772,9 +2311,329 @@ function selectTemplate(name) {
   document.getElementById('topbarTitle').textContent = TAB_ICONS.train;
 }
 
+// ─── Experiment Tracking ────────────────────────────────────────
+let expChart = null;
+let expRunChart = null;
+let expChartData = null;
+let compChart = null;
+
+async function loadExperiments() {
+  const el = document.getElementById('expRunList');
+  try {
+    const data = await apiFetch('/api/experiments');
+    const runs = data.experiments || [];
+    if (runs.length === 0) {
+      el.innerHTML = '<span class="text-dim">No experiment runs yet. Start one above.</span>';
+      return;
+    }
+    el.innerHTML = runs.map(r => `<div class="chip" style="display:flex;margin-bottom:4px;cursor:pointer;justify-content:space-between;width:100%;border-radius:6px"
+      onclick="showExpRun('${r.id}')">
+      <span style="font-weight:600;font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis">${r.display_name || r.name}</span>
+      <span style="font-size:10px;color:${r.status === 'running' ? 'var(--green)' : 'var(--dim)'}">${r.status}</span>
+    </div>`).join('');
+    // Auto-refresh if any running
+    const hasRunning = runs.some(r => r.status === 'running');
+    if (hasRunning) setTimeout(loadExperiments, 5000);
+  } catch(e) {
+    el.innerHTML = `<span class="text-dim">Error: ${e.message}</span>`;
+  }
+}
+
+async function showExpRun(runId) {
+  const el = document.getElementById('expRunDetail');
+  try {
+    const run = await apiFetch(`/api/experiments/${runId}`);
+    const tags = typeof run.tags === 'object' ? run.tags : {};
+    const params = typeof run.params === 'object' ? run.params : {};
+    const metrics = typeof run.metrics === 'object' ? run.metrics : {};
+    const artifacts = run.artifacts || [];
+    const created = new Date(run.created_at * 1000).toLocaleString();
+    el.innerHTML = `
+      <div><strong>ID:</strong> <code style="font-size:11px">${run.id}</code></div>
+      <div><strong>Name:</strong> ${run.display_name || run.name}</div>
+      <div><strong>Status:</strong> <span style="color:${run.status === 'running' ? 'var(--green)' : run.status === 'completed' ? 'var(--accent)' : 'var(--orange)'}">${run.status}</span></div>
+      <div><strong>Started:</strong> ${created}</div>
+      ${Object.keys(tags).length ? `<div><strong>Tags:</strong> ${Object.entries(tags).map(([k,v]) => `<span class="chip" style="font-size:10px">${k}=${v}</span>`).join(' ')}</div>` : ''}
+      ${Object.keys(params).length ? `<div><strong>Params:</strong> ${Object.entries(params).map(([k,v]) => `<span class="chip" style="font-size:10px">${k}=${v}</span>`).join(' ')}</div>` : ''}
+      ${Object.keys(metrics).length ? `<div style="margin-top:6px"><strong>Latest Metrics:</strong></div>` +
+        Object.entries(metrics).map(([k,v]) => `<div style="font-size:11px;padding-left:12px">• ${k}: <strong>${typeof v === 'number' ? v.toFixed(6) : v}</strong></div>`).join('') : ''}
+      ${artifacts.length ? `<div style="margin-top:6px"><strong>Artifacts:</strong></div>` +
+        artifacts.map(a => `<div style="font-size:11px;padding-left:12px">• ${a.path || a}</div>`).join('') : ''}
+      <div style="margin-top:8px">
+        <button class="btn btn-dim btn-xs" onclick="loadExpChart('${run.id}')">📊 View Chart</button>
+        <button class="btn btn-red btn-xs" onclick="deleteExpRun('${run.id}')">🗑 Delete</button>
+      </div>
+    `;
+  } catch(e) {
+    el.innerHTML = `<span class="text-red">Error: ${e.message}</span>`;
+  }
+}
+
+async function loadExpChart(runId, metric) {
+  if (!metric) metric = document.getElementById('expChartMetric').value;
+  try {
+    const data = await apiFetch(`/api/experiments/${runId}/chart?metric=${metric}`);
+    if (!data.steps || data.steps.length === 0) {
+      document.getElementById('expChartHint').textContent = 'No data for this metric yet';
+      return;
+    }
+    document.getElementById('expChartHint').textContent = `Min: ${data.min.toFixed(4)} | Max: ${data.max.toFixed(4)} | Last: ${data.last.toFixed(4)}`;
+    const ctx = document.getElementById('expChart').getContext('2d');
+    if (expChart) expChart.destroy();
+    expChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: data.steps,
+        datasets: [{
+          label: metric,
+          data: data.values,
+          borderColor: '#5b8def',
+          backgroundColor: 'rgba(91,141,239,0.1)',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 1,
+          borderWidth: 2,
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {
+          x: { grid: { color: 'rgba(37,45,58,0.3)' }, ticks: { color: '#7d8590', font: { size: 9 } }, title: { display: true, text: 'Step', color: '#7d8590' } },
+          y: { grid: { color: 'rgba(37,45,58,0.3)' }, ticks: { color: '#7d8590', font: { size: 9 } } }
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: { mode: 'index', intersect: false }
+        }
+      }
+    });
+  } catch(e) {
+    document.getElementById('expChartHint').textContent = `Error: ${e.message}`;
+  }
+}
+
+function refreshExpChart() {
+  const runId = document.getElementById('expCurrentRunId').value;
+  if (runId) loadExpChart(runId);
+}
+
+async function startExperiment() {
+  const name = document.getElementById('expName').value || 'default';
+  const desc = document.getElementById('expDesc').value;
+  const tagsStr = document.getElementById('expTags').value;
+  const autoWandb = document.getElementById('expWandb').checked;
+  const autoMlflow = document.getElementById('expMlflow').checked;
+  const tags = {};
+  if (tagsStr) tagsStr.split(',').filter(Boolean).forEach(t => {
+    const [k, v] = t.split('=');
+    if (k) tags[k.trim()] = (v || '').trim();
+  });
+  document.getElementById('expStartBtn').disabled = true;
+  document.getElementById('expStartBtn').textContent = '⏳ Starting...';
+  try {
+    const run = await apiFetch('/api/experiments/start', {
+      method: 'POST',
+      body: JSON.stringify({name, description: desc, tags, auto_wandb: autoWandb, auto_mlflow: autoMlflow})
+    });
+    document.getElementById('expCurrentRunId').value = run.id;
+    document.getElementById('expStatusLabel').textContent = `▶ Active: ${run.display_name} (${run.id})`;
+    document.getElementById('expStopBtn').disabled = false;
+    document.getElementById('expStartBtn').textContent = '▶ Running...';
+    toast(`Experiment started: ${run.id}`, 'success');
+    loadExperiments();
+  } catch(e) {
+    toast(`Failed: ${e.message}`, 'error');
+    document.getElementById('expStartBtn').disabled = false;
+    document.getElementById('expStartBtn').textContent = '▶ New Run';
+  }
+}
+
+async function stopExperiment() {
+  const runId = document.getElementById('expCurrentRunId').value;
+  if (!runId) return;
+  try {
+    const status = prompt('Completion status (completed/failed/cancelled):', 'completed') || 'completed';
+    const run = await apiFetch(`/api/experiments/${runId}/stop`, {
+      method: 'POST',
+      body: JSON.stringify({status})
+    });
+    document.getElementById('expCurrentRunId').value = '';
+    document.getElementById('expStatusLabel').textContent = 'No active experiment';
+    document.getElementById('expStopBtn').disabled = true;
+    document.getElementById('expStartBtn').disabled = false;
+    document.getElementById('expStartBtn').textContent = '▶ New Run';
+    toast(`Experiment ${status}`, 'success');
+    loadExperiments();
+    showExpRun(runId);
+  } catch(e) {
+    toast(`Failed: ${e.message}`, 'error');
+  }
+}
+
+async function deleteExpRun(runId) {
+  if (!confirm(`Delete experiment ${runId}?`)) return;
+  try {
+    await apiFetch(`/api/experiments/${runId}`, { method: 'DELETE' });
+    toast('Experiment deleted', 'info');
+    document.getElementById('expRunDetail').textContent = 'Click a run to view details';
+    loadExperiments();
+  } catch(e) {
+    toast(`Failed: ${e.message}`, 'error');
+  }
+}
+
+async function compareRuns() {
+  const runIds = document.getElementById('compRunIds').value.trim();
+  const metric = document.getElementById('compMetric').value;
+  if (!runIds) { toast('Enter at least one run ID', 'error'); return; }
+  try {
+    const result = await apiFetch(`/api/experiments/compare?runs=${encodeURIComponent(runIds)}&metric=${encodeURIComponent(metric)}`);
+    const series = result.series || {};
+    const ctx = document.getElementById('compChart').getContext('2d');
+    if (compChart) compChart.destroy();
+
+    const colors = ['#5b8def', '#3fb950', '#f0883e', '#a37cf0', '#f778ba', '#39d2c0', '#d29922'];
+    const datasets = Object.entries(series).map(([runId, data], i) => ({
+      label: data.display_name || runId,
+      data: data.values || [],
+      borderColor: colors[i % colors.length],
+      backgroundColor: colors[i % colors.length] + '22',
+      fill: false,
+      tension: 0.3,
+      pointRadius: 2,
+      borderWidth: 2,
+    }));
+    // Use step numbers from first series
+    const firstSeries = Object.values(series)[0];
+    compChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: firstSeries ? firstSeries.steps || [] : [],
+        datasets
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        scales: {
+          x: { grid: { color: 'rgba(37,45,58,0.3)' }, ticks: { color: '#7d8590', font: { size: 9 } }, title: { display: true, text: 'Step', color: '#7d8590' } },
+          y: { grid: { color: 'rgba(37,45,58,0.3)' }, ticks: { color: '#7d8590', font: { size: 9 } } }
+        },
+        plugins: { legend: { labels: { color: '#7d8590', font: { size: 10 } } } }
+      }
+    });
+    toast('Comparison loaded', 'success');
+  } catch(e) {
+    toast(`Compare failed: ${e.message}`, 'error');
+  }
+}
+
+function refreshComparison() {
+  const runIds = document.getElementById('compRunIds').value.trim();
+  if (runIds) compareRuns();
+}
+
+// ─── Model Cards ─────────────────────────────────────────────────
+async function loadModelCards() {
+  const el = document.getElementById('mcList');
+  try {
+    const data = await apiFetch('/api/model-cards');
+    const cards = data.model_cards || [];
+    if (cards.length === 0) {
+      el.innerHTML = '<span class="text-dim">No model cards yet.</span>';
+      return;
+    }
+    el.innerHTML = '<table class="results-table"><thead><tr><th>Model</th><th>Arch</th><th>Actions</th></tr></thead><tbody>' +
+      cards.map(c => `<tr>
+        <td><strong>${c.model_name}</strong></td>
+        <td>${c.architecture}</td>
+        <td><button class="btn btn-dim btn-xs" onclick="showModelCard('${c.id}')">View</button>
+            <button class="btn btn-dim btn-xs" onclick="generateReadme('${c.id}')">README</button>
+            <button class="btn btn-red btn-xs" onclick="deleteModelCard('${c.id}')">🗑</button></td>
+      </tr>`).join('') +
+      '</tbody></table>';
+  } catch(e) {
+    el.innerHTML = `<span class="text-dim">Error: ${e.message}</span>`;
+  }
+}
+
+async function createModelCard() {
+  const name = document.getElementById('mcName').value.trim();
+  if (!name) { toast('Enter a model name', 'error'); return; }
+  const btn = document.getElementById('mcBtn');
+  btn.disabled = true; btn.textContent = '⏳ Creating...';
+  try {
+    let config = {};
+    try { config = JSON.parse(document.getElementById('mcConfig').value || '{}'); } catch(e) {}
+    const tagsStr = document.getElementById('mcTags').value;
+    const tags = tagsStr ? tagsStr.split(',').map(t => t.trim()).filter(Boolean) : [];
+    const card = await apiFetch('/api/model-cards', {
+      method: 'POST',
+      body: JSON.stringify({
+        model_name: name,
+        architecture: document.getElementById('mcArch').value,
+        base_model: document.getElementById('mcBase').value,
+        dataset: document.getElementById('mcDataset').value,
+        quant_type: document.getElementById('mcQuant').value,
+        license: document.getElementById('mcLicense').value,
+        description: document.getElementById('mcDesc').value,
+        training_config: config,
+        tags,
+      })
+    });
+    document.getElementById('mcLog').textContent = `✓ Created: ${card.id}`;
+    toast(`Model card created: ${card.id}`, 'success');
+    loadModelCards();
+  } catch(e) {
+    document.getElementById('mcLog').textContent = `✗ Error: ${e.message}`;
+    toast(`Failed: ${e.message}`, 'error');
+  }
+  btn.disabled = false; btn.textContent = '🆔 Create Model Card';
+}
+
+async function showModelCard(cardId) {
+  try {
+    const card = await apiFetch(`/api/model-cards/${cardId}`);
+    const el = document.getElementById('mcReadme');
+    const cardEl = document.getElementById('mcReadmeCard');
+    el.textContent = JSON.stringify(card, null, 2);
+    cardEl.style.display = '';
+  } catch(e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
+}
+
+async function generateReadme(cardId) {
+  try {
+    const data = await apiFetch(`/api/model-cards/${cardId}/readme`);
+    const el = document.getElementById('mcReadme');
+    const cardEl = document.getElementById('mcReadmeCard');
+    el.textContent = data.readme || 'No README generated';
+    cardEl.style.display = '';
+  } catch(e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
+}
+
+function copyMcReadme() {
+  const el = document.getElementById('mcReadme');
+  navigator.clipboard.writeText(el.textContent).then(() => toast('Copied!', 'success')).catch(() => toast('Copy failed', 'error'));
+}
+
+async function deleteModelCard(cardId) {
+  if (!confirm(`Delete model card ${cardId}?`)) return;
+  try {
+    await apiFetch(`/api/model-cards/${cardId}`, { method: 'DELETE' });
+    toast('Deleted', 'info');
+    loadModelCards();
+  } catch(e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
+}
+
 // ─── Init ───
 initLossChart();
 refreshAll();
+loadExperiments();
+loadModelCards();
 setInterval(loadBackend, 15000);
 </script>
 </body>
