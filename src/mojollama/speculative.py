@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Speculative decoding — draft (TinyLlama 1.1B) + target (Qwen3-30B-A3B).
 
+Both models run in the SAME tokenizer space (Qwen3 tokenizer).
+Draft output is clamped to [0, 31999] to stay within TinyLlama's embedding range.
+Accepted tokens are decoded via Qwen3 tokenizer.
+
 Algorithm:
   1. Draft model generates K candidate tokens autoregressively.
   2. Target model verifies each candidate via argmax comparison on its logits.
@@ -23,6 +27,7 @@ from turbo_engine_v7_moe import TurboEngineV7MoE
 DRAFT_PATH = "/tmp/tl-Q4_0.gguf"
 TARGET_PATH = "/tmp/models/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf"
 TOKENIZER_PATH = "/tmp/qwen3-tokenizer/"
+DRAFT_CLAMP_MAX = 31999  # TinyLlama vocab = 32000, safe clamp
 
 
 def _ensure_imports():
@@ -44,8 +49,8 @@ def speculative_generate(
 
     Key design decisions:
       - Both models loaded in-process as TurboEngine* instances.
-      - Target's tokenizer is used for all text ↔ token conversion.
-      - Draft receives tokens clipped to its vocabulary range.
+      - Target's tokenizer (Qwen3) is used for all text <-> token conversion.
+      - Draft receives tokens clipped to its vocabulary range [0, 31999].
       - KV cache is checkpointed before verification for clean rollback.
     """
     os.environ["OMP_NUM_THREADS"] = str(n_threads)
@@ -54,7 +59,7 @@ def speculative_generate(
     bos = tokenizer.bos_token_id or 1
     eos = tokenizer.eos_token_id or 2
 
-    # ── Load engines ──────────────────────────────────────────────────
+    # ---- Load engines ------------------------------------------------------------
     if verbose:
         print(f"Loading draft model from {draft_model_path}...", flush=True)
     t0 = time.perf_counter()
@@ -71,7 +76,7 @@ def speculative_generate(
     if verbose:
         print(f"  Target loaded in {time.perf_counter()-t0:.1f}s  (vocab={target_vocab})", flush=True)
 
-    # ── Tokenize prompt ───────────────────────────────────────────────
+    # ---- Tokenize prompt with Qwen3 tokenizer (same space for both models) --------
     ids = tokenizer.encode(prompt)
     if not ids:
         ids = [bos]
@@ -80,7 +85,13 @@ def speculative_generate(
     if verbose:
         print(f"  Prompt: {prompt_len} tokens, max_gen={max_tokens}, K={K}", flush=True)
 
-    # ── Helpers ───────────────────────────────────────────────────────
+    # ---- Helpers ------------------------------------------------------------------
+    def _safe_clamp(tid: int, clamp_max: int = DRAFT_CLAMP_MAX, fallback: int = 0) -> int:
+        """Clamp token id to valid range for TinyLlama embedding."""
+        if 0 <= tid <= clamp_max:
+            return tid
+        return fallback
+
     def _safe_tid(tid: int, vocab_size: int, fallback: int = 0) -> int:
         """Clamp token id to valid range for the given model's vocabulary."""
         if 0 <= tid < vocab_size:
@@ -92,11 +103,20 @@ def speculative_generate(
         safe = np.nan_to_num(logits, nan=-1e10, posinf=1e10, neginf=-1e10)
         return int(np.argmax(safe))
 
-    def _prefill(engine, token_ids, vocab_size):
-        """Prefill engine with a list of token IDs, safely clipped."""
+    def _prefill_draft(engine, token_ids):
+        """Prefill draft engine with Qwen3 token IDs, safely clipped to draft vocab."""
         engine.reset()
         for tid in token_ids:
-            engine.forward(_safe_tid(tid, vocab_size))
+            # Clip to TinyLlama's embedding range
+            safe = _safe_clamp(tid)
+            engine.forward(safe)
+
+    def _prefill_target(engine, token_ids):
+        """Prefill target engine with Qwen3 token IDs."""
+        engine.reset()
+        for tid in token_ids:
+            safe = _safe_tid(tid, engine.vocab_size)
+            engine.forward(safe)
 
     def _save_target_state():
         """Checkpoint target KV cache for potential rollback."""
@@ -114,24 +134,32 @@ def speculative_generate(
         target.kv_len[:] = state["kv_len"]
         target.pos = state["pos"]
 
-    # Prefill both engines
-    _prefill(draft, ids, draft_vocab)
-    _prefill(target, ids, target_vocab)
+    # Prefill both engines with the SAME prompt IDs (Qwen3 tokenizer space)
+    _prefill_draft(draft, ids)
+    _prefill_target(target, ids)
 
     generated_ids = []
     total_draft = 0
     total_accepted = 0
 
-    # ── Main loop ─────────────────────────────────────────────────────
+    # Track the last token ID that both models agree on
+    last_prompt_tid = ids[-1] if ids else bos
+
+    # ---- Main loop ----------------------------------------------------------------
     while len(generated_ids) < max_tokens:
         k_this = min(K, max_tokens - len(generated_ids))
 
-        # ── Step 1: Draft proposes K candidates ──
+        # ---- Step 1: Draft proposes K candidates ----------------------------------
         candidates = []
         for _ in range(k_this):
-            prev_tid = _safe_tid(candidates[-1] if candidates else 0, draft_vocab)
+            # Use the last accepted/generated token as input to draft
+            prev_tid = _safe_clamp(
+                candidates[-1] if candidates else last_prompt_tid
+            )
             logits = draft.forward(prev_tid)
             tok = _sample(logits)
+            # Clamp draft output to TinyLlama's embedding range
+            tok = _safe_clamp(tok)
             candidates.append(tok)
             total_draft += 1
             if tok == eos:
@@ -140,15 +168,14 @@ def speculative_generate(
         if not candidates:
             break
 
-        # ── Step 2: Target verifies candidates ──
-        # Save target state so we can rollback on rejection
+        # ---- Step 2: Target verifies candidates -----------------------------------
         saved_state = _save_target_state()
 
         n_accepted = 0
         target_override = None
 
         for i, cand in enumerate(candidates):
-            # Run target forward with the candidate
+            # Forward the candidate through target (interpreted in Qwen3 space)
             safe_cand = _safe_tid(cand, target_vocab)
             logits = target.forward(safe_cand)
             target_best = _sample(logits)
@@ -157,7 +184,6 @@ def speculative_generate(
                 n_accepted += 1
             else:
                 # Rejected at position i
-                # Roll back to pre-verification state
                 _restore_target_state(saved_state)
 
                 # Re-process the accepted prefix
@@ -169,7 +195,7 @@ def speculative_generate(
                 target.forward(_safe_tid(target_best, target_vocab))
                 break
 
-        # ── Step 3: Update generated text ──
+        # ---- Step 3: Update generated text ----------------------------------------
         if n_accepted == len(candidates):
             # All K accepted
             generated_ids.extend(candidates)
@@ -180,12 +206,9 @@ def speculative_generate(
             total_accepted += n_accepted
             if target_override is not None:
                 generated_ids.append(target_override)
-                # The override counts toward acceptance since it's the
-                # correct token (from the target's perspective)
                 total_accepted += 1
         else:
-            # No candidate accepted (even the first was wrong)
-            # target_override is set from the rejection handler above
+            # No candidate accepted
             if target_override is not None:
                 generated_ids.append(target_override)
                 total_accepted += 1
@@ -195,11 +218,15 @@ def speculative_generate(
                 tok = _sample(logits)
                 generated_ids.append(tok)
 
+        # Update last_prompt_tid for the next round
+        if generated_ids:
+            last_prompt_tid = _safe_clamp(generated_ids[-1])
+
         # Stop on EOS
         if eos in generated_ids:
             break
 
-    # ── Report ────────────────────────────────────────────────────────
+    # ---- Report -------------------------------------------------------------------
     text = tokenizer.decode(generated_ids, skip_special_tokens=True)
 
     acceptance_rate = (

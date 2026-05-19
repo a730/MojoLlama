@@ -51,7 +51,8 @@ class BC(ctypes.Structure):
         ('gate_exp_quant',ci),('up_exp_quant',ci),('down_exp_quant',ci),
         ('q_quant',cv),('k_quant',cv),('v_quant',cv),('o_quant',cv),
         ('g_quant',cv),('u_quant',cv),('d_quant',cv),('emb_quant',ci),
-        ('cos_table',cv),('sin_table',cv),('max_ctx',ci)]
+        ('cos_table',cv),('sin_table',cv),('max_ctx',ci),
+        ('workspace',cv),('ws_size',ci)]
 class KVBlock(ctypes.Structure):
     _fields_=[('k',cv),('v',cv),('n_blocks',ci),('seq_len',ci*64),('block_map',(ci*1024)*64)]
 lib.batch_forward.argtypes=[cv,cv,ci,cv];lib.batch_forward.restype=None

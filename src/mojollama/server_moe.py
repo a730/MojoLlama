@@ -47,7 +47,8 @@ class BC(ctypes.Structure):
         ("q_quant",cv),("k_quant",cv),("v_quant",cv),("o_quant",cv),
         ("g_quant",cv),("u_quant",cv),("d_quant",cv),("emb_quant",ci),
         ("wQK",cv),("qk_quant",cv),
-        ("cos_table",cv),("sin_table",cv),("max_ctx",ci)]
+        ("cos_table",cv),("sin_table",cv),("max_ctx",ci),
+        ("workspace",cv),("ws_size",ci)]
 
 class KVBlock(ctypes.Structure):
     _fields_ = [("k",cv),("v",cv),("n_blocks",ci),("seq_len",ci*64),("block_map",(ci*1024)*64)]
@@ -154,6 +155,14 @@ cos_t = cos_all.ctypes.data_as(cv)
 sin_t = sin_all.ctypes.data_as(cv)
 bc.cos_table=cos_t; bc.sin_table=sin_t; bc.max_ctx=max_ctx
 print(f"RoPE table: {max_ctx}x{hd2} = {len(cos_all)*4*2//1024}KB", flush=True)
+
+# BC workspace: replaces __builtin_alloca for kct/vct in batch_forward
+# Size = 2 * max_ctx * NKH * HD (kct + vct) + safety margin
+ws_bc_size = 2 * max_ctx * NKH * HD + 4096
+ws_bc = np.zeros(ws_bc_size, dtype=np.float32)
+bc.workspace = ws_bc.ctypes.data_as(cv)
+bc.ws_size = ws_bc_size
+print(f"BC workspace: {ws_bc_size} floats = {ws_bc_size*4//1024}KB", flush=True)
 
 MAX_SEQ=32; ws=np.zeros(MAX_SEQ*12*S,dtype=np.float32); logits_buf=np.zeros(MAX_SEQ*V,dtype=np.float32)
 

@@ -43,6 +43,7 @@ class BC(ctypes.Structure):
         ("q_quant",cv),("k_quant",cv),("v_quant",cv),("o_quant",cv),
         ("g_quant",cv),("u_quant",cv),("d_quant",cv),("emb_quant",ci),
         ("cos_table",cv),("sin_table",cv),("max_ctx",ci),
+        ("workspace",cv),("ws_size",ci),
     ]
 
 class KVBlock(ctypes.Structure):

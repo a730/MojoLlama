@@ -14,12 +14,12 @@ const http = require('http');
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const APP_NAME = 'MojoLlama Studio';
-const DEFAULT_URL = 'http://localhost:8080/studio.html';
 const STUDIO_URL = '/studio.html';
 const CHAT_URL = '/chat.html';
 const SETTINGS_FILE = 'mojollama-settings.json';
 const DEFAULT_PORT = 8080;
 const DEFAULT_LLAMA_PORT = 8081;
+const DEFAULT_THREADS = 32;
 const POLL_INTERVAL = 2000;       // ms between server health checks
 const MAX_LOG_LINES = 5000;       // ring buffer for server output
 
@@ -74,20 +74,20 @@ function getProjectRoot() {
  */
 function getServerCommand(overrides = {}) {
   const root = getProjectRoot();
-  const serverPy = path.join(root, 'server.py');
+  const serverPy = path.join(root, 'src', 'mojollama', 'server_moe.py');
   const port = overrides.port || settings.serverPort || DEFAULT_PORT;
   const modelPath = overrides.modelPath || settings.modelPath || '';
 
-  // Use python3 to run server.py
+  // Use python3 to run server_moe.py (positional args: model_path port)
   const pythonCmd = findPython();
-  const args = [serverPy, '--port', String(port)];
+  const resolvedModel = modelPath && fs.existsSync(modelPath)
+    ? modelPath
+    : path.join(root, 'models', 'Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf');
+  const args = [serverPy, resolvedModel, String(port)];
 
-  // Only add --model if we have a valid path
-  if (modelPath && fs.existsSync(modelPath)) {
-    args.push('--model', modelPath);
-  } else if (modelPath) {
-    // If model path is set but doesn't exist, still pass it (server may auto-discover)
-    args.push('--model', modelPath);
+  // Add threads override if set in settings
+  if (settings.threads && settings.threads !== DEFAULT_THREADS) {
+    // server_moe reads OMP_NUM_THREADS from env
   }
 
   // Check for debug mode in settings
@@ -95,7 +95,7 @@ function getServerCommand(overrides = {}) {
     args.push('--debug');
   }
 
-  return { cmd: pythonCmd, args, port };
+  return { cmd: pythonCmd, args, port, serverPy };
 }
 
 /**
@@ -129,6 +129,8 @@ function loadSettings() {
     serverPort: DEFAULT_PORT,
     llamaPort: DEFAULT_LLAMA_PORT,
     modelPath: '',
+    threads: DEFAULT_THREADS,
+    engine: 'server_batch_moe',
     autoStart: true,
     debug: false,
     minimizeToTray: true,
@@ -265,6 +267,7 @@ function startServer(overrides = {}) {
   const env = {
     ...process.env,
     PORT: String(port),
+    OMP_NUM_THREADS: String(settings.threads || DEFAULT_THREADS),
   };
 
   // If model path is set in settings, pass as environment variable
@@ -458,8 +461,15 @@ function createMainWindow(url) {
   // Center window
   win.center();
 
-  const targetUrl = url || getTargetUrl();
-  win.loadURL(targetUrl);
+  // Load www/studio.html directly from disk (no server needed for static UI)
+  const studioPath = path.join(getProjectRoot(), 'www', 'studio.html');
+  if (fs.existsSync(studioPath)) {
+    win.loadFile(studioPath);
+  } else {
+    // Fallback: try loading from server if it's running
+    const targetUrl = url || getTargetUrl();
+    win.loadURL(targetUrl);
+  }
 
   win.once('ready-to-show', () => {
     win.show();
@@ -494,13 +504,18 @@ function createMainWindow(url) {
           .btn { padding: 8px 20px; border: none; border-radius: 6px; cursor: pointer;
                  font-size: 13px; font-weight: 600; background: #58a6ff; color: #fff; }
           .btn:hover { filter: brightness(1.15); }
+          .btn-start { background: #3fb950; }
+          .btn-start:hover { filter: brightness(1.15); }
         </style>
         </head>
         <body>
           <div class="spinner"></div>
-          <h2>Connecting to MojoLlama server...</h2>
-          <p>The server is starting up on port ${serverPort}. This page will automatically reload when the server is ready.</p>
-          <button class="btn" onclick="location.reload()">Retry Now</button>
+          <h2>MojoLlama server is not running</h2>
+          <p>Start the server to access the full Studio experience, or browse the UI in offline mode.</p>
+          <div style="display:flex; gap: 10px;">
+            <button class="btn btn-start" onclick="window.mojollama.serverStart()">Start Server</button>
+            <button class="btn" onclick="location.reload()">Retry</button>
+          </div>
         </body>
         </html>
       `)}`).catch(() => {});
@@ -540,7 +555,7 @@ function getTargetUrl() {
       return args[i];
     }
   }
-  return `${DEFAULT_URL}`;
+  return `http://localhost:${serverPort}/studio.html`;
 }
 
 function createSettingsWindow() {

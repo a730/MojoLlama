@@ -1,0 +1,62 @@
+# =============================================================================
+#  MojoLlama — Docker Compose
+#
+#  Quick start:
+#    docker compose up
+#
+#  With custom model:
+#    MODEL_PATH=/path/to/model.gguf docker compose up
+#
+#  Override engine:
+#    ENGINE=server_moe docker compose up
+# =============================================================================
+
+services:
+  mojollama:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mojollama:latest
+    container_name: mojollama-server
+    ports:
+      # MojoLlama API (MoE engine HTTP server)
+      - "${HOST_PORT:-8080}:8080"
+      # llama.cpp backend (optional, for debugging)
+      - "${LLAMA_PORT:-8081}:8081"
+    volumes:
+      # Mount your GGUF models directory
+      # Default: models/ in the project root
+      - "${MODEL_VOLUME:-./models}:/models:ro"
+      # Mount config directory for persistence
+      - "mojollama-config:/home/mojollama/.mojollama"
+    environment:
+      # Model path inside container (default: pre-downloaded Qwen3)
+      - MODEL_PATH=${MODEL_PATH:-/models/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf}
+      # API server port
+      - PORT=${PORT:-8080}
+      # Engine type: server_moe or server_batch_moe
+      - ENGINE=${ENGINE:-server_batch_moe}
+      # OpenMP threads for MoE kernel
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-32}
+    # Health check (matches Dockerfile)
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    # Restart unless explicitly stopped
+    restart: unless-stopped
+    # Resource limits (adjust based on your hardware)
+    deploy:
+      resources:
+        limits:
+          cpus: "32"
+          memory: "64G"
+        reservations:
+          cpus: "8"
+          memory: "16G"
+
+volumes:
+  mojollama-config:
+    name: mojollama-config

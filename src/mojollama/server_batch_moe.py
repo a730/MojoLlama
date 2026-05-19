@@ -55,6 +55,7 @@ class BC(ctypes.Structure):
         ("g_quant",cv),("u_quant",cv),("d_quant",cv),("emb_quant",ci),
         ("wQK",cv),("qk_quant",cv),
         ("cos_table",cv),("sin_table",cv),("max_ctx",ci),
+        ("workspace",cv),("ws_size",ci),
     ]
 
 lib.kv_init.argtypes=[cv,ci,ci,ci]; lib.kv_init.restype=None
@@ -153,6 +154,14 @@ cos_t = cos_all.ctypes.data_as(cv)
 sin_t = sin_all.ctypes.data_as(cv)
 bc.cos_table=cos_t; bc.sin_table=sin_t; bc.max_ctx=max_ctx
 print(f"RoPE table: {max_ctx}x{hd2} = {len(cos_all)*4*2//1024}KB", flush=True)
+
+# BC workspace: replaces __builtin_alloca for kct/vct in batch_forward
+# Size = 2 * max_ctx * NKH * HD (kct + vct) + safety margin
+ws_bc_size = 2 * max_ctx * NKH * HD + 4096
+ws_bc = np.zeros(ws_bc_size, dtype=np.float32)
+bc.workspace = ws_bc.ctypes.data_as(cv)
+bc.ws_size = ws_bc_size
+print(f"BC workspace: {ws_bc_size} floats = {ws_bc_size*4//1024}KB", flush=True)
 
 # ── Shared buffers ──
 # Allocate enough workspace for B_MAX concurrent sequences

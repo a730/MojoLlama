@@ -3,6 +3,7 @@
 #  Multi-stage build:
 #    Stage 1 (builder):  builds llama-server from source (llama.cpp)
 #    Stage 2 (runtime):  Python 3.11-slim + mojollama code + llama-server binary
+#                        + pre-downloaded GGUF models
 # =============================================================================
 # syntax=docker/dockerfile:1
 
@@ -45,7 +46,7 @@ RUN chmod +x /tmp/llama.cpp/convert_hf_to_gguf.py
 FROM python:3.11-slim
 
 LABEL org.opencontainers.image.title="MojoLlama"
-LABEL org.opencontainers.image.description="High-throughput LLM inference server with GGUF support"
+LABEL org.opencontainers.image.description="High-throughput MoE LLM inference server with MojoLlama engine"
 LABEL org.opencontainers.image.source="https://git.bamse.cloud/a730/MojoLlama"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 LABEL org.opencontainers.image.vendor="MojoLlama"
@@ -57,6 +58,9 @@ LABEL org.opencontainers.image.ref.name="mojollama-server"
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/src
+
+# ── OpenMP threading ─────────────────────────────────────────────────────
+ENV OMP_NUM_THREADS=32
 
 # ── System dependencies ──────────────────────────────────────────────────
 RUN apt-get update && \
@@ -88,18 +92,37 @@ COPY --from=builder --chown=root:root \
 RUN chmod 755 /tmp/llama.cpp/build/bin/llama-server /tmp/llama.cpp/convert_hf_to_gguf.py
 
 # ── Install Python dependencies ─────────────────────────────────────────
-# gguf:       reading/converting GGUF model files
-# numpy:      fallback backend and kernel ops
-# requests:   optional HTTP client (not used by server itself, but useful)
+# gguf:         reading/converting GGUF model files
+# numpy:        fallback backend and kernel ops
+# transformers: tokenization and model metadata
+# requests:     optional HTTP client (not used by server itself, but useful)
 RUN pip install --no-cache-dir \
         gguf \
         numpy \
+        transformers \
         requests
+
+# ── Pre-download GGUF models ────────────────────────────────────────────
+# TinyLlama 1.1B Q4_K_M (~0.7 GB) — for testing and development
+RUN mkdir -p /models && \
+    echo "Downloading TinyLlama 1.1B GGUF..." && \
+    curl -fSL --retry 3 --retry-delay 5 \
+        -o /models/tinyllama-1.1b.Q4_K_M.gguf \
+        "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf" \
+    || echo "[WARN] TinyLlama download failed; will download at runtime if needed"
+
+# Qwen3-30B-A3B Q4_K_M (~18 GB) — production MoE model for MojoLlama engine
+# This is the default model used by server_moe.py
+RUN echo "Downloading Qwen3-30B-A3B GGUF (large model, may take a while)..." && \
+    curl -fSL --retry 3 --retry-delay 15 \
+        -o /models/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf \
+        "https://huggingface.co/Qwen/Qwen3-30B-A3B-GGUF/resolve/main/qwen3-30b-a3b-instruct-2507-q4_k_m.gguf" \
+    || echo "[WARN] Qwen3 download failed; mount your own model at /models"
 
 # ── Copy application code ────────────────────────────────────────────────
 WORKDIR /app
 
-# Python package
+# Python package (entire mojollama source)
 COPY src/mojollama/ /app/src/mojollama/
 # Static web UI files
 COPY www/ /app/www/
@@ -118,11 +141,11 @@ RUN mkdir -p /models /home/mojollama/.mojollama && \
         /home/mojollama/.mojollama
 
 # ── Health check ─────────────────────────────────────────────────────────
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD curl -sf http://localhost:8080/health || exit 1
 
 # ── Ports ────────────────────────────────────────────────────────────────
-# 8080 — MojoLlama API server
+# 8080 — MojoLlama API server (MoE engine)
 # 8081 — llama.cpp backend (internal, exposed for debugging/tuning)
 EXPOSE 8080 8081
 
@@ -131,4 +154,4 @@ USER mojollama
 
 # ── Default command (entrypoint handles model resolution) ────────────────
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-CMD ["--port", "8080"]
+CMD []

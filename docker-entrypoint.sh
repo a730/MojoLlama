@@ -3,7 +3,9 @@
 #  MojoLlama Docker Entrypoint
 #
 #  Handles:
-#    - Model path resolution (auto-detect GGUF in /models or /app)
+#    - Model path resolution (env var MODEL_PATH, defaults to Qwen3-30B-A3B)
+#    - Port configuration (env var PORT, defaults to 8080)
+#    - MojoLlama engine selection (server_moe.py or server_batch_moe.py)
 #    - Config file initialization (~/.mojollama/config.json)
 #    - Signal forwarding for graceful shutdown
 #    - Pass-through of all server arguments
@@ -21,10 +23,28 @@ log()  { echo -e "${GREEN}[mojollama]${NC} $1"; }
 warn() { echo -e "${YELLOW}[mojollama]${NC} $1"; }
 err()  { echo -e "${RED}[mojollama]${NC} $1" >&2; }
 
-# ── Parse known arguments ────────────────────────────────────────────────
+# ── Environment variable defaults ────────────────────────────────────────
+# MODEL_PATH: path to GGUF model file
+#   Default: pre-downloaded Qwen3-30B-A3B in /models
+: "${MODEL_PATH:=/models/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf}"
+
+# PORT: HTTP server port
+#   Default: 8080 (MojoLlama API)
+: "${PORT:=8080}"
+
+# ENGINE: which MojoLlama server to run
+#   Options: server_moe, server_batch_moe
+#   Default: server_batch_moe (higher throughput)
+: "${ENGINE:=server_batch_moe}"
+
+# OMP_NUM_THREADS: OpenMP thread count for MoE engine
+: "${OMP_NUM_THREADS:=32}"
+export OMP_NUM_THREADS
+
+# ── Parse known arguments (for backward compat with old CLI style) ────────
 MODEL_ARG=""
 PORT_ARG=""
-LLAMA_PORT_ARG=""
+ENGINE_ARG=""
 PASSTHROUGH_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -47,12 +67,12 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             ;;
-        --llama-port)
+        --engine)
             if [[ -n "$2" && "$2" != --* ]]; then
-                LLAMA_PORT_ARG="$2"
+                ENGINE_ARG="$2"
                 shift 2
             else
-                err "Missing value for --llama-port"
+                err "Missing value for --engine"
                 exit 1
             fi
             ;;
@@ -63,21 +83,19 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# ── Environment variable defaults ────────────────────────────────────────
-export PORT="${PORT_ARG:-${PORT:-8080}}"
-export LLAMA_PORT="${LLAMA_PORT_ARG:-${LLAMA_PORT:-8081}}"
+# CLI args override env vars
+MODEL_PATH="${MODEL_ARG:-${MODEL_PATH}}"
+PORT="${PORT_ARG:-${PORT}}"
+ENGINE="${ENGINE_ARG:-${ENGINE}}"
 
 # ── Model path resolution ────────────────────────────────────────────────
 # Priority:
-#   1. --model CLI argument
-#   2. MODEL_PATH env var
-#   3. First .gguf found in /models (runtime volume mount)
-#   4. First .gguf found in /app (context models)
-#   5. Fallback: let the server try its default (will print a useful error)
+#   1. --model CLI argument or MODEL_PATH env var
+#   2. First .gguf found in /models (runtime volume mount)
+#   3. First .gguf found in /app (context models)
+#   4. Fallback: default Qwen3 path
 
-MODEL_PATH="${MODEL_ARG:-${MODEL_PATH:-}}"
-
-if [[ -z "$MODEL_PATH" ]]; then
+if [[ -z "$MODEL_PATH" || ! -f "$MODEL_PATH" ]]; then
     # Auto-detect from volume mounts
     for search_dir in /models /app; do
         if [[ -d "$search_dir" ]]; then
@@ -92,14 +110,14 @@ if [[ -z "$MODEL_PATH" ]]; then
     done
 fi
 
-# If found, inject --model into the argument list
+# If we still don't have a valid model, warn but don't fail — let the server error
 if [[ -n "$MODEL_PATH" ]]; then
-    log "Using model: ${BLUE}${MODEL_PATH}${NC}"
-    # Verify it exists
     if [[ ! -f "$MODEL_PATH" ]]; then
-        err "Model file not found: ${MODEL_PATH}"
-        err "Mount your GGUF models at ${YELLOW}/models${NC} or pass --model explicitly."
-        exit 1
+        warn "Model file not found: ${MODEL_PATH}"
+        warn "Mount your GGUF models at ${YELLOW}/models${NC} or set MODEL_PATH env var."
+        warn "Continuing anyway — server will report the error."
+    else
+        log "Using model: ${BLUE}${MODEL_PATH}${NC}"
     fi
     export MODEL_PATH
 fi
@@ -114,6 +132,11 @@ if [[ ! -f "${CONFIG_FILE}" ]]; then
     log "Creating default config at ${BLUE}${CONFIG_FILE}${NC}"
     cat > "${CONFIG_FILE}" <<'EOF'
 {
+  "mojollama_engine": {
+    "threads": 32,
+    "optimal_concurrency": 4,
+    "batch_size": 2048
+  },
   "llama_server": {
     "threads": 4,
     "threads_batch": 2,
@@ -131,30 +154,39 @@ fi
 # Using `exec` below means Python receives signals directly as PID 1.
 # No trap needed — Docker's default SIGTERM flows straight to the server.
 
-# ── Build the server command ─────────────────────────────────────────────
-# Construct the final argument list:
-#   If we resolved a model, prepend --model so user --model doesn't conflict
-SERVER_ARGS=()
+# ── Select the engine script ────────────────────────────────────────────
+case "${ENGINE}" in
+    server_moe)
+        ENGINE_SCRIPT="server_moe.py"
+        ;;
+    server_batch_moe)
+        ENGINE_SCRIPT="server_batch_moe.py"
+        ;;
+    *)
+        ENGINE_SCRIPT="server_batch_moe.py"
+        warn "Unknown engine '${ENGINE}', defaulting to server_batch_moe"
+        ;;
+esac
 
-if [[ -n "$MODEL_PATH" ]]; then
-    SERVER_ARGS+=("--model" "$MODEL_PATH")
+ENGINE_PATH="/app/src/mojollama/${ENGINE_SCRIPT}"
+
+if [[ ! -f "${ENGINE_PATH}" ]]; then
+    err "Engine script not found: ${ENGINE_PATH}"
+    err "Available engines: server_moe.py, server_batch_moe.py"
+    exit 1
 fi
-
-SERVER_ARGS+=("--port" "$PORT")
-SERVER_ARGS+=("--llama-port" "$LLAMA_PORT")
-
-# Append any remaining passthrough arguments
-SERVER_ARGS+=("${PASSTHROUGH_ARGS[@]}")
 
 # ── Start the server ─────────────────────────────────────────────────────
-log "Starting MojoLlama server..."
+log "Starting MojoLlama engine..."
+log "  Engine:     ${BLUE}${ENGINE_SCRIPT}${NC}"
 log "  API port:   ${BLUE}${PORT}${NC}"
-log "  Backend:    ${BLUE}llama.cpp on port ${LLAMA_PORT}${NC}"
-if [[ -n "$MODEL_PATH" ]]; then
-    log "  Model:      ${BLUE}${MODEL_PATH}${NC}"
-fi
+log "  Model:      ${BLUE}${MODEL_PATH}${NC}"
+log "  Threads:    ${BLUE}${OMP_NUM_THREADS}${NC}"
 log ""
 
+# server_moe.py / server_batch_moe.py take positional args:
+#   argv[1] = model_path
+#   argv[2] = port
 # Use exec to replace the shell with the Python process — this ensures
 # signals are delivered directly to the server.
-exec python3 -m mojollama.server "${SERVER_ARGS[@]}"
+exec python3 "${ENGINE_PATH}" "${MODEL_PATH}" "${PORT}"

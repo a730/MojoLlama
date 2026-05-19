@@ -121,7 +121,7 @@ class TurboEngineV7MoE:
                             return int(data[0])
                         return data
         arch = 'llama'
-        for prefix in ['qwen3moe', 'qwen2moe', 'llama', 'mistral']:
+        for prefix in ['gpt-oss', 'qwen3moe', 'qwen2moe', 'llama', 'mistral']:
             for key in fields:
                 if f'{prefix}.block_count' in key:
                     arch = prefix; break
@@ -421,7 +421,13 @@ class TurboEngineV7MoE:
                     setattr(lw, f'{attr}_use_c', False)
 
             lw.attn_norm_w = self.weights[f'{pfx}.attn_norm.weight']
-            lw.ffn_norm_w = self.weights[f'{pfx}.ffn_norm.weight']
+            # GPT-OSS and some other architectures call this post_attention_norm
+            if f'{pfx}.ffn_norm.weight' in self.weights:
+                lw.ffn_norm_w = self.weights[f'{pfx}.ffn_norm.weight']
+            elif f'{pfx}.post_attention_norm.weight' in self.weights:
+                lw.ffn_norm_w = self.weights[f'{pfx}.post_attention_norm.weight']
+            else:
+                raise KeyError(f'No FFN norm weight found for layer {i}')
 
             # Build fused Q+K weight if Q and K have same quant type
             if (lw.attn_q_use_c and lw.attn_k_use_c and
@@ -506,6 +512,9 @@ class TurboEngineV7MoE:
                         setattr(me, f'{attr}_use_c', True)
                     else:
                         setattr(me, f'{attr}_use_c', False)
+                        setattr(me, f'{attr}_nr', ctypes.c_int(0))
+                        setattr(me, f'{attr}_nc', ctypes.c_int(0))
+                        setattr(me, f'{attr}_qt', ctypes.c_int(0))
                 
                 self._moe_layers.append(me)
 

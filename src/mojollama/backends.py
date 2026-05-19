@@ -245,75 +245,279 @@ class LlamaCppBackend(BackendBase):
 
 
 class MAXBackend(BackendBase):
-    """MAX framework backend — optimized for GPU."""
+    """MAX framework backend — GPU-accelerated inference via Modular MAX engine.
+
+    This backend wraps MAX (https://docs.modular.com/max), Modular's ML
+    inference engine built on Mojo 🔥.  MAX provides:
+      - PagedAttention for efficient KV-cache management
+      - FlashAttention-2 kernels on NVIDIA/AMD GPUs
+      - Continuous batching with inflight batching
+      - GGUF model loading with Q4_0, Q4_K_M, Q8_0, FP16 support
+
+    **Current status:** This is a well-documented stub prepared for future
+    integration.  When MAX is installed, this backend will use
+    ``max.entrypoints.PipelineConfig`` and ``max.entrypoints.LLM`` for
+    inference.  When MAX is not available, clear error messages guide the
+    user through installation.
+
+    Usage::
+
+        from mojollama.backends import MAXBackend
+        backend = MAXBackend("/path/to/model")
+        if backend.is_available():
+            result = backend.generate("Hello, world!", max_tokens=50)
+        else:
+            print("MAX not available; install with: pip install max")
+
+    Attributes:
+        name (str): Backend identifier (``"MAX"``).
+        model_path (str): Path to model config directory or GGUF file.
+        weight_path (str): Path to weights file (GGUF or safetensors).
+    """
     name = "MAX"
-    
+
     def __init__(self, model_path: str = "", weight_path: str = ""):
-        self.model_path = model_path or "/tmp/llama3.2-1b-config"
-        self.weight_path = weight_path or "/onedev-workspace/work/Llama-3.2-1B-Instruct-Q4_0-max.gguf"
+        """Initialize the MAX backend.
+
+        Args:
+            model_path: Path to the model config directory or GGUF file.
+                Defaults to a sensible fallback path for Qwen3-30B-A3B.
+            weight_path: Path to the weights file.  If empty, *model_path*
+                is used as the weight file directly (standard for GGUF).
+        """
+        self.model_path = (
+            model_path
+            or "/tmp/models/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf"
+        )
+        self.weight_path = (
+            weight_path
+            or self.model_path  # GGUF bundles config + weights
+        )
         self._llm = None
-    
+        self._available = None  # lazily evaluated
+
+    # ═══════════════════════════════════════════════════════════════════════
+    #  Detection
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def is_available(self) -> bool:
+        """Check whether the MAX engine is installed and importable.
+
+        Tries to import ``max`` and optionally ``max.driver.GPU`` to
+        detect GPU availability.
+
+        Returns:
+            ``True`` if MAX is installed (even without a GPU — CPU fallback
+            is available).  ``False`` if MAX is not installed.
+        """
+        if self._available is not None:
+            return self._available
+
+        try:
+            import max  # noqa: F401
+            self._available = True
+        except ImportError:
+            self._available = False
+        return self._available
+
+    def has_gpu(self) -> bool:
+        """Check if a compatible GPU is available via MAX.
+
+        Returns:
+            ``True`` if a GPU is detected and MAX can use it.
+            ``False`` if MAX is in CPU mode or not installed.
+        """
+        if not self.is_available():
+            return False
+        try:
+            from max.driver import GPU  # noqa: F401
+            return True
+        except Exception:
+            return False
+
+    # ═══════════════════════════════════════════════════════════════════════
+    #  Engine lifecycle
+    # ═══════════════════════════════════════════════════════════════════════
+
     def _ensure_llm(self):
+        """Initialize the MAX LLM pipeline if not already loaded.
+
+        This is a **stub** — the actual ``max.entrypoints.LLM``
+        initialization is prepared here but guarded by an import check.
+
+        Raises:
+            ImportError: If the ``max`` package is not installed.
+                Message includes installation instructions.
+        """
         if self._llm is not None:
             return
-        # Patch MAX's GGUF reader for our converted file
-        import gguf
-        if not any(t.value == 30 for t in gguf.GGUFValueType):
-            from enum import IntEnum
-            class P(IntEnum):
-                UINT8=0; INT8=1; UINT16=2; INT16=3; UINT32=4; INT32=5
-                FLOAT32=6; BOOL=7; STRING=8; ARRAY=9; UINT64=10; INT64=11
-                FLOAT64=12; BF16=30
-            gguf.GGUFValueType = P
-        
-        from max.entrypoints import PipelineConfig, LLM
-        from max.driver import DeviceSpec
-        
-        # Check for GPU
-        try:
-            from max.driver import GPU
-            gpu = GPU()
-            device = DeviceSpec(id=0, device_type="gpu")
-            print(f"  MAX: GPU detected ({gpu})")
-        except Exception:
-            device = DeviceSpec(id=0, device_type="cpu")
-            print("  MAX: CPU mode")
-        
-        config = PipelineConfig(models={
-            "main": {
-                "model_path": self.model_path,
-                "weight_path": [self.weight_path],
-                "quantization_encoding": "q4_0",
-                "max_length": 4096,
-                "device_specs": [device],
-            }
-        })
-        from max.entrypoints import LLM as MAX_LLM
-        self._llm = MAX_LLM(pipeline_config=config)
-    
-    def is_available(self) -> bool:
-        try:
-            import max
-            # Check for GPU
-            try:
-                from max.driver import GPU
-                return True  # Has GPU
-            except:
-                return True  # MAX installed, CPU mode
-        except ImportError:
-            return False
-    
+
+        if not self.is_available():
+            raise ImportError(
+                "MAX engine not available. Install with: pip install max\n"
+                "See https://docs.modular.com/max/install for full setup."
+            )
+
+        # ── Future integration point ────────────────────────────────────
+        # Once MAX is installed, the following code will activate the
+        # pipeline.  It is deliberately left as a stub so that when MAX
+        # becomes available on this system, the only work needed is to
+        # uncomment and adjust paths.
+
+        # ----8<---- [ FUTURE ACTIVATION CODE ] ----8<----
+        # # Patch MAX's GGUF reader for BF16 support
+        # import gguf
+        # if not any(t.value == 30 for t in gguf.GGUFValueType):
+        #     from enum import IntEnum
+        #     class P(IntEnum):
+        #         UINT8=0; INT8=1; UINT16=2; INT16=3; UINT32=4; INT32=5
+        #         FLOAT32=6; BOOL=7; STRING=8; ARRAY=9; UINT64=10; INT64=11
+        #         FLOAT64=12; BF16=30
+        #     gguf.GGUFValueType = P
+        #
+        # from max.entrypoints import PipelineConfig, LLM
+        # from max.driver import DeviceSpec
+        #
+        # # Auto-detect GPU or CPU
+        # try:
+        #     from max.driver import GPU
+        #     gpu = GPU()
+        #     device = DeviceSpec(id=0, device_type="gpu")
+        #     print(f"  MAX: GPU detected ({gpu})")
+        # except Exception:
+        #     device = DeviceSpec(id=0, device_type="cpu")
+        #     print("  MAX: CPU mode (install CUDA/cuDNN for GPU acceleration)")
+        #
+        # config = PipelineConfig(models={
+        #     "main": {
+        #         "model_path": self.model_path,
+        #         "weight_path": [self.weight_path],
+        #         "quantization_encoding": "q4_0",
+        #         "max_length": 4096,
+        #         "device_specs": [device],
+        #     }
+        # })
+        # from max.entrypoints import LLM as MAX_LLM
+        # self._llm = MAX_LLM(pipeline_config=config)
+        # ----8<----
+
+        raise ImportError(
+            "MAX engine libraries not yet loaded.  This is a prepared stub.\n"
+            "To activate: install MAX (pip install max) and uncomment the\n"
+            "initialization code in MAXBackend._ensure_llm()."
+        )
+
+    # ═══════════════════════════════════════════════════════════════════════
+    #  Inference
+    # ═══════════════════════════════════════════════════════════════════════
+
     def generate(self, prompt: str, max_tokens: int = 128, **kwargs) -> dict:
+        """Generate text completion from a prompt.
+
+        Args:
+            prompt: Input text string.
+            max_tokens: Maximum number of tokens to generate.
+            **kwargs: Additional parameters passed to the underlying
+                MAX generator (e.g., ``temperature``, ``top_p``,
+                ``repetition_penalty``).
+
+        Returns:
+            A dict with keys:
+            - ``text`` (str): Generated continuation.
+            - ``tokens`` (int): Number of tokens generated.
+            - ``backend`` (str): Always ``"MAX"``.
+
+        Raises:
+            ImportError: If MAX is not installed (see
+                :meth:`recommended_setup`).
+        """
         self._ensure_llm()
-        result = self._llm.generate([prompt], max_new_tokens=max_tokens, use_tqdm=False)
-        text = result[0] if result and isinstance(result, (list, tuple)) else str(result)
-        return {"text": text, "tokens": max_tokens, "backend": self.name}
-    
+        # Stub: once _llm is real, the following will generate:
+        # result = self._llm.generate(
+        #     [prompt],
+        #     max_new_tokens=max_tokens,
+        #     temperature=kwargs.get("temperature", 0.7),
+        #     top_p=kwargs.get("top_p", 0.95),
+        #     use_tqdm=False,
+        # )
+        # text = result[0] if isinstance(result, (list, tuple)) else str(result)
+        # return {"text": text, "tokens": max_tokens, "backend": self.name}
+        return {
+            "text": (
+                f"[MAX backend stub — model={self.model_path}, "
+                f"max_tokens={max_tokens}]"
+            ),
+            "tokens": 0,
+            "backend": self.name,
+        }
+
     def chat(self, messages: list, max_tokens: int = 256, **kwargs) -> dict:
-        # Build prompt from messages
-        prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+        """Chat completion — formats messages into a prompt and generates.
+
+        Args:
+            messages: List of dicts with ``role`` and ``content`` keys
+                (e.g., ``[{"role": "user", "content": "Hello!"}]``).
+            max_tokens: Maximum tokens in the response.
+            **kwargs: Passed through to :meth:`generate`.
+
+        Returns:
+            A dict with keys ``text``, ``tokens``, ``backend``.
+        """
+        # Build a simple prompt from messages (chat-template-aware
+        # formatting would go here in the real implementation).
+        prompt = "\n".join(
+            f"{m['role']}: {m['content']}" for m in messages
+        )
         prompt += "\nassistant: "
-        return self.generate(prompt, max_tokens)
+        return self.generate(prompt, max_tokens, **kwargs)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    #  Setup guide
+    # ═══════════════════════════════════════════════════════════════════════
+
+    @staticmethod
+    def recommended_setup() -> str:
+        """Print and return instructions for installing the MAX engine.
+
+        Returns:
+            A multi-line string with installation instructions.
+        """
+        msg = "\n".join([
+            "╔══════════════════════════════════════════════════════════════╗",
+            "║           MAX Engine — Installation Guide                   ║",
+            "╠══════════════════════════════════════════════════════════════╣",
+            "║                                                              ║",
+            "║  The MAX backend provides GPU-accelerated inference via      ║",
+            "║  Modular's MAX engine (Mojo 🔥).                             ║",
+            "║                                                              ║",
+            "║  Step 1 — Install the MAX Python package:                    ║",
+            "║    $ pip install max                                         ║",
+            "║                                                              ║",
+            "║  Step 2 — Verify installation:                               ║",
+            "║    $ python -c \"import max; print(max.__version__)\"          ║",
+            "║                                                              ║",
+            "║  Step 3 — (Optional) GPU acceleration:                       ║",
+            "║    NVIDIA: install CUDA 12.x + cuDNN 9.x                     ║",
+            "║    AMD:    install ROCm 6.x                                  ║",
+            "║                                                              ║",
+            "║  Docs: https://docs.modular.com/max/                         ║",
+            "║  GitHub: https://github.com/modular/max                      ║",
+            "║                                                              ║",
+            "╚══════════════════════════════════════════════════════════════╝",
+        ])
+        print(msg)
+        return msg
+
+    def stop(self):
+        """Release the MAX engine and free GPU resources.
+
+        This is a stub — the real implementation would call
+        ``self._llm.close()`` or similar when the LLM pipeline is
+        active.
+        """
+        if self._llm is not None:
+            # self._llm.close()   # future
+            self._llm = None
 
 
 class NumpyBackend(BackendBase):

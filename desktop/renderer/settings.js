@@ -38,6 +38,8 @@ function populateForm(settings) {
   document.getElementById('serverPort').value = settings.serverPort || 8080;
   document.getElementById('llamaPort').value = settings.llamaPort || 8081;
   document.getElementById('modelPath').value = settings.modelPath || '';
+  document.getElementById('threads').value = settings.threads || 32;
+  document.getElementById('engine').value = settings.engine || 'server_batch_moe';
   document.getElementById('autoStart').checked = settings.autoStart !== false;
   document.getElementById('minimizeToTray').checked = settings.minimizeToTray !== false;
   document.getElementById('notifications').checked = settings.notifications !== false;
@@ -49,6 +51,8 @@ function readForm() {
     serverPort: parseInt(document.getElementById('serverPort').value, 10) || 8080,
     llamaPort: parseInt(document.getElementById('llamaPort').value, 10) || 8081,
     modelPath: document.getElementById('modelPath').value.trim(),
+    threads: parseInt(document.getElementById('threads').value, 10) || 32,
+    engine: document.getElementById('engine').value,
     autoStart: document.getElementById('autoStart').checked,
     minimizeToTray: document.getElementById('minimizeToTray').checked,
     notifications: document.getElementById('notifications').checked,

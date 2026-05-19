@@ -481,6 +481,8 @@ typedef struct {
     float *cos_table;
     float *sin_table;
     int max_ctx;
+    float *workspace;   /* pre-allocated temp buffer, replaces __builtin_alloca */
+    int ws_size;        /* total float count in workspace */
 } BC;
 
 void moe_ffn(const BC *c, int l, float *x, float *gate_buf, float *up_buf, float *ffn_buf, int B) {
@@ -656,18 +658,22 @@ void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
     for (int b = 0; b < B; b++) {
         float *xb = x + b*N;
         float *rb = res + b*N;
+        float ss = 0;
         for(int i=0;i<=N-8;i+=8){
             __m256 xv = _mm256_loadu_ps(xb+i);
             xv = _mm256_min_ps(_mm256_max_ps(xv, _mm256_set1_ps(-1000.0f)), _mm256_set1_ps(1000.0f));
             _mm256_storeu_ps(xb+i, xv);
+            _mm256_storeu_ps(rb+i, xv);
+            ss += hsum_ps(_mm256_mul_ps(xv, xv));
         }
         for(int i=N-(N%8);i<N;i++){
             float v = xb[i];
             if(v != v) v = 0; else if(v > 1000.0f) v = 1000.0f; else if(v < -1000.0f) v = -1000.0f;
-            xb[i] = v;
+            xb[i] = v; rb[i] = v;
+            ss += v * v;
         }
-        memcpy(rb, xb, N * sizeof(float));
-        rms(xn + b*N, xb, c->wAN[l], N, c->eps);
+        float rms_val = sqrtf(ss / N + c->eps);
+        for(int j=0;j<N;j++) xb[j] = (xb[j] / rms_val) * c->wAN[l][j];
     }
         
         /* Fused Q+K matmul when available (types match, weight built), else 3 separate */
@@ -716,8 +722,13 @@ void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
             }
 
             int sl = pos + 1;
-            float *kct=(float*)__builtin_alloca(sl*NKH*HD*sizeof(float));
-            float *vct=(float*)__builtin_alloca(sl*NKH*HD*sizeof(float));
+            int kct_size = c->max_ctx * NKH * HD;
+            if (c->ws_size < kct_size * 2 + 4096) {
+                fprintf(stderr, "ERROR: workspace too small (need %d floats, have %d)\n", kct_size * 2 + 4096, c->ws_size);
+                exit(1);
+            }
+            float *kct = c->workspace;
+            float *vct = c->workspace + kct_size;
             for(int s=0;s<sl;s++){
                 int sb=s/BLOCK_SIZE,so=s%BLOCK_SIZE;
                 int sbid = (sb < MAX_BLOCKS) ? pt->table[sb] : -1;
@@ -741,18 +752,22 @@ void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
         for(int b=0;b<B;b++){
             float *xb = x + b*N;
             float *rb = res + b*N;
+            float ss = 0;
             for(int i=0;i<=N-8;i+=8){
                 __m256 xv = _mm256_loadu_ps(xb+i);
                 xv = _mm256_min_ps(_mm256_max_ps(xv, _mm256_set1_ps(-1000.0f)), _mm256_set1_ps(1000.0f));
                 _mm256_storeu_ps(xb+i, xv);
+                _mm256_storeu_ps(rb+i, xv);
+                ss += hsum_ps(_mm256_mul_ps(xv, xv));
             }
             for(int i=N-(N%8);i<N;i++){
                 float v = xb[i];
                 if(v != v) v = 0; else if(v > 1000.0f) v = 1000.0f; else if(v < -1000.0f) v = -1000.0f;
-                xb[i] = v;
+                xb[i] = v; rb[i] = v;
+                ss += v * v;
             }
-            memcpy(rb, xb, N * sizeof(float));
-            rms(xn+b*N, xb, c->wFN[l], N, c->eps);
+            float rms_val = sqrtf(ss / N + c->eps);
+            for(int j=0;j<N;j++) xb[j] = (xb[j] / rms_val) * c->wFN[l][j];
         }
         
         if (c->n_experts > 0 && c->n_experts_per_tok > 0) {
@@ -775,18 +790,22 @@ void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
     for(int b=0;b<B;b++){
         float *xb = x + b*N;
         float *rb = res + b*N;
+        float ss = 0;
         for(int i=0;i<=N-8;i+=8){
             __m256 xv = _mm256_loadu_ps(xb+i);
             xv = _mm256_min_ps(_mm256_max_ps(xv, _mm256_set1_ps(-1000.0f)), _mm256_set1_ps(1000.0f));
             _mm256_storeu_ps(xb+i, xv);
+            _mm256_storeu_ps(rb+i, xv);
+            ss += hsum_ps(_mm256_mul_ps(xv, xv));
         }
         for(int i=N-(N%8);i<N;i++){
             float v = xb[i];
             if(v != v) v = 0; else if(v > 1000.0f) v = 1000.0f; else if(v < -1000.0f) v = -1000.0f;
-            xb[i] = v;
+            xb[i] = v; rb[i] = v;
+            ss += v * v;
         }
-        memcpy(rb, xb, N * sizeof(float));
-        rms(xn+b*N, xb, c->onw, N, c->eps);
+        float rms_val = sqrtf(ss / N + c->eps);
+        for(int j=0;j<N;j++) xb[j] = (xb[j] / rms_val) * c->onw[j];
     }
     batch_matmul(c->outQuant, c->wOut, xn, c->logits, c->outNR, c->outNC, B);
 }

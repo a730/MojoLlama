@@ -111,6 +111,24 @@ input[type="checkbox"] {
   </div>
 </div>
 
+<!-- MojoLlama Engine Section -->
+<div class="section">
+  <div class="section-title">MojoLlama Engine</div>
+  <div class="field">
+    <label for="threads">Thread Count (OMP_NUM_THREADS)</label>
+    <input type="number" id="threads" min="1" max="128" value="32">
+    <div class="help-text">Number of OpenMP threads for the MoE engine (default: 32)</div>
+  </div>
+  <div class="field">
+    <label for="engine">Engine Mode</label>
+    <select id="engine">
+      <option value="server_batch_moe">server_batch_moe (batch, recommended)</option>
+      <option value="server_moe">server_moe (single-request)</option>
+    </select>
+    <div class="help-text">server_batch_moe uses continuous batching for higher throughput; server_moe handles one request at a time.</div>
+  </div>
+</div>
+
 <!-- Behavior Section -->
 <div class="section">
   <div class="section-title">Behavior</div>

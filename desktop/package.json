@@ -43,10 +43,6 @@
     ],
     "extraResources": [
       {
-        "from": "../server.py",
-        "to": "server.py"
-      },
-      {
         "from": "../src",
         "to": "src"
       },
