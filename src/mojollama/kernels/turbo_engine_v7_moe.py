@@ -173,9 +173,20 @@ class TurboEngineV7MoE:
                 cf,                   # top_weights[top_k]
                 ci,                   # top_k
                 cf,                   # combined[n_embd]
+                cf,                   # prealloc_buf[3*top_k*n_ff_expert]
+                cu,                   # prealloc_q8[n_blocks_x*34]
             ]
             so.moe_forward_omp.restype = None
             self._kern = so
+            # GQA attention C kernel
+            gqa_path = os.path.join(kernel_dir, 'gqa_attention.so')
+            if os.path.exists(gqa_path):
+                self._gqa_attn = ctypes.CDLL(gqa_path)
+                self._gqa_attn.gqa_attention_decode.argtypes = [
+                    cf, cf, cf, cf, ci, ci, ci, ci]
+                self._gqa_attn.gqa_attention_decode.restype = None
+            else:
+                self._gqa_attn = None
             # Dequant functions for requantize
             so.q6_k_dequantize_row.argtypes = [cu, cf, ci]
             so.q6_k_dequantize_row.restype = None
@@ -511,6 +522,13 @@ class TurboEngineV7MoE:
         self._moe_expert_out = np.zeros(N, dtype=np.float32)
         self._moe_combined = np.zeros(N, dtype=np.float32)
 
+        # Pre-allocated buffers for C moe_forward_omp (no malloc/calloc in hot path)
+        max_top_k = max(8, self.n_experts_per_tok)
+        buf_sz = 3 * max_top_k * FF_expert
+        self._moe_prealloc_buf = np.zeros(buf_sz, dtype=np.float32)
+        n_blocks_x = N // 32
+        self._moe_prealloc_q8 = np.zeros(n_blocks_x * 34, dtype=np.uint8)
+
         self._logits = np.zeros(self.vocab_size, dtype=np.float32)
 
         # ctypes pointers
@@ -626,32 +644,33 @@ class TurboEngineV7MoE:
             self.kv_k[i, self.kv_len[i], :NKH] = b_k[:NKH]
             self.kv_v[i, self.kv_len[i], :NKH] = b_v[:NKH]
 
-            # Attention (GQA without np.repeat)
+            # Attention — C GQA kernel (AVX2, OMP parallelized)
             seq_len = self.kv_len[i] + 1
-            k_cache = self.kv_k[i, :seq_len].reshape(seq_len, self.n_kv_head, HD)
-            v_cache = self.kv_v[i, :seq_len].reshape(seq_len, self.n_kv_head, HD)
-            q_2d = b_q.reshape(NH, HD)
-            
-            if self._gqa_rep > 1:
-                # GQA: group (n_kv_head, heads_per_kv_head) — no repeat needed
+            if self._gqa_attn is not None and seq_len <= 4096:
+                self._gqa_attn.gqa_attention_decode(
+                    b_q.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                    self.kv_k[i].ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                    self.kv_v[i].ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                    b_att.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                    ctypes.c_int(seq_len),
+                    ctypes.c_int(NH),
+                    ctypes.c_int(self.n_kv_head),
+                    ctypes.c_int(HD))
+            else:
+                # Fallback: numpy GQA
+                k_cache = self.kv_k[i, :seq_len].reshape(seq_len, self.n_kv_head, HD)
+                v_cache = self.kv_v[i, :seq_len].reshape(seq_len, self.n_kv_head, HD)
+                q_2d = b_q.reshape(NH, HD)
                 nk = self.n_kv_head; gqa = self._gqa_rep
                 q_g = q_2d.reshape(nk, gqa, HD)
-                k_T = k_cache.transpose(1, 0, 2)  # (nk, seq, HD)
+                k_T = k_cache.transpose(1, 0, 2)
                 scores = np.einsum('khd,ksd->khs', q_g, k_T) / np.sqrt(float(HD))
                 scores = scores.reshape(NH, seq_len)
-            else:
-                scores = np.einsum('hd,shd->hs', q_2d, k_cache) / np.sqrt(float(HD))
-            scores -= np.max(scores, axis=1, keepdims=True)
-            np.exp(scores, out=scores)
-            scores /= np.sum(scores, axis=1, keepdims=True)
-            if self._gqa_rep > 1:
-                nk = self.n_kv_head; gqa = self._gqa_rep
-                v_T = v_cache.transpose(1, 0, 2)  # (nk, seq, HD)
-                att = np.einsum('khs,ksd->khd',
-                                scores.reshape(nk, gqa, seq_len), v_T)
-                b_att[:] = att.reshape(-1)
-            else:
-                att = np.einsum('hs,shd->hd', scores, v_cache)
+                scores -= np.max(scores, axis=1, keepdims=True)
+                np.exp(scores, out=scores)
+                scores /= np.sum(scores, axis=1, keepdims=True)
+                v_T = v_cache.transpose(1, 0, 2)
+                att = np.einsum('khs,ksd->khd', scores.reshape(nk, gqa, seq_len), v_T)
                 b_att[:] = att.reshape(-1)
             self.kv_len[i] += 1
 
@@ -752,7 +771,9 @@ class TurboEngineV7MoE:
             top_idx_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_int)),
             top_wt_arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
             ctypes.c_int(top_k),
-            self._p_moe_combined)
+            self._p_moe_combined,
+            self._moe_prealloc_buf.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+            self._moe_prealloc_q8.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)))
 
         b_ffn_out[:N] = self._moe_combined[:N]
 

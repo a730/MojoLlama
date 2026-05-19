@@ -27,6 +27,19 @@ typedef struct {
     uint16_t d;
 } block_q6_K;
 
+typedef struct {
+    uint8_t q[16];
+    uint8_t e;
+} block_mxfp4;
+
+typedef struct {
+    uint16_t d;
+    uint16_t dm;
+    uint8_t qh[32];
+    uint8_t ql[128];
+    uint8_t scales[12];
+} block_q5_K;
+
 static inline float gf16(uint16_t h) { return _cvtsh_ss(h); }
 
 static inline void k4_scale(int j, const uint8_t *q, uint8_t *d, uint8_t *m) {
@@ -235,7 +248,6 @@ void q4_k_batch_matmul(const uint8_t *W, const float *x, float *out,
                     sum = _mm256_fmadd_ps(_mm256_loadu_ps(deq + j),
                                          _mm256_loadu_ps(xb + j), sum);
                 }
-                sum = _mm256_and_ps(sum, _mm256_cmp_ps(sum, sum, _CMP_EQ_OQ));
                 acc[b] += hsum_ps(sum);
             }
         }
@@ -270,13 +282,108 @@ void q6_k_batch_matmul(const uint8_t *W, const float *x, float *out,
                 for (int j = 0; j < QK_K; j += 8)
                     sum = _mm256_fmadd_ps(_mm256_loadu_ps(deq + j),
                                          _mm256_loadu_ps(xb + j), sum);
-                sum = _mm256_and_ps(sum, _mm256_cmp_ps(sum, sum, _CMP_EQ_OQ));
                 acc[b] += hsum_ps(sum);
             }
         }
         for (int b = 0; b < B; b++) out[(size_t)b * n_rows + r] = acc[b];
     }
 }
+
+/* Batched Q5_K matmul: 256-element super-blocks, 5-bit K-quant (scalar fallback) */
+void q5_k_batch_matmul(const uint8_t *W, const float *x, float *out,
+                       int n_rows, int nc, int B) {
+    int bpr = nc / QK_K;
+    #pragma omp parallel for schedule(static, 8)
+    for (int r = 0; r < n_rows; r++) {
+        float *acc = (float*)__builtin_alloca(B * sizeof(float));
+        for (int b = 0; b < B; b++) acc[b] = 0.0f;
+        for (int blk = 0; blk < bpr; blk++) {
+            const block_q5_K *bp = (const block_q5_K*)(W + ((size_t)r * bpr + blk) * sizeof(block_q5_K));
+            float d = gf16(bp->d), dm = gf16(bp->dm);
+            float deq[QK_K];
+            for (int s = 0; s < QK_K; s += 64) {
+                int is = s / 32;
+                uint8_t sc1, sc2, m1, m2;
+                k4_scale(is, bp->scales, &sc1, &m1);
+                float d1 = d * sc1, mm1 = dm * m1;
+                k4_scale(is+1, bp->scales, &sc2, &m2);
+                float d2 = d * sc2, mm2 = dm * m2;
+                for (int j = 0; j < 32; j++) {
+                    int idx = s + j;
+                    int lo = (bp->ql[idx/2] >> ((idx%2)*4)) & 0x0F;
+                    int hi = ((bp->qh[idx/8] >> (idx%8)) & 0x01) << 4;
+                    deq[idx] = d1 * (float)(lo | hi) - mm1;
+                }
+                for (int j = 32; j < 64; j++) {
+                    int idx = s + j;
+                    int lo = (bp->ql[idx/2] >> ((idx%2)*4)) & 0x0F;
+                    int hi = ((bp->qh[idx/8] >> (idx%8)) & 0x01) << 4;
+                    deq[idx] = d2 * (float)(lo | hi) - mm2;
+                }
+            }
+            int o = blk * QK_K;
+            for (int b = 0; b < B; b++) {
+                const float *xb = x + (size_t)b * nc + o;
+                __m256 sum = _mm256_setzero_ps();
+                for (int j = 0; j < QK_K; j += 8) {
+                    sum = _mm256_fmadd_ps(_mm256_loadu_ps(deq + j),
+                                         _mm256_loadu_ps(xb + j), sum);
+                }
+                acc[b] += hsum_ps(sum);
+            }
+        }
+        for (int b = 0; b < B; b++) out[(size_t)b * n_rows + r] = acc[b];
+    }
+}
+
+/* Batched MXFP4 matmul: 32-element blocks, 4-bit two's complement mantissas + E8M0 scale */
+void mxfp4_batch_matmul(const uint8_t *W, const float *x, float *out,
+                         int n_rows, int nc, int B) {
+    int bpr = nc / 32;
+    #pragma omp parallel for schedule(static, 8)
+    for (int r = 0; r < n_rows; r++) {
+        float *acc = (float*)__builtin_alloca(B * sizeof(float));
+        for (int b = 0; b < B; b++) acc[b] = 0.0f;
+        for (int blk = 0; blk < bpr; blk++) {
+            const uint8_t *bp = W + ((size_t)r * bpr + blk) * sizeof(block_mxfp4);
+            float scale = powf(2.0f, (int)bp[16] - 127);
+            __m128i packed = _mm_loadu_si128((const __m128i*)bp);
+            __m128i lo = _mm_and_si128(packed, _mm_set1_epi8(0x0F));
+            __m128i hi = _mm_and_si128(_mm_srli_epi16(packed, 4), _mm_set1_epi8(0x0F));
+            __m128i sign_lo = _mm_cmpgt_epi8(lo, _mm_set1_epi8(7));
+            __m128i sign_hi = _mm_cmpgt_epi8(hi, _mm_set1_epi8(7));
+            lo = _mm_sub_epi8(lo, _mm_and_si128(sign_lo, _mm_set1_epi8(16)));
+            hi = _mm_sub_epi8(hi, _mm_and_si128(sign_hi, _mm_set1_epi8(16)));
+            __m256 sv = _mm256_set1_ps(scale);
+            __m128i lo_lo = lo;
+            __m128i lo_hi = _mm_srli_si128(lo, 8);
+            __m256i i32_0 = _mm256_cvtepi8_epi32(lo_lo);
+            __m256i i32_1 = _mm256_cvtepi8_epi32(lo_hi);
+            __m256 blk0 = _mm256_mul_ps(_mm256_cvtepi32_ps(i32_0), sv);
+            __m256 blk1 = _mm256_mul_ps(_mm256_cvtepi32_ps(i32_1), sv);
+            __m128i hi_lo = hi;
+            __m128i hi_hi = _mm_srli_si128(hi, 8);
+            __m256i i32_2 = _mm256_cvtepi8_epi32(hi_lo);
+            __m256i i32_3 = _mm256_cvtepi8_epi32(hi_hi);
+            __m256 blk2 = _mm256_mul_ps(_mm256_cvtepi32_ps(i32_2), sv);
+            __m256 blk3 = _mm256_mul_ps(_mm256_cvtepi32_ps(i32_3), sv);
+            int o = blk * 32;
+            for (int b = 0; b < B; b++) {
+                const float *xb = x + (size_t)b * nc + o;
+                __m256 p0 = _mm256_mul_ps(blk0, _mm256_loadu_ps(xb));
+                __m256 p1 = _mm256_mul_ps(blk1, _mm256_loadu_ps(xb + 8));
+                __m256 p2 = _mm256_mul_ps(blk2, _mm256_loadu_ps(xb + 16));
+                __m256 p3 = _mm256_mul_ps(blk3, _mm256_loadu_ps(xb + 24));
+                __m256 s01 = _mm256_add_ps(p0, p1);
+                __m256 s23 = _mm256_add_ps(p2, p3);
+                __m256 s = _mm256_add_ps(s01, s23);
+                acc[b] += hsum_ps(s);
+            }
+        }
+        for (int b = 0; b < B; b++) out[(size_t)b * n_rows + r] = acc[b];
+    }
+}
+
 typedef struct {
     int L,N,NH,NKH,HD,FF,V; float eps;
     const uint8_t **wQ,**wK,**wV,**wO,**wG,**wU,**wD;
@@ -378,8 +485,12 @@ void moe_ffn(const BC *c, int l, float *x, float *gate_buf, float *up_buf, float
 static inline void batch_matmul(int qt, const uint8_t *W, const float *x, float *out,
                                 int n_rows, int nc, int B) {
     if (qt == 12)      q4_k_batch_matmul(W, x, out, n_rows, nc, B);
+    else if (qt == 13) q5_k_batch_matmul(W, x, out, n_rows, nc, B);
     else if (qt == 14) q6_k_batch_matmul(W, x, out, n_rows, nc, B);
+    else if (qt == 39) mxfp4_batch_matmul(W, x, out, n_rows, nc, B);
     else if (qt == 8)  q8_0_batch_matmul(W, x, out, n_rows, nc, B);
+    else if (qt == 10) q4_0_batch_matmul(W, x, out, n_rows, nc, B);  // Q2_K fallback
+    else if (qt == 11) q4_0_batch_matmul(W, x, out, n_rows, nc, B);  // Q3_K fallback
     else               q4_0_batch_matmul(W, x, out, n_rows, nc, B);
 }
 
@@ -461,10 +572,22 @@ void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
     
     for (int l = 0; l < L; l++) {
         
-        for (int b = 0; b < B; b++) {
-            memcpy(res + b*N, x + b*N, N * sizeof(float));
-            rms(xn + b*N, x + b*N, c->wAN[l], N, c->eps);
+    for (int b = 0; b < B; b++) {
+        float *xb = x + b*N;
+        float *rb = res + b*N;
+        for(int i=0;i<=N-8;i+=8){
+            __m256 xv = _mm256_loadu_ps(xb+i);
+            xv = _mm256_min_ps(_mm256_max_ps(xv, _mm256_set1_ps(-1000.0f)), _mm256_set1_ps(1000.0f));
+            _mm256_storeu_ps(xb+i, xv);
         }
+        for(int i=N-(N%8);i<N;i++){
+            float v = xb[i];
+            if(v != v) v = 0; else if(v > 1000.0f) v = 1000.0f; else if(v < -1000.0f) v = -1000.0f;
+            xb[i] = v;
+        }
+        memcpy(rb, xb, N * sizeof(float));
+        rms(xn + b*N, xb, c->wAN[l], N, c->eps);
+    }
         
         batch_matmul(c->q_quant[l], c->wQ[l], xn, q, c->nQ[l], nc, B);
         batch_matmul(c->k_quant[l], c->wK[l], xn, k, c->nK[l], nc, B);
@@ -500,8 +623,20 @@ void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
         for(int b=0;b<B;b++)for(int i=0;i<N;i++)x[b*N+i]=res[b*N+i]+oproj[b*N+i];
         
         for(int b=0;b<B;b++){
-            memcpy(res+b*N, x+b*N, N*sizeof(float));
-            rms(xn+b*N, x+b*N, c->wFN[l], N, c->eps);
+            float *xb = x + b*N;
+            float *rb = res + b*N;
+            for(int i=0;i<=N-8;i+=8){
+                __m256 xv = _mm256_loadu_ps(xb+i);
+                xv = _mm256_min_ps(_mm256_max_ps(xv, _mm256_set1_ps(-1000.0f)), _mm256_set1_ps(1000.0f));
+                _mm256_storeu_ps(xb+i, xv);
+            }
+            for(int i=N-(N%8);i<N;i++){
+                float v = xb[i];
+                if(v != v) v = 0; else if(v > 1000.0f) v = 1000.0f; else if(v < -1000.0f) v = -1000.0f;
+                xb[i] = v;
+            }
+            memcpy(rb, xb, N * sizeof(float));
+            rms(xn+b*N, xb, c->wFN[l], N, c->eps);
         }
         
         if (c->n_experts > 0 && c->n_experts_per_tok > 0) {
@@ -521,6 +656,21 @@ void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
         }
     }
     for(int b=0;b<B;b++) c->kv_array[b]->seq_len[0]++;
-    for(int b=0;b<B;b++) rms(xn+b*N, x+b*N, c->onw, N, c->eps);
+    for(int b=0;b<B;b++){
+        float *xb = x + b*N;
+        float *rb = res + b*N;
+        for(int i=0;i<=N-8;i+=8){
+            __m256 xv = _mm256_loadu_ps(xb+i);
+            xv = _mm256_min_ps(_mm256_max_ps(xv, _mm256_set1_ps(-1000.0f)), _mm256_set1_ps(1000.0f));
+            _mm256_storeu_ps(xb+i, xv);
+        }
+        for(int i=N-(N%8);i<N;i++){
+            float v = xb[i];
+            if(v != v) v = 0; else if(v > 1000.0f) v = 1000.0f; else if(v < -1000.0f) v = -1000.0f;
+            xb[i] = v;
+        }
+        memcpy(rb, xb, N * sizeof(float));
+        rms(xn+b*N, xb, c->onw, N, c->eps);
+    }
     batch_matmul(c->outQuant, c->wOut, xn, c->logits, c->outNR, c->outNC, B);
 }

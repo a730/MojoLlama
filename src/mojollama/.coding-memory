@@ -1,0 +1,30 @@
+# MojoLlama — C Engine NaN Fix Progress
+
+## Current State (Qwen3-30B-A3B)
+- NaN: 0/151936 ✅
+- Speed: 11.6 tok/s (baseline: 25 tok/s)
+- Logits: non-zero, valid range
+- Fix: SIMD clamp x in-place + copy to res + memcpy for residual
+
+## Performance Bottleneck
+The `_mm256_storeu_ps` to xb AND rb (double store) for every 8 elements causes 2.5x speed regression. The stores to xb break the compiler's ability to auto-vectorize the subsequent rms() call because of memory aliasing.
+
+## Performance Fix Strategy
+Replace the 3 clamp loops + memcpy with a fused approach:
+1. Change the 3 clamp+rms blocks to use ONLY ONE store (to x, in-place)
+2. Then use `memcpy(res, x, N*sizeof(float))` for the residual backup (libc memcpy is highly optimized)
+3. rms() stays as original scalar version (fastest)
+
+This reduces the clamp from:
+  load+clamp+store_x+store_res (4 ops per 8 floats)
+to:
+  load+clamp+store_x (3 ops per 8 floats) + memcpy (extremely fast)
+
+## Next: GPT-OSS-20B
+Model: `/tmp/models/gpt-oss-20b-Q4_K_M.gguf`
+Arch: 24 layers, 2880 hidden, 64 heads, 8 KV heads, 32 experts top-4
+Uses MXFP4 (type 39), NOT Q4_K_M despite filename!
+
+## Files
+- `kernels/cengine_batch_instr.c` — C engine (modified)
+- `test_fixed.py` — test harness (unmodified)

@@ -1249,42 +1249,57 @@ def cmd_info(args):
 
 # ─── Quantizer Wrappers ────────────────────────────────────────────────
 
-def cmd_quantize_wrapper(args):
-    """Quantize a GGUF model (wraps quantizer.py)."""
-    from mojollama.quantizer import main as quantizer_main
-    import sys
-    sys.argv = ["quantizer.py", "quantize", args.model,
-                "--type", args.type,
-                "--output", args.output or "",
-                "--threads", str(args.threads)]
-    if args.imatrix:
-        sys.argv += ["--imatrix", args.imatrix]
+def cmd_quantize(args):
+    """Quantize GGUF → GGUF using llama-quantize."""
+    quantize_bin = "/tmp/llama.cpp/build/bin/llama-quantize"
+
+    model = args.model
+    outtype = args.type
+    outfile = args.output or model.replace(".gguf", f"-{outtype}.gguf")
+    nthreads = args.threads
+
+    cmd = [quantize_bin]
     if args.allow_requantize:
-        sys.argv.append("--allow-requantize")
+        cmd.append("--allow-requantize")
     if args.pure:
-        sys.argv.append("--pure")
+        cmd.append("--pure")
     if args.leave_output:
-        sys.argv.append("--leave-output")
+        cmd.append("--leave-output-tensor")
     if args.dry_run:
-        sys.argv.append("--dry-run")
-    # Remove empty args
-    sys.argv = [a for a in sys.argv if a]
-    return quantizer_main()
+        cmd.append("--dry-run")
+    if args.imatrix:
+        cmd.extend(["--imatrix", args.imatrix])
+    if args.override_kv:
+        for kv in args.override_kv:
+            cmd.extend(["--override-kv", kv])
+    cmd.extend([model, outfile, outtype])
+    if nthreads and nthreads > 0:
+        cmd.append(str(nthreads))
+
+    print_banner()
+    print(f"[Quantize] {model} → {outfile} ({outtype})")
+    print()
+    subprocess.run(cmd, check=True)
 
 
-def cmd_imatrix_wrapper(args):
-    """Generate importance matrix (wraps quantizer.py)."""
-    from mojollama.quantizer import main as quantizer_main
-    import sys
-    sys.argv = ["quantizer.py", "imatrix", args.model,
-                "--output", args.output or "",
-                "--threads", str(args.threads),
-                "--ctx-size", str(args.ctx_size)]
+def cmd_imatrix(args):
+    """Generate importance matrix using llama-imatrix."""
+    imatrix_bin = "/tmp/llama.cpp/build/bin/llama-imatrix"
+
+    cmd = [imatrix_bin, "-m", args.model]
     if args.data:
-        sys.argv += ["--data", args.data]
-    sys.argv = [a for a in sys.argv if a]
-    print("Generating importance matrix for quantization...")
-    return quantizer_main()
+        cmd.extend(["-f", args.data])
+    if args.output:
+        cmd.extend(["-o", args.output])
+    if args.threads and args.threads > 0:
+        cmd.extend(["-t", str(args.threads)])
+    if args.ctx_size:
+        cmd.extend(["-c", str(args.ctx_size)])
+
+    print_banner()
+    print("[IMatrix] Generating importance matrix...")
+    print()
+    subprocess.run(cmd, check=True)
 
 
 def cmd_nf4_wrapper(args):
@@ -1524,6 +1539,16 @@ def main():
     p_export.add_argument("--remote", action="store_true", help="Download from HF")
     p_export.add_argument("--vocab-only", action="store_true")
     p_export.add_argument("--mojo-bin", action="store_true", help="Also generate .bin")
+
+    # convert (alias for export)
+    p_convert = sub.add_parser("convert", help="Alias for export: Convert HF model to GGUF")
+    p_convert.add_argument("--hf", help="HF model ID or path")
+    p_convert.add_argument("--model", help="Alias for --hf")
+    p_convert.add_argument("--outtype", default="q4_0")
+    p_convert.add_argument("--outfile", help="Output GGUF path")
+    p_convert.add_argument("--remote", action="store_true", help="Download from HF")
+    p_convert.add_argument("--vocab-only", action="store_true")
+    p_convert.add_argument("--mojo-bin", action="store_true", help="Also generate .bin")
     
     # merge
     p_merge = sub.add_parser("merge", help="Merge LoRA adapter into base model")
@@ -1576,6 +1601,8 @@ def main():
                          help="Leave output.weight unquantized")
     p_quant.add_argument("--dry-run", action="store_true",
                          help="Calculate size without quantizing")
+    p_quant.add_argument("--override-kv", action="append",
+                         help="Override model metadata key=type:val (can be repeated)")
 
     # imatrix
     p_imatrix = sub.add_parser("imatrix", help="Generate importance matrix for better quantization")
@@ -1698,6 +1725,7 @@ def main():
         print("\nCommands:")
         print("  train     Fine-tune a model with LoRA")
         print("  export    Convert HuggingFace model to GGUF")
+        print("  convert   Alias for export")
         print("  dataset   Create, view, auto-label, and manage training datasets")
         print("  merge     Merge LoRA adapter into base GGUF model")
         print("  quantize  Quantize GGUF to different type (K/IQ quants, imatrix)")
@@ -1724,10 +1752,11 @@ def main():
     commands = {
         "train": cmd_train,
         "export": cmd_export,
+        "convert": cmd_export,
         "dataset": cmd_dataset,
         "merge": cmd_merge,
-        "quantize": cmd_quantize_wrapper,
-        "imatrix": cmd_imatrix_wrapper,
+        "quantize": cmd_quantize,
+        "imatrix": cmd_imatrix,
         "nf4": cmd_nf4_wrapper,
         "quant-types": cmd_quant_types,
         "chat": cmd_chat,

@@ -35,6 +35,16 @@
 
 static inline float f16_to_f32(uint16_t h) { return _cvtsh_ss(h); }
 
+/* Forward declarations for functions called before definition */
+int quantize_row_q8_0(const float *restrict x, uint8_t *restrict q8, int n_cols);
+void q4_k_q8_0_matmul_omp(const uint8_t *restrict W, const uint8_t *restrict x_q8,
+                           float *restrict out, int n_rows, int n_cols);
+void q6_k_matmul_avx2_omp(const uint8_t *restrict W, const float *restrict x,
+                           float *restrict out, int n_rows, int n_cols);
+float q4_k_row_dot_avx2(const uint8_t *restrict W, const float *restrict x, int n_cols, int row);
+float q5_k_row_dot_avx2(const uint8_t *restrict W, const float *restrict x, int n_cols, int row);
+float q6_k_row_dot_avx2(const uint8_t *restrict W, const float *restrict x, int n_cols, int row);
+
 /* ═════════════════════════════════════════════════════════════════════════
  * Q4_K scale/min unpacking  (from ggml get_scale_min_k4)
  *
@@ -208,48 +218,132 @@ void q4_k_matmul_omp(const uint8_t *restrict W, const float *restrict x,
  *     pos j+32..j+63:  d2 * ((qs[l] >> 4) + (qh[l] & u2 ? 16 : 0)) - m2
  * ═══════════════════════════════════════════════════════════════════════ */
 
+/* ═════════════════════════════════════════════════════════════════════════
+ * Q5_K matmul — AVX2 vectorized dequant + FMA
+ *
+ * Block layout (176 bytes per 256 values):
+ *   offset 0:  d      (fp16, 2 bytes)
+ *   offset 2:  dmin   (fp16, 2 bytes)
+ *   offset 4:  scales (12 bytes) — packed 6-bit pairs (same as Q4_K)
+ *   offset 16: qh     (32 bytes) — 1 extra bit per value
+ *   offset 48: qs     (128 bytes) — lower 4 bits (2 nibbles/byte)
+ *
+ * Each super-block has 4 sub-blocks of 64 values. Each sub-block has 2
+ * scale/min pairs (d1,m1 for lo-nibble, d2,m2 for hi-nibble).
+ *
+ * Q5_K value = (qs nibble) + ((qh & mask) ? 16 : 0)
+ *   lo-nibble group mask = u1 (1, 4, 16, 64)
+ *   hi-nibble group mask = u2 (2, 8, 32, 128)
+ *
+ * Uses identity: sum((d1*val - m1)*x) = d1*sum(val*x) - m1*sum(x)
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/* Q5_K row-dot with AVX2 dequant + FMA (extracted for batch_qkv_omp) */
+float q5_k_row_dot_avx2(const uint8_t *restrict W, const float *restrict x,
+                                 int n_cols, int row) {
+    int nb = n_cols / QK_K;
+    const uint8_t *row_ptr = W + (size_t)row * nb * Q5_K_BS;
+    float sum = 0.0f;
+
+    for (int b = 0; b < nb; b++) {
+        const uint8_t *blk = row_ptr + (size_t)b * Q5_K_BS;
+        float d   = f16_to_f32((uint16_t)blk[0] | ((uint16_t)blk[1] << 8));
+        float min = f16_to_f32((uint16_t)blk[2] | ((uint16_t)blk[3] << 8));
+        const uint8_t *scales = blk + 4;
+        const uint8_t *qh_arr = blk + 16;
+        const uint8_t *qs = blk + 48;
+        int x_off = b * QK_K;
+        int is = 0;
+        uint8_t u1 = 1, u2 = 2;
+
+        for (int j = 0; j < QK_K; j += 64) {
+            uint8_t sc, m;
+            get_scale_min_k4(is + 0, scales, &sc, &m);
+            float d1 = d * (float)sc;  float m1 = min * (float)m;
+            get_scale_min_k4(is + 1, scales, &sc, &m);
+            float d2 = d * (float)sc;  float m2 = min * (float)m;
+
+            /* ── AVX2: lo-nibble group (32 values) ── */
+            __m256 acc_nx = _mm256_setzero_ps();
+            __m256 acc_x  = _mm256_setzero_ps();
+
+            for (int l = 0; l < 32; l += 16) {
+                __m128i qs16 = _mm_loadu_si128((const __m128i*)(qs + l));
+                __m128i nib = _mm_and_si128(qs16, _mm_set1_epi8(0x0F));
+                __m128i qh16 = _mm_loadu_si128((const __m128i*)(qh_arr + l));
+                __m128i qh_test = _mm_and_si128(qh16, _mm_set1_epi8((char)u1));
+                __m128i qh_cond = _mm_cmpeq_epi8(qh_test, _mm_setzero_si128());
+                qh_cond = _mm_xor_si128(qh_cond, _mm_set1_epi8(0xFF));
+                qh_cond = _mm_and_si128(qh_cond, _mm_set1_epi8(16));
+                __m128i val = _mm_or_si128(nib, qh_cond);
+                __m128i v16a = _mm_cvtepu8_epi16(val);
+                __m128i v16b = _mm_cvtepu8_epi16(_mm_shuffle_epi32(val, 0x4e));
+                __m256 vfa = _mm256_cvtepi32_ps(_mm256_set_m128i(
+                    _mm_cvtepi16_epi32(_mm_shuffle_epi32(v16a, 0x4e)),
+                    _mm_cvtepi16_epi32(v16a)));
+                __m256 vfb = _mm256_cvtepi32_ps(_mm256_set_m128i(
+                    _mm_cvtepi16_epi32(_mm_shuffle_epi32(v16b, 0x4e)),
+                    _mm_cvtepi16_epi32(v16b)));
+                __m256 xa = _mm256_loadu_ps(x + x_off + j + l);
+                __m256 xb = _mm256_loadu_ps(x + x_off + j + l + 8);
+                acc_nx = _mm256_fmadd_ps(vfa, xa, acc_nx);
+                acc_nx = _mm256_fmadd_ps(vfb, xb, acc_nx);
+                acc_x  = _mm256_add_ps(xa, acc_x);
+                acc_x  = _mm256_add_ps(xb, acc_x);
+            }
+            __m256 h_nx = _mm256_hadd_ps(acc_nx, _mm256_permute2f128_ps(acc_nx, acc_nx, 1));
+            h_nx = _mm256_hadd_ps(h_nx, h_nx); h_nx = _mm256_hadd_ps(h_nx, h_nx);
+            __m256 h_x  = _mm256_hadd_ps(acc_x,  _mm256_permute2f128_ps(acc_x,  acc_x,  1));
+            h_x  = _mm256_hadd_ps(h_x,  h_x);  h_x  = _mm256_hadd_ps(h_x,  h_x);
+            sum += d1 * _mm256_cvtss_f32(h_nx) - m1 * _mm256_cvtss_f32(h_x);
+
+            /* ── AVX2: hi-nibble group (32 values) ── */
+            acc_nx = _mm256_setzero_ps();
+            acc_x  = _mm256_setzero_ps();
+            for (int l = 0; l < 32; l += 16) {
+                __m128i qs16 = _mm_loadu_si128((const __m128i*)(qs + l));
+                __m128i nib = _mm_and_si128(_mm_srli_epi16(qs16, 4), _mm_set1_epi8(0x0F));
+                __m128i qh16 = _mm_loadu_si128((const __m128i*)(qh_arr + l));
+                __m128i qh_test = _mm_and_si128(qh16, _mm_set1_epi8((char)u2));
+                __m128i qh_cond = _mm_cmpeq_epi8(qh_test, _mm_setzero_si128());
+                qh_cond = _mm_xor_si128(qh_cond, _mm_set1_epi8(0xFF));
+                qh_cond = _mm_and_si128(qh_cond, _mm_set1_epi8(16));
+                __m128i val = _mm_or_si128(nib, qh_cond);
+                __m128i v16a = _mm_cvtepu8_epi16(val);
+                __m128i v16b = _mm_cvtepu8_epi16(_mm_shuffle_epi32(val, 0x4e));
+                __m256 vfa = _mm256_cvtepi32_ps(_mm256_set_m128i(
+                    _mm_cvtepi16_epi32(_mm_shuffle_epi32(v16a, 0x4e)),
+                    _mm_cvtepi16_epi32(v16a)));
+                __m256 vfb = _mm256_cvtepi32_ps(_mm256_set_m128i(
+                    _mm_cvtepi16_epi32(_mm_shuffle_epi32(v16b, 0x4e)),
+                    _mm_cvtepi16_epi32(v16b)));
+                __m256 xa = _mm256_loadu_ps(x + x_off + j + 32 + l);
+                __m256 xb = _mm256_loadu_ps(x + x_off + j + 32 + l + 8);
+                acc_nx = _mm256_fmadd_ps(vfa, xa, acc_nx);
+                acc_nx = _mm256_fmadd_ps(vfb, xb, acc_nx);
+                acc_x  = _mm256_add_ps(xa, acc_x);
+                acc_x  = _mm256_add_ps(xb, acc_x);
+            }
+            h_nx = _mm256_hadd_ps(acc_nx, _mm256_permute2f128_ps(acc_nx, acc_nx, 1));
+            h_nx = _mm256_hadd_ps(h_nx, h_nx); h_nx = _mm256_hadd_ps(h_nx, h_nx);
+            h_x  = _mm256_hadd_ps(acc_x,  _mm256_permute2f128_ps(acc_x,  acc_x,  1));
+            h_x  = _mm256_hadd_ps(h_x,  h_x);  h_x  = _mm256_hadd_ps(h_x,  h_x);
+            sum += d2 * _mm256_cvtss_f32(h_nx) - m2 * _mm256_cvtss_f32(h_x);
+
+            qs += 32; is += 2; u1 <<= 2; u2 <<= 2;
+        }
+    }
+    return sum;
+}
+
+/* Q5_K matmul — AVX2 vectorized, uses q5_k_row_dot_avx2 per row */
 void q5_k_matmul_omp(const uint8_t *restrict W, const float *restrict x,
                       float *restrict out, int n_rows, int n_cols) {
     int nb = n_cols / QK_K;
 
     #pragma omp parallel for schedule(static)
     for (int r = 0; r < n_rows; r++) {
-        const uint8_t *row = W + (size_t)r * nb * Q5_K_BS;
-        float sum = 0.0f;
-
-        for (int b = 0; b < nb; b++) {
-            const uint8_t *blk = row + (size_t)b * Q5_K_BS;
-            float d   = f16_to_f32((uint16_t)blk[0] | ((uint16_t)blk[1] << 8));
-            float min = f16_to_f32((uint16_t)blk[2] | ((uint16_t)blk[3] << 8));
-            const uint8_t *scales = blk + 4;
-            const uint8_t *qh_arr = blk + 16;
-            const uint8_t *ql = blk + 48;  /* qs field starts at offset 48 */
-            int x_off = b * QK_K;
-            int is = 0;
-            uint8_t u1 = 1, u2 = 2;
-
-            for (int j = 0; j < QK_K; j += 64) {
-                uint8_t sc, m;
-                get_scale_min_k4(is + 0, scales, &sc, &m);
-                float d1 = d * sc;  float m1 = min * m;
-                get_scale_min_k4(is + 1, scales, &sc, &m);
-                float d2 = d * sc;  float m2 = min * m;
-
-                for (int l = 0; l < 32; ++l) {
-                    int ql_lo = (ql[l] & 0xF) + ((qh_arr[l] & u1) ? 16 : 0);
-                    sum += (d1 * ql_lo - m1) * x[x_off + j + l];
-                }
-                for (int l = 0; l < 32; ++l) {
-                    int ql_hi = (ql[l] >> 4) + ((qh_arr[l] & u2) ? 16 : 0);
-                    sum += (d2 * ql_hi - m2) * x[x_off + j + 32 + l];
-                }
-                ql += 32;
-                is += 2;
-                u1 <<= 2;
-                u2 <<= 2;
-            }
-        }
-        out[r] = sum;
+        out[r] = q5_k_row_dot_avx2(W, x, n_cols, r);
     }
 }
 
@@ -334,32 +428,62 @@ void q6_k_matmul_omp(const uint8_t *restrict W, const float *restrict x,
 }
 
 /* ═════════════════════════════════════════════════════════════════════════
- * Q6_K dequantize to F32 (for verification)
+ * Q6_K dequantize to F32 (for verification and output requantization)
+ *
+ * Q6_K layout (210 bytes per 256 values):
+ *   offset 0:   ql[128]   — lower 4 bits (2 nibbles/byte)
+ *   offset 128: qh[64]    — upper 2 bits (4 groups of 2 bits per byte)
+ *   offset 192: sc[16]    — signed 6-bit per-sub-block scales
+ *   offset 208: d         (fp16, 2 bytes) — super-block scale
+ *
+ * Dequantization:
+ *   For each 128-element half-block (h=0,128):
+ *     for l in 0..31:
+ *       is = l/16  (0 or 1, selects sc[is*2+0..7] within half)
+ *       q1 = ((ql[l] & 0xF) | ((qh[l] >> 0) & 0x3) << 4) - 32
+ *       q2 = ((ql[l+32] & 0xF) | ((qh[l] >> 2) & 0x3) << 4) - 32
+ *       q3 = ((ql[l] >> 4)  | ((qh[l] >> 4) & 0x3) << 4) - 32
+ *       q4 = ((ql[l+32] >> 4) | ((qh[l] >> 6) & 0x3) << 4) - 32
+ *       val = d * sc[is*2+0] * q1,
+ *             d * sc[is*2+2] * q2,
+ *             d * sc[is*2+4] * q3,
+ *             d * sc[is*2+6] * q4
  * ═══════════════════════════════════════════════════════════════════════ */
 
 void q6_k_dequantize_row(const uint8_t *restrict W, float *restrict out, int n_values) {
     int nb = n_values / QK_K;
     for (int b = 0; b < nb; b++) {
-    const uint8_t *blk = W + (size_t)b * Q6_K_BS;
-        float d   = f16_to_f32((uint16_t)blk[0] | ((uint16_t)blk[1] << 8));
-        float min = f16_to_f32((uint16_t)blk[2] | ((uint16_t)blk[3] << 8));
-        const uint8_t *scales = blk + 4;
-        const uint8_t *q = blk + 16;
-        int is = 0;
+        const uint8_t *blk = W + (size_t)b * Q6_K_BS;
+        const uint8_t *ql = blk;              /* offset 0: ql[128] */
+        const uint8_t *qh = blk + 128;        /* offset 128: qh[64] */
+        const int8_t *sc = (const int8_t *)(blk + 192); /* offset 192: scales[16] */
+        float d = f16_to_f32((uint16_t)blk[208] | ((uint16_t)blk[209] << 8));
 
-        for (int j = 0; j < QK_K; j += 64) {
-            uint8_t sc, m;
-            get_scale_min_k4(is + 0, scales, &sc, &m);
-            float d1 = d * sc;  float m1 = min * m;
-            get_scale_min_k4(is + 1, scales, &sc, &m);
-            float d2 = d * sc;  float m2 = min * m;
+        for (int h = 0; h < 2; h++) {
+            int ql_off = h * 64;
+            int qh_off = h * 32;
+            int sc_off = h * 8;
 
-            for (int l = 0; l < 32; ++l) out[l]      = d1 * (q[l] & 0xF) - m1;
-            for (int l = 0; l < 32; ++l) out[l + 32]  = d2 * (q[l] >> 4)  - m2;
-            out += 64;
-            q += 32;
-            is += 2;
+            for (int l = 0; l < 32; l++) {
+                int is = l / 16;  /* 0 or 1 */
+
+                int q1 = ((ql[ql_off + l]       & 0x0F) | ((qh[qh_off + l]       & 0x03) << 4)) - 32;
+                int q2 = ((ql[ql_off + l + 32]  & 0x0F) | ((qh[qh_off + l]       & 0x0C) << 2)) - 32;
+                int q3 = ((ql[ql_off + l]       >> 4)   | ((qh[qh_off + l]       & 0x30)     )) - 32;
+                int q4 = ((ql[ql_off + l + 32]  >> 4)   | ((qh[qh_off + l]       & 0xC0) >> 2)) - 32;
+
+                float ds1 = d * (float)sc[sc_off + is + 0];
+                float ds2 = d * (float)sc[sc_off + is + 2];
+                float ds3 = d * (float)sc[sc_off + is + 4];
+                float ds4 = d * (float)sc[sc_off + is + 6];
+
+                out[h * 128 + l]        = ds1 * (float)q1;
+                out[h * 128 + l + 32]   = ds2 * (float)q2;
+                out[h * 128 + l + 64]   = ds3 * (float)q3;
+                out[h * 128 + l + 96]   = ds4 * (float)q4;
+            }
         }
+        out += QK_K;
     }
 }
 
@@ -662,7 +786,7 @@ static float q8_0_row_dot(const uint8_t *restrict W, const float *restrict x,
 static void matmul_row_range(const uint8_t *restrict W, const float *restrict x,
                               float *restrict out, int n_rows, int n_cols,
                               int quant_type, int row_start, int row_end) {
-    int bpr32 = n_cols / 32;
+    int bpr32 = n_cols / 32;  /* blocks per row for 32-val quants */
     int bpr256 = n_cols / 256;
     for (int r = row_start; r < row_end; r++) {
         float total = 0.0f;
@@ -676,11 +800,16 @@ static void matmul_row_range(const uint8_t *restrict W, const float *restrict x,
             case 8: /* Q8_0 */
                 total = q8_0_row_dot(W, x, bpr32, r);
                 break;
-            case 12: /* Q4_K — needs full row stride */
+            case 12: /* Q4_K */
+                total = q4_k_row_dot_avx2(W, x, n_cols, r);
+                break;
             case 13: /* Q5_K */
-            case 14: /* Q6_K — fall back to calling existing OMP matmuls for K-quants */
+                total = q5_k_row_dot_avx2(W, x, n_cols, r);
+                break;
+            case 14: /* Q6_K */
+                total = q6_k_row_dot_avx2(W, x, n_cols, r);
+                break;
             default:
-                /* Shouldn't reach here for K-quants in batch mode */
                 total = 0.0f;
                 break;
         }
@@ -779,23 +908,33 @@ void quant_matmul_omp(const uint8_t *restrict W, const float *restrict x,
  * ═════════════════════════════════════════════════════════════════════════ */
 
 /* Quantize FP32 vector to Q8_0 (34 bytes per 32 values: 2-byte fp16 scale + 32 int8 values)
+ * AVX2 vectorized: processes 8 floats per iteration for absmax + quantize.
  * Returns number of Q8_0 blocks written (= n_cols / 32)
- * Output buffer q8 must be at least (n_cols/32)*34 bytes
  */
 int quantize_row_q8_0(const float *restrict x, uint8_t *restrict q8, int n_cols) {
     int nb = n_cols / 32;
+    __m256 clamp_min = _mm256_set1_ps(-127.0f);
+    __m256 clamp_max = _mm256_set1_ps(127.0f);
+    __m256i mask_abs = _mm256_set1_epi32(0x7FFFFFFF);
+
     for (int b = 0; b < nb; b++) {
         const float *src = x + b * 32;
         uint8_t *dst = q8 + (size_t)b * Q8_0_BS;
 
-        /* Find absmax */
-        float amax = 0.0f;
-        for (int i = 0; i < 32; i++) {
-            float ax = fabsf(src[i]);
-            if (ax > amax) amax = ax;
+        /* AVX2 absmax: process 8 floats at a time, 4 iterations for 32 total */
+        __m256 absmax = _mm256_setzero_ps();
+        for (int i = 0; i < 32; i += 8) {
+            __m256 v = _mm256_loadu_ps(src + i);
+            __m256 av = _mm256_and_ps(v, _mm256_castsi256_ps(mask_abs));
+            absmax = _mm256_max_ps(absmax, av);
         }
+        /* Horizontal max of 8 lanes */
+        __m256 tmp = _mm256_max_ps(absmax, _mm256_permute2f128_ps(absmax, absmax, 1));
+        tmp = _mm256_max_ps(tmp, _mm256_shuffle_ps(tmp, tmp, 0x4E));
+        tmp = _mm256_max_ps(tmp, _mm256_shuffle_ps(tmp, tmp, 0xB1));
+        float amax = _mm256_cvtss_f32(tmp);
         float d = amax / 127.0f;
-        if (d == 0.0f) d = 1.0f;  /* avoid division by zero */
+        if (d == 0.0f) d = 1.0f;
         float id = 1.0f / d;
 
         /* Store fp16 scale */
@@ -805,12 +944,19 @@ int quantize_row_q8_0(const float *restrict x, uint8_t *restrict q8, int n_cols)
         memcpy(&d16, &hv, 2);
         memcpy(dst, &d16, 2);
 
-        /* Quantize to int8 */
+        /* AVX2 quantize: 8 floats at a time, saturate to int8 */
         int8_t *qs = (int8_t *)(dst + 2);
-        for (int i = 0; i < 32; i++) {
-            float v = src[i] * id;
-            v = v < -127.0f ? -127.0f : (v > 127.0f ? 127.0f : v);
-            qs[i] = (int8_t)roundf(v);
+        __m256 id_v = _mm256_set1_ps(id);
+        for (int i = 0; i < 32; i += 8) {
+            __m256 v = _mm256_loadu_ps(src + i);
+            v = _mm256_mul_ps(v, id_v);
+            v = _mm256_min_ps(_mm256_max_ps(v, clamp_min), clamp_max);
+            __m256i vi = _mm256_cvtps_epi32(v);  /* round to nearest (MXCSR default) */
+            __m128i lo32 = _mm256_castsi256_si128(vi);
+            __m128i hi32 = _mm256_extractf128_si256(vi, 1);
+            __m128i i16 = _mm_packs_epi32(lo32, hi32);   /* signed sat 4×int32 → 8×int16 */
+            __m128i i8  = _mm_packs_epi16(i16, i16);      /* signed sat 8×int16 → 8×int8 */
+            _mm_storel_epi64((__m128i*)(qs + i), i8);
         }
     }
     return nb;
@@ -1141,15 +1287,20 @@ static inline __m256 q6k_dequant_8(const uint8_t *ql_ptr, const uint8_t *qh_ptr,
     __m128i q6_s8 = _mm_sub_epi8(combined, _mm_set1_epi8(32));
 
     /* Sign-extend: int8 → int16 → int32 → float via SSE then AVX2 */
-    __m128i q6_16 = _mm_cvtepi8_epi16(q6_s8);     /* first 4 → 4 int16 */
-    __m128i q6_16h = _mm_cvtepi8_epi16(_mm_shuffle_epi32(q6_s8, 0x4e)); /* last 4 → 4 int16 */
-    __m128i q6_32a = _mm_cvtepi16_epi32(q6_16);    /* 4 int32 */
-    __m128i q6_32b = _mm_cvtepi16_epi32(q6_16h);
+    /* cvtepi8_epi16 reads LOW 8 bytes → 8 int16. No data in upper 8 bytes. */
+    __m128i q6_16 = _mm_cvtepi8_epi16(q6_s8);     /* 8 int8 → 8 int16, all valid */
+    __m128i q6_32a = _mm_cvtepi16_epi32(q6_16);    /* LOW 4 int16 → 4 int32 */
+    /* Shuffle q6_16 (all valid data), then read LOW 4 int16 = original's HIGH 4 */
+    __m128i q6_32b = _mm_cvtepi16_epi32(_mm_shuffle_epi32(q6_16, 0x4e));
     return _mm256_cvtepi32_ps(_mm256_set_m128i(q6_32b, q6_32a));
 }
 
 /* Process one Q6_K super-block (256 values) with AVX2 dequant + FMA.
- * Returns the dot product: Σ d * sc[i] * q6[i] * x[i] */
+ * Returns the dot product: Σ d * sc[i] * q6[i] * x[i]
+ *
+ * v2 optimization: accumulate per-quadrant sums in 4 separate __m256
+ * accumulators, apply per-quadrant scales at the end, then do a single
+ * horizontal sum per sub-block (4 hsums/super-block vs 32 before). */
 static inline float dot_q6_k_f32_avx2(const uint8_t *restrict blk,
                                        const float *restrict x, int x_off) {
     float d = f16_to_f32((uint16_t)blk[208] | ((uint16_t)blk[209] << 8));
@@ -1167,54 +1318,64 @@ static inline float dot_q6_k_f32_avx2(const uint8_t *restrict blk,
 
         /* Two sub-blocks per half (l=0..15 and l=16..31) */
         for (int sub = 0; sub < 2; sub++) {
-            int l_base = sub * 16;
+            /* Per-quadrant scales for this sub-block */
+            float ds_q1 = d * (float)sc[sc_h + sub + 0];
+            float ds_q2 = d * (float)sc[sc_h + sub + 2];
+            float ds_q3 = d * (float)sc[sc_h + sub + 4];
+            float ds_q4 = d * (float)sc[sc_h + sub + 6];
 
-            /* Process 8 values at a time (AVX2 width) */
+            __m256 ds1 = _mm256_set1_ps(ds_q1);
+            __m256 ds2 = _mm256_set1_ps(ds_q2);
+            __m256 ds3 = _mm256_set1_ps(ds_q3);
+            __m256 ds4 = _mm256_set1_ps(ds_q4);
+
+            __m256 acc1 = _mm256_setzero_ps();
+            __m256 acc2 = _mm256_setzero_ps();
+            __m256 acc3 = _mm256_setzero_ps();
+            __m256 acc4 = _mm256_setzero_ps();
+
+            /* Process 8 values at a time (AVX2 width), 2 iterations for 16 ql */
             for (int inner = 0; inner < 2; inner++) {
-                int l = l_base + inner * 8;
+                int l = sub * 16 + inner * 8;
 
-                /* Each sub-block has 8 int8 scales: sc[sc_h + sub + 0..7]
-                   But only sc[sc_h + sub + 0], [sc_h + sub + 2], [sc_h + sub + 4], [sc_h + sub + 6]
-                   are used for quadrants q1..q4 */
-                float ds_q1 = d * (float)sc[sc_h + sub + 0];
-                float ds_q2 = d * (float)sc[sc_h + sub + 2];
-                float ds_q3 = d * (float)sc[sc_h + sub + 4];
-                float ds_q4 = d * (float)sc[sc_h + sub + 6];
-
-                /* 4 quadrants in parallel with PER-QUADRANT scales */
+                /* 4 quadrants in parallel */
                 __m256 q1f = q6k_dequant_8(ql + ql_h + l, qh + qh_h + l, 0);
                 __m256 q2f = q6k_dequant_8(ql + ql_h + l + 32, qh + qh_h + l, 2);
                 __m256 q3f = q6k_dequant_8(ql + ql_h + l, qh + qh_h + l, 4);
                 __m256 q4f = q6k_dequant_8(ql + ql_h + l + 32, qh + qh_h + l, 6);
 
-                /* Load x */
+                /* Load x (quadrants are interleaved at +0, +32, +64, +96) */
                 int base = x_off + half * 128 + l;
                 __m256 x1 = _mm256_loadu_ps(x + base);
                 __m256 x2 = _mm256_loadu_ps(x + base + 32);
                 __m256 x3 = _mm256_loadu_ps(x + base + 64);
                 __m256 x4 = _mm256_loadu_ps(x + base + 96);
 
-                /* Multiply each quadrant by its activation */
-                __m256 p1 = _mm256_mul_ps(q1f, x1);
-                __m256 p2 = _mm256_mul_ps(q2f, x2);
-                __m256 p3 = _mm256_mul_ps(q3f, x3);
-                __m256 p4 = _mm256_mul_ps(q4f, x4);
-
-                /* Horizontal sum each quadrant separately (apply per-quadrant scale) */
-                #define Q6_HSUM(v,dsc) do { __m256 _p = _mm256_permute2f128_ps(v,v,1); __m256 _s = _mm256_add_ps(v,_p); _s = _mm256_hadd_ps(_s,_s); _s = _mm256_hadd_ps(_s,_s); block_sum += dsc * _mm256_cvtss_f32(_s); } while(0)
-                Q6_HSUM(p1, ds_q1);
-                Q6_HSUM(p2, ds_q2);
-                Q6_HSUM(p3, ds_q3);
-                Q6_HSUM(p4, ds_q4);
-                #undef Q6_HSUM
+                /* Accumulate per-quadrant (no hsum yet) */
+                acc1 = _mm256_fmadd_ps(q1f, x1, acc1);
+                acc2 = _mm256_fmadd_ps(q2f, x2, acc2);
+                acc3 = _mm256_fmadd_ps(q3f, x3, acc3);
+                acc4 = _mm256_fmadd_ps(q4f, x4, acc4);
             }
+
+            /* Apply per-quadrant scales and combine into one sum */
+            __m256 sum = _mm256_mul_ps(acc1, ds1);
+            sum = _mm256_fmadd_ps(acc2, ds2, sum);
+            sum = _mm256_fmadd_ps(acc3, ds3, sum);
+            sum = _mm256_fmadd_ps(acc4, ds4, sum);
+
+            /* Single horizontal sum for this sub-block (64 values) */
+            __m256 h = _mm256_hadd_ps(sum, _mm256_permute2f128_ps(sum, sum, 1));
+            h = _mm256_hadd_ps(h, h);
+            h = _mm256_hadd_ps(h, h);
+            block_sum += _mm256_cvtss_f32(h);
         }
     }
     return block_sum;
 }
 
 /* Q6_K row dot using AVX2 dequant + FMA */
-static float q6_k_row_dot_avx2(const uint8_t *restrict W, const float *restrict x,
+float q6_k_row_dot_avx2(const uint8_t *restrict W, const float *restrict x,
                                 int n_cols, int row) {
     int nb = n_cols / QK_K;
     const uint8_t *row_ptr = W + (size_t)row * nb * Q6_K_BS;
@@ -1243,8 +1404,13 @@ void q6_k_matmul_avx2_omp(const uint8_t *restrict W, const float *restrict x,
  * Phase 3: Down using Q6_K AVX2 dequant + FMA
  * ═════════════════════════════════════════════════════════════════════════ */
 
-/* ─── Q4_K row-dot with float activation (for down matmul, scalar fallback) ─── */
-static float q4_k_row_dot_avx2(const uint8_t *restrict W, const float *restrict x,
+/* ─── Q4_K row-dot with float activation — AVX2 vectorized ───
+ *
+ * Uses the identity: sum((d1*nibble - m1)*x) = d1*sum(nibble*x) - m1*sum(x)
+ * This lets us compute two accumulators (nibble*x and x) with AVX2,
+ * then apply d1/m1 once at the end per 32-value group.
+ */
+float q4_k_row_dot_avx2(const uint8_t *restrict W, const float *restrict x,
                                  int n_cols, int row) {
     int nb = n_cols / QK_K;
     const uint8_t *row_ptr = W + (size_t)row * nb * Q4_K_BS;
@@ -1263,10 +1429,66 @@ static float q4_k_row_dot_avx2(const uint8_t *restrict W, const float *restrict 
             float d1 = d * (float)sc;  float m1 = min * (float)m;
             get_scale_min_k4(is + 1, scales, &sc, &m);
             float d2 = d * (float)sc;  float m2 = min * (float)m;
-            for (int l = 0; l < 32; ++l)
-                sum += (d1 * (q[l] & 0xF) - m1) * x[x_off + j + l];
-            for (int l = 0; l < 32; ++l)
-                sum += (d2 * (q[l] >> 4)  - m2) * x[x_off + j + 32 + l];
+
+            /* Process 32 lo-nibble values: sum += d1*nibble*x - m1*x */
+            __m256 acc_nx = _mm256_setzero_ps();
+            __m256 acc_x  = _mm256_setzero_ps();
+            for (int l = 0; l < 32; l += 16) {
+                /* Load 16 bytes, extract lo nibbles (0-15) */
+                __m128i q16 = _mm_loadu_si128((const __m128i*)(q + l));
+                __m128i nib = _mm_and_si128(q16, _mm_set1_epi8(0x0F));
+                __m128i n16a = _mm_cvtepu8_epi16(nib);
+                __m128i n16b = _mm_cvtepu8_epi16(_mm_shuffle_epi32(nib, 0x4e));
+                __m256 nf_a = _mm256_cvtepi32_ps(_mm256_set_m128i(
+                    _mm_cvtepi16_epi32(_mm_shuffle_epi32(n16a, 0x4e)),
+                    _mm_cvtepi16_epi32(n16a)));
+                __m256 nf_b = _mm256_cvtepi32_ps(_mm256_set_m128i(
+                    _mm_cvtepi16_epi32(_mm_shuffle_epi32(n16b, 0x4e)),
+                    _mm_cvtepi16_epi32(n16b)));
+                __m256 xa = _mm256_loadu_ps(x + x_off + j + l);
+                __m256 xb = _mm256_loadu_ps(x + x_off + j + l + 8);
+                acc_nx = _mm256_fmadd_ps(nf_a, xa, acc_nx);
+                acc_nx = _mm256_fmadd_ps(nf_b, xb, acc_nx);
+                acc_x  = _mm256_add_ps(xa, acc_x);
+                acc_x  = _mm256_add_ps(xb, acc_x);
+            }
+            __m256 h_nx = _mm256_hadd_ps(acc_nx, _mm256_permute2f128_ps(acc_nx, acc_nx, 1));
+            h_nx = _mm256_hadd_ps(h_nx, h_nx); h_nx = _mm256_hadd_ps(h_nx, h_nx);
+            __m256 h_x  = _mm256_hadd_ps(acc_x,  _mm256_permute2f128_ps(acc_x,  acc_x,  1));
+            h_x  = _mm256_hadd_ps(h_x,  h_x);  h_x  = _mm256_hadd_ps(h_x,  h_x);
+            float nx_sum = _mm256_cvtss_f32(h_nx);
+            float  x_sum = _mm256_cvtss_f32(h_x);
+            sum += d1 * nx_sum - m1 * x_sum;
+
+            /* Process 32 hi-nibble values: sum += d2*nibble*x - m2*x */
+            acc_nx = _mm256_setzero_ps();
+            acc_x  = _mm256_setzero_ps();
+            for (int l = 0; l < 32; l += 16) {
+                __m128i q16 = _mm_loadu_si128((const __m128i*)(q + l));
+                __m128i nib = _mm_and_si128(_mm_srli_epi16(q16, 4), _mm_set1_epi8(0x0F));
+                __m128i n16a = _mm_cvtepu8_epi16(nib);
+                __m128i n16b = _mm_cvtepu8_epi16(_mm_shuffle_epi32(nib, 0x4e));
+                __m256 nf_a = _mm256_cvtepi32_ps(_mm256_set_m128i(
+                    _mm_cvtepi16_epi32(_mm_shuffle_epi32(n16a, 0x4e)),
+                    _mm_cvtepi16_epi32(n16a)));
+                __m256 nf_b = _mm256_cvtepi32_ps(_mm256_set_m128i(
+                    _mm_cvtepi16_epi32(_mm_shuffle_epi32(n16b, 0x4e)),
+                    _mm_cvtepi16_epi32(n16b)));
+                __m256 xa = _mm256_loadu_ps(x + x_off + j + 32 + l);
+                __m256 xb = _mm256_loadu_ps(x + x_off + j + 32 + l + 8);
+                acc_nx = _mm256_fmadd_ps(nf_a, xa, acc_nx);
+                acc_nx = _mm256_fmadd_ps(nf_b, xb, acc_nx);
+                acc_x  = _mm256_add_ps(xa, acc_x);
+                acc_x  = _mm256_add_ps(xb, acc_x);
+            }
+            h_nx = _mm256_hadd_ps(acc_nx, _mm256_permute2f128_ps(acc_nx, acc_nx, 1));
+            h_nx = _mm256_hadd_ps(h_nx, h_nx); h_nx = _mm256_hadd_ps(h_nx, h_nx);
+            h_x  = _mm256_hadd_ps(acc_x,  _mm256_permute2f128_ps(acc_x,  acc_x,  1));
+            h_x  = _mm256_hadd_ps(h_x,  h_x);  h_x  = _mm256_hadd_ps(h_x,  h_x);
+            nx_sum = _mm256_cvtss_f32(h_nx);
+             x_sum = _mm256_cvtss_f32(h_x);
+            sum += d2 * nx_sum - m2 * x_sum;
+
             q += 32; is += 2;
         }
     }
@@ -1279,10 +1501,11 @@ void moe_forward_omp(
     const float* x_norm, int n_ff_expert, int n_embd,
     int qt_gate, int qt_up, int qt_down,
     const int* top_indices, const float* top_weights, int top_k,
-    float* combined
+    float* combined,
+    float* prealloc_buf, uint8_t* prealloc_q8
 ) {
     size_t exp_buf_sz = (size_t)top_k * n_ff_expert;
-    float *all_bufs = (float*)calloc(3 * exp_buf_sz, sizeof(float));
+    float *all_bufs = prealloc_buf ? prealloc_buf : (float*)malloc(3 * exp_buf_sz * sizeof(float));
     float *gate_buf = all_bufs;
     float *up_buf   = all_bufs + exp_buf_sz;
     float *silu_buf = all_bufs + 2 * exp_buf_sz;
@@ -1290,16 +1513,18 @@ void moe_forward_omp(
     if (!all_bufs) return;
 
     /* ── Quantize x_norm to Q8_0 once for Q4_K quantized-activation path ── */
-    /* 2048 values → 2048/32 * 34 = 2176 bytes */
     int n_blocks_x = n_embd / 32;
-    uint8_t *x_q8 = (uint8_t*)malloc((size_t)n_blocks_x * Q8_0_BS);
+    uint8_t *x_q8 = prealloc_q8 ? prealloc_q8 : (uint8_t*)malloc((size_t)n_blocks_x * Q8_0_BS);
     int q8_nb = quantize_row_q8_0(x_norm, x_q8, n_embd);
 
-    /* ── Phase 1: Gate + Up rows ── */
     int total_gate    = top_k * n_ff_expert;
     int total_gate_up = total_gate * 2;
+    int total_silu    = top_k * n_ff_expert;
+    int total_down    = top_k * n_embd;
+    int total_all     = total_gate_up + total_silu + total_down;
 
-    #pragma omp parallel for schedule(static)
+    /* ── Phase 1: Gate + Up rows (parallel, dynamic scheduling) ── */
+    #pragma omp parallel for schedule(dynamic, 64)
     for (int i = 0; i < total_gate_up; i++) {
         int exp_idx = i / n_ff_expert;
         int row     = i % n_ff_expert;
@@ -1336,20 +1561,16 @@ void moe_forward_omp(
         }
     }
 
-    /* Phase 1.5: SiLU(gate) * up (sequential) */
-    for (int e = 0; e < top_k; e++) {
-        const float *g = gate_buf + e * n_ff_expert;
-        const float *u = up_buf   + e * n_ff_expert;
-        float *s = silu_buf + e * n_ff_expert;
-        for (int i = 0; i < n_ff_expert; i++) {
-            float gv = g[i];
-            s[i] = (gv / (1.0f + expf(-gv))) * u[i];
-        }
+    /* ── Phase 1.5: SiLU(gate) * up (parallel, simple) ── */
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < top_k * n_ff_expert; i++) {
+        float gv = gate_buf[i];
+        silu_buf[i] = (gv / (1.0f + expf(-gv))) * up_buf[i];
     }
 
-    /* ── Phase 2: Down matmuls + weighted accumulation ── */
-    #pragma omp parallel for schedule(static)
-    for (int i = 0; i < top_k * n_embd; i++) {
+    /* ── Phase 2: Down matmuls + weighted accumulation (dynamic scheduling) ── */
+    #pragma omp parallel for schedule(dynamic, 64)
+    for (int i = 0; i < total_down; i++) {
         int exp_idx = i / n_embd;
         int row     = i % n_embd;
         int e = top_indices[exp_idx];
@@ -1369,8 +1590,8 @@ void moe_forward_omp(
         combined[row] += top_weights[exp_idx] * dot;
     }
 
-    free(all_bufs);
-    free(x_q8);
+    if (!prealloc_buf) free(all_bufs);
+    if (!prealloc_q8)  free(x_q8);
 }
 
 /* ═════════════════════════════════════════════════════════════════════════

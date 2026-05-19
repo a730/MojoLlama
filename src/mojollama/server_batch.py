@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0,os.path.join(os.path.dirname(os.path.abspath(__file__)),'kernels'))
 from turbo_engine_v77 import TurboEngineV77
+from transformers import AutoTokenizer
 
 lib=ctypes.CDLL(os.path.join(os.path.dirname(os.path.abspath(__file__)),'kernels','cengine_batch.so'))
 cv=ctypes.c_void_p; ci=ctypes.c_int; cf=ctypes.c_float
@@ -17,13 +18,20 @@ class BC(ctypes.Structure):
         ("wAN",cv),("wFN",cv),
         ("nQ",cv),("nK",cv),("nV",cv),("nO",cv),("nG",cv),("nU",cv),("nD",cv),
         ("nc",ci),("emb",cv),("onw",cv),("wOut",cv),("outNR",ci),("outNC",ci),("outQuant",ci),
-        ("kv_array",cv),("logits",cv)]
+        ("kv_array",cv),("logits",cv),
+            ("n_experts",ci),("n_experts_per_tok",ci),("moe_intermediate",ci),
+            ("w_gate_inp",cv),("w_gate_exps",cv),("w_up_exps",cv),("w_down_exps",cv),
+            ("gate_exp_quant",ci),("up_exp_quant",ci),("down_exp_quant",ci),
+            ("q_quant",cv),("k_quant",cv),("v_quant",cv),("o_quant",cv),
+            ("g_quant",cv),("u_quant",cv),("d_quant",cv),("emb_quant",ci),
+            ("cos_table",cv),("sin_table",cv),("max_ctx",ci)]
 
 class KVBlock(ctypes.Structure):
     _fields_ = [("k",cv),("v",cv),("n_blocks",ci),
         ("seq_len",ci*64),("block_map",(ci*1024)*64)]
 
 lib.batch_forward.argtypes=[cv,cv,ci,cv]; lib.batch_forward.restype=None
+lib.prefill_forward.argtypes=[cv,cv,ci,cv]; lib.prefill_forward.restype=None
 lib.kv_init.argtypes=[cv,ci,ci,ci]; lib.kv_init.restype=None
 
 forward_lock = threading.Lock()
@@ -36,6 +44,19 @@ L=e.n_layers; N=e.n_embd; NH=e.n_head; NKH=e.n_kv_head; HD=e.head_dim; FF=e.n_ff
 S = max(N, NH*HD, FF, NKH*HD)
 BOS=1; EOS=2
 print(f"Model: {L}L/{N}D/{FF}FF/{NH}H/{NKH}KV | {V}vocab | S={S}", flush=True)
+
+# ── MoE detection & dense-only fallback ──
+if e.is_moe:
+    port_str = sys.argv[1] if len(sys.argv) > 1 else '9000'
+    print(f"MoE model detected — use llama.cpp server on port {port_str} instead", flush=True)
+    sys.exit(0)
+
+# Load tokenizer
+print(f"Loading tokenizer...", flush=True)
+tokenizer = AutoTokenizer.from_pretrained('/tmp/tinyllama-tokenizer/')
+tokenizer.bos_token_id = BOS
+tokenizer.eos_token_id = EOS
+print(f"Tokenizer loaded, vocab={tokenizer.vocab_size}", flush=True)
 
 def wa(a): return (cv*L)(*[ctypes.cast(a[i],cv) for i in range(L)])
 def ia(a): return (ci*L)(*[a[i].value if hasattr(a[i],'value') else int(a[i]) for i in range(L)])
@@ -64,7 +85,7 @@ bc.nG=ctypes.cast(ia([e._layers[i]['ffn_gate']['nr'] for i in range(L)]),cv)
 bc.nU=ctypes.cast(ia([e._layers[i]['ffn_up']['nr'] for i in range(L)]),cv)
 bc.nD=ctypes.cast(ia([e._layers[i]['ffn_down']['nr'] for i in range(L)]),cv)
 bc.nc=N; bc.emb=e.emb.ctypes.data_as(cv); bc.onw=e._onw.ctypes.data_as(cv)
-bc.wOut=ctypes.cast(e._or,cv); bc.outNR=32000; bc.outNC=2048; bc.outQuant=1
+bc.wOut=ctypes.cast(e._or,cv); bc.outNR=V; bc.outNC=N; bc.outQuant=1
 print("BC struct ready", flush=True)
 
 # ── Shared buffers ──
@@ -73,14 +94,20 @@ ws = np.zeros(MAX_SEQ * 12 * S, dtype=np.float32)
 logits_buf = np.zeros(MAX_SEQ * V, dtype=np.float32)
 
 def sample_token(logits, temperature=0.0):
+    # Model produces NaN at ~67% of logit positions (Q4_0 quantization artifact)
+    safe = np.nan_to_num(logits, nan=-1e10, posinf=1e10, neginf=-1e10)
     if temperature <= 0:
-        return int(logits.argmax())
-    p = np.exp(np.clip(logits / temperature, -50, 50))
-    p /= p.sum()
-    return int(np.random.choice(len(p), p=p))
+        return int(np.argmax(safe))
+    safe -= safe.max()  # stabilize
+    p = np.exp(np.clip(safe / temperature, -50, 50))
+    p[np.isnan(p)] = 0
+    s = p.sum()
+    if s <= 0:
+        return int(np.nanargmax(logits)) if np.any(~np.isnan(logits)) else 0
+    return int(np.random.choice(len(p), p=p/s))
 
 class Sequence:
-    __slots__ = ('kv','tokens','gen_tokens','done','result','event','max_tokens','temperature')
+    __slots__ = ('kv','tokens','gen_tokens','done','result','event','max_tokens','temperature','token_queue','stream')
     def __init__(self):
         self.kv = mk_kv()
         self.tokens = []
@@ -90,6 +117,8 @@ class Sequence:
         self.event = threading.Event()
         self.max_tokens = 100
         self.temperature = 0.0
+        self.token_queue = None
+        self.stream = False
 
 pending = queue.Queue()
 active_slots = [None] * MAX_SEQ
@@ -136,12 +165,18 @@ def run_scheduler():
             seq.tokens.append(next_tok)
             seq.gen_tokens.append(next_tok)
             
+            # Push token to streaming queue if active
+            if seq.token_queue is not None:
+                seq.token_queue.put(next_tok)
+            
             if next_tok == EOS or len(seq.gen_tokens) >= seq.max_tokens:
                 seq.done = True
                 seq.result = {
                     'tokens': seq.gen_tokens.copy(),
                     'finish_reason': 'stop' if next_tok == EOS else 'length',
                 }
+                if seq.token_queue is not None:
+                    seq.token_queue.put(None)  # signal done
                 seq.event.set()
                 active_slots[slot] = None
 
@@ -168,80 +203,105 @@ class Handler(BaseHTTPRequestHandler):
             stream = body.get('stream', False)
             print(f"  [handler] prompt='{prompt}' max_tokens={max_tokens}", flush=True)
             
-            prompt_ids = e.encode(prompt) if isinstance(prompt, str) else prompt[:512]
+            prompt_ids = tokenizer.encode(prompt) if isinstance(prompt, str) else prompt[:512]
+            prompt_ids = [t for t in prompt_ids if t != BOS]  # strip BOS, model handles it
             print(f"  [handler] prompt_ids={len(prompt_ids)} tokens", flush=True)
             t0 = time.perf_counter()
             
             seq = Sequence()
             seq.max_tokens = max_tokens
             seq.temperature = temperature
+            seq.stream = stream
             
-            # Prefill: one token at a time
-            print(f"  [handler] starting prefill ({len(prompt_ids)} tokens)", flush=True)
-            for tid in prompt_ids:
+            # Fast prefill: single C call
+            if prompt_ids:
                 kva1 = (cv*1)(ctypes.cast(ctypes.pointer(seq.kv), cv))
+                p_ws = np.zeros(len(prompt_ids) * 12 * S, dtype=np.float32)
+                p_tokens = (ci*len(prompt_ids))(*prompt_ids)
                 with forward_lock:
                     bc.kv_array = ctypes.cast(kva1, cv)
                     bc.logits = logits_buf[0:V].ctypes.data_as(cv)
                     logits_buf[:V] = 0
-                    lib.batch_forward(ctypes.byref(bc), (ci*1)(tid), ci(1), ws.ctypes.data_as(cv))
-            print(f"  [handler] prefill done", flush=True)
+                    lib.prefill_forward(ctypes.byref(bc), p_tokens, ci(len(prompt_ids)), p_ws.ctypes.data_as(cv))
             
-            # Set up for generation: last prompt token is the "current" token
-            seq.tokens = [prompt_ids[-1]] if prompt_ids else [BOS]
+            # Sample first generated token from prefill output
+            first_tok = sample_token(logits_buf[:V].copy(), temperature)
+            seq.tokens = [first_tok]
+            seq.gen_tokens = [first_tok]
+            
+            # Streaming mode: send token-by-token via SSE
+            if stream:
+                seq.token_queue = queue.Queue()
+                # Put the first token immediately
+                seq.token_queue.put(first_tok)
             
             # Enqueue for generation
             pending.put(seq)
-            print(f"  [handler] seq enqueued, waiting...", flush=True)
-            
-            # Wait for generation to complete
-            if not seq.event.wait(timeout=600):
-                gen_tokens = seq.gen_tokens[:20]
-                finish = 'timeout'
-            elif seq.result is None:
-                gen_tokens = seq.gen_tokens
-                finish = 'length' if len(gen_tokens) >= max_tokens else 'stop'
-            else:
-                gen_tokens = seq.result['tokens']
-                finish = seq.result['finish_reason']
-            
-            print(f"  [handler] got result: {len(gen_tokens)} tokens, finish={finish}", flush=True)
-            t_total = time.perf_counter() - t0
-            generated_text = e.decode(gen_tokens)
-            
-            res = {
-                'id': f'cmpl-{int(time.time())}',
-                'object': 'text_completion',
-                'model': 'mojollama-batch',
-                'choices': [{
-                    'text': generated_text,
-                    'index': 0,
-                    'finish_reason': finish,
-                    'logprobs': None,
-                }],
-                'usage': {
-                    'prompt_tokens': len(prompt_ids),
-                    'completion_tokens': len(gen_tokens),
-                    'total_tokens': len(prompt_ids) + len(gen_tokens),
-                },
-            }
             
             if stream:
+                # SSE streaming response
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/event-stream')
+                self.send_header('Cache-Control', 'no-cache')
                 self.end_headers()
-                for tok in gen_tokens:
-                    chunk = json.dumps({'choices':[{'text':e.decode([tok]),'index':0}]})
-                    self.wfile.write(f'data: {chunk}\n\n'.encode())
+                
+                while True:
+                    tok = seq.token_queue.get()
+                    if tok is None:
+                        break
+                    chunk_data = json.dumps({
+                        'choices': [{
+                            'text': tokenizer.decode([tok], skip_special_tokens=True),
+                            'index': 0,
+                        }]
+                    })
+                    self.wfile.write(f'data: {chunk_data}\n\n'.encode())
+                    self.wfile.flush()
+                
                 self.wfile.write('data: [DONE]\n\n'.encode())
+                t_total = time.perf_counter() - t0
+                tok_s = len(seq.gen_tokens) / t_total if t_total > 0 else 0
+                generated_text = tokenizer.decode(seq.gen_tokens, skip_special_tokens=True)
+                print(f"  [{len(prompt_ids)}p+{len(seq.gen_tokens)}g {t_total:.1f}s {tok_s:.0f}t/s] '{generated_text[:60]}'", flush=True)
             else:
+                # Non-streaming: wait for full completion
+                if not seq.event.wait(timeout=600):
+                    gen_tokens = seq.gen_tokens[:20]
+                    finish = 'timeout'
+                elif seq.result is None:
+                    gen_tokens = seq.gen_tokens
+                    finish = 'length' if len(gen_tokens) >= max_tokens else 'stop'
+                else:
+                    gen_tokens = seq.result['tokens']
+                    finish = seq.result['finish_reason']
+                
+                t_total = time.perf_counter() - t0
+                generated_text = tokenizer.decode(gen_tokens, skip_special_tokens=True)
+                
+                res = {
+                    'id': f'cmpl-{int(time.time())}',
+                    'object': 'text_completion',
+                    'model': 'mojollama-batch',
+                    'choices': [{
+                        'text': generated_text,
+                        'index': 0,
+                        'finish_reason': finish,
+                        'logprobs': None,
+                    }],
+                    'usage': {
+                        'prompt_tokens': len(prompt_ids),
+                        'completion_tokens': len(gen_tokens),
+                        'total_tokens': len(prompt_ids) + len(gen_tokens),
+                    },
+                }
+                
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.end_headers()
                 self.wfile.write(json.dumps(res).encode())
-            
-            tok_s = len(gen_tokens) / t_total if t_total > 0 else 0
-            print(f"  [{len(prompt_ids)}p+{len(gen_tokens)}g {t_total:.1f}s {tok_s:.0f}t/s] '{generated_text[:60]}'", flush=True)
+                
+                tok_s = len(gen_tokens) / t_total if t_total > 0 else 0
+                print(f"  [{len(prompt_ids)}p+{len(gen_tokens)}g {t_total:.1f}s {tok_s:.0f}t/s] '{generated_text[:60]}'", flush=True)
         except Exception as ex:
             print(f"  [handler] EXCEPTION: {ex}", flush=True)
             traceback.print_exc()
