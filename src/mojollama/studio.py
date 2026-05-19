@@ -1302,6 +1302,143 @@ def cmd_imatrix(args):
     subprocess.run(cmd, check=True)
 
 
+def cmd_dynamic_quant(args):
+    """Dynamic quantization: select per-tensor quant types based on importance matrix."""
+    import re, math, tempfile
+    
+    quant_types = {
+        'Q2_K': 2.5, 'Q3_K_S': 3.0, 'Q3_K_M': 3.4, 'Q4_0': 4.0,
+        'Q4_K_S': 4.4, 'Q4_K_M': 4.5, 'Q5_0': 5.0, 'Q5_K_M': 5.5,
+        'Q6_K': 6.0, 'Q8_0': 8.0,
+    }
+    refined = {'Q6_K': 6.0, 'Q5_K_M': 5.5, 'Q4_K_M': 4.5, 'Q3_K_S': 3.0, 'Q2_K': 2.5}
+    
+    # Parse imatrix file
+    tensor_importance = {}
+    with open(args.imatrix) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#') or line.startswith(';'):
+                continue
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                try:
+                    tensor_importance[parts[0]] = float(parts[1])
+                except ValueError:
+                    pass
+    
+    if not tensor_importance:
+        print("[DynamicQuant] ERROR: No valid entries in imatrix file")
+        return
+    
+    # Group tensors by type
+    groups = {'attention': [], 'ffn': [], 'output': [], 'embedding': [], 'norm': [], 'other': []}
+    for tname, imp in tensor_importance.items():
+        base = os.path.splitext(tname)[0]
+        base_clean = re.sub(r'blk\.\d+\.', '', base)
+        if any(x in base_clean for x in ['attn_q', 'attn_k', 'attn_v', 'attn_o', 'attention', 'self_attn']):
+            groups['attention'].append((tname, imp))
+        elif any(x in base_clean for x in ['ffn_gate', 'ffn_up', 'ffn_down', 'mlp', 'feed_forward']):
+            groups['ffn'].append((tname, imp))
+        elif any(x in base_clean for x in ['output', 'lm_head']):
+            groups['output'].append((tname, imp))
+        elif any(x in base_clean for x in ['embed', 'tok_embeddings', 'token_embd']):
+            groups['embedding'].append((tname, imp))
+        elif 'norm' in base_clean:
+            groups['norm'].append((tname, imp))
+        else:
+            groups['other'].append((tname, imp))
+    
+    # Assign quant types
+    assignments = {}
+    if args.target_bpw:
+        # Target BPW mode: grid search for best threshold split
+        all_sorted = sorted(tensor_importance.items(), key=lambda x: x[1])
+        n = len(all_sorted)
+        best_error = float('inf')
+        best_thresholds = None
+        best_assignment = {}
+        bpw_target = float(args.target_bpw)
+        
+        for t1 in range(0, 101, 5):
+            for t2 in range(t1, 101, 5):
+                for t3 in range(t2, 101, 5):
+                    p1, p2, p3 = t1 / 100, t2 / 100, t3 / 100
+                    total_bpw = 0
+                    temp_assign = {}
+                    for i, (name, imp) in enumerate(all_sorted):
+                        pct = i / n
+                        if pct <= p1:
+                            qt = 'Q6_K'
+                        elif pct <= p2:
+                            qt = 'Q5_K_M'
+                        elif pct <= p3:
+                            qt = 'Q4_K_M'
+                        else:
+                            qt = 'Q3_K_S' if args.extreme else 'Q2_K'
+                        temp_assign[name] = qt
+                        total_bpw += refined[qt]
+                    avg_bpw = total_bpw / n
+                    error = abs(avg_bpw - bpw_target)
+                    if error < best_error:
+                        best_error = error
+                        best_thresholds = (p1, p2, p3)
+                        best_assignment = temp_assign
+        assignments = best_assignment
+        print(f"[DynamicQuant] Target BPW: {bpw_target}, achieved: {bpw_target - best_error:.2f} (error: {best_error:.2f})")
+        p1, p2, p3 = best_thresholds
+        print(f"[DynamicQuant] Thresholds: Q6_K<={p1*100:.0f}%, Q5_K_M<={p2*100:.0f}%, Q4_K_M<={p3*100:.0f}%, Q3_K_S>{p3*100:.0f}%")
+    else:
+        # Standard mode: per-group 30/40/30 split
+        for group_name, group_tensors in groups.items():
+            if not group_tensors:
+                continue
+            sorted_tensors = sorted(group_tensors, key=lambda x: x[1])
+            n = len(sorted_tensors)
+            for i, (tname, _) in enumerate(sorted_tensors):
+                pct = i / n
+                if pct <= 0.3:
+                    assignments[tname] = 'Q6_K'
+                elif pct <= 0.7:
+                    assignments[tname] = 'Q4_K_M'
+                else:
+                    assignments[tname] = 'Q3_K_S'
+    
+    # Count
+    qt_counts = {}
+    for qt in assignments.values():
+        qt_counts[qt] = qt_counts.get(qt, 0) + 1
+    print(f"[DynamicQuant] Quantization plan: {', '.join(f'{k}: {v}' for k, v in sorted(qt_counts.items()))}")
+    
+    if args.verbose or args.dry_run:
+        print(f"\n  Tensor assignments:")
+        for tname, qt in sorted(assignments.items()):
+            print(f"    {tname} -> {qt}")
+    
+    if args.dry_run:
+        print(f"\n[DynamicQuant] Dry-run mode. Would run:")
+        print(f"  llama-quantize --tensor-type-file <temp_file> {args.model} {args.output} COPY {args.threads or 32}")
+        return
+    
+    # Write tensor-type file and run quantization
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, prefix='dynquant_') as f:
+        for tname, qt in sorted(assignments.items()):
+            f.write(f"{tname} {qt}\n")
+        ttf_path = f.name
+    
+    quantize_bin = "/tmp/llama.cpp/build/bin/llama-quantize"
+    outfile = args.output or args.model.replace('.gguf', '-dynamic.gguf')
+    cmd = [quantize_bin, "--allow-requantize", "--tensor-type-file", ttf_path,
+           args.model, outfile, "COPY"]
+    if args.threads and args.threads > 0:
+        cmd.append(str(args.threads))
+    
+    print(f"[DynamicQuant] Quantizing -> {outfile}")
+    subprocess.run(cmd, check=True)
+    os.unlink(ttf_path)
+    print(f"[DynamicQuant] Done: {outfile}")
+
+
 def cmd_nf4_wrapper(args):
     """Convert to NF4 (wraps quantizer.py)."""
     from mojollama.quantizer import main as quantizer_main
@@ -1612,7 +1749,16 @@ def main():
     p_imatrix.add_argument("--threads", "-t", type=int, default=0, help="Number of threads")
     p_imatrix.add_argument("--ctx-size", "-c", type=int, default=512, help="Context size")
 
-    # nf4
+    p_dyn = sub.add_parser("dynamic-quantize", help="Dynamic per-tensor quantization guided by importance matrix")
+    p_dyn.add_argument("model", help="Path to input GGUF model")
+    p_dyn.add_argument("--imatrix", required=True, help="Importance matrix file (.dat)")
+    p_dyn.add_argument("--output", "-o", help="Output GGUF path")
+    p_dyn.add_argument("--target-bpw", type=float, help="Target bits-per-weight (auto thresholds)")
+    p_dyn.add_argument("--extreme", action="store_true", help="Use Q2_K for lowest importance (instead of Q3_K_S)")
+    p_dyn.add_argument("--dry-run", action="store_true", help="Preview assignments without quantizing")
+    p_dyn.add_argument("--verbose", action="store_true", help="Print per-tensor assignments")
+    p_dyn.add_argument("--threads", "-t", type=int, default=0, help="Number of threads")
+
     p_nf4 = sub.add_parser("nf4", help="Convert to NF4 (NormalFloat4) for QLoRA")
     p_nf4.add_argument("model", help="Path to input GGUF model")
     p_nf4.add_argument("--output", "-o", help="Output path")
@@ -1756,6 +1902,7 @@ def main():
         "dataset": cmd_dataset,
         "merge": cmd_merge,
         "quantize": cmd_quantize,
+        "dynamic-quantize": cmd_dynamic_quant,
         "imatrix": cmd_imatrix,
         "nf4": cmd_nf4_wrapper,
         "quant-types": cmd_quant_types,
