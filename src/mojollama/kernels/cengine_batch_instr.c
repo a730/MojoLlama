@@ -146,15 +146,61 @@ static void gqa(float *o, const float *q, const float *kc, const float *vc,
     }
 }
 
+/* ── PagedAttention: PageTable struct ── */
+typedef struct {
+    int page_size;       /* KV slots per page (e.g., 64) */
+    int n_pages;         /* total physical pages allocated */
+    float *pages;        /* flat: [L][n_pages][page_size][NKH*HD] for K then V */
+    int *table;          /* logical → physical page mapping (MAX_BLOCKS) */
+    int *free_pages;     /* free list of physical page IDs */
+    int free_count;      /* number of free pages */
+    int _nkh;            /* stored for convenience */
+    int _hd;
+    int _n_layers;
+} PageTable;
+
+void page_table_init(PageTable *pt, int max_pages, int page_size, int nkh, int hd, int n_layers) {
+    pt->page_size = page_size;
+    pt->n_pages = max_pages;
+    pt->_nkh = nkh;
+    pt->_hd = hd;
+    pt->_n_layers = n_layers;
+    size_t page_data = (size_t)page_size * nkh * hd;
+    size_t total = (size_t)n_layers * max_pages * page_data * 2; /* K + V */
+    pt->pages = (float*)calloc(1, total * sizeof(float));
+    pt->table = (int*)malloc(MAX_BLOCKS * sizeof(int));
+    memset(pt->table, -1, MAX_BLOCKS * sizeof(int));
+    pt->free_pages = (int*)malloc(max_pages * sizeof(int));
+    for (int i = 0; i < max_pages; i++) pt->free_pages[i] = max_pages - 1 - i;
+    pt->free_count = max_pages;
+}
+
+int page_table_alloc(PageTable *pt) {
+    if (pt->free_count <= 0) return -1;
+    return pt->free_pages[--pt->free_count];
+}
+
+void page_table_free(PageTable *pt, int page_id) {
+    if (pt->free_count < pt->n_pages)
+        pt->free_pages[pt->free_count++] = page_id;
+}
+
+void map_page(PageTable *pt, int logical_page, int physical_page) {
+    if (logical_page >= 0 && logical_page < MAX_BLOCKS)
+        pt->table[logical_page] = physical_page;
+}
+
 typedef struct {
     float *k, *v; int n_blocks, seq_len[64], block_map[64][1024];
+    PageTable pt;  /* PagedAttention page table (embedded) */
 } KVBlock;
 void kv_init(KVBlock *kv, int L, int NKH, int HD) {
     size_t sz = (size_t)L * MAX_BLOCKS * BLOCK_SIZE * NKH * HD * sizeof(float);
     kv->k = (float*)calloc(1, sz); kv->v = (float*)calloc(1, sz); kv->n_blocks = 0;
     memset(kv->block_map, -1, sizeof(kv->block_map)); memset(kv->seq_len, 0, sizeof(kv->seq_len));
+    page_table_init(&kv->pt, MAX_BLOCKS, BLOCK_SIZE, NKH, HD, L);
 }
-int kv_alloc(KVBlock *kv) { return kv->n_blocks < MAX_BLOCKS ? kv->n_blocks++ : -1; }
+int kv_alloc(KVBlock *kv) { return page_table_alloc(&kv->pt); }
 
 void q8_0_batch_matmul(const uint8_t *W, const float *x, float *out,
                        int n_rows, int nc, int B) {
@@ -650,19 +696,41 @@ void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
             
             size_t base=(size_t)l*MAX_BLOCKS*BLOCK_SIZE*NKH*HD;
             int blk=pos/BLOCK_SIZE,off=pos%BLOCK_SIZE;
-            int bid=kv->block_map[0][blk];
-            if(bid<0){bid=kv_alloc(kv);kv->block_map[0][blk]=bid;}
+            /* PagedAttention: use page table for KV cache */
+            PageTable *pt = &kv->pt;
+            int bid = (blk < MAX_BLOCKS) ? pt->table[blk] : -1;
+            if(bid<0){bid=kv_alloc(kv);if(blk<MAX_BLOCKS)pt->table[blk]=bid;}
+            /* Write to both old arrays (backward compat) and page table */
             memcpy(kv->k+base+(size_t)bid*BLOCK_SIZE*NKH*HD+off*NKH*HD, kb, NKH*HD*sizeof(float));
             memcpy(kv->v+base+(size_t)bid*BLOCK_SIZE*NKH*HD+off*NKH*HD, vb, NKH*HD*sizeof(float));
-            
+            /* Also write to page table flat array */
+            {
+                size_t page_data = (size_t)pt->page_size * NKH * HD;
+                size_t layer_stride = (size_t)pt->n_pages * page_data;
+                size_t k_base_pt = (size_t)l * layer_stride;
+                size_t v_base_pt = (size_t)pt->_n_layers * layer_stride + k_base_pt;
+                memcpy(pt->pages + k_base_pt + (size_t)bid * page_data + (size_t)off * NKH * HD,
+                       kb, NKH * HD * sizeof(float));
+                memcpy(pt->pages + v_base_pt + (size_t)bid * page_data + (size_t)off * NKH * HD,
+                       vb, NKH * HD * sizeof(float));
+            }
+
             int sl = pos + 1;
             float *kct=(float*)__builtin_alloca(sl*NKH*HD*sizeof(float));
             float *vct=(float*)__builtin_alloca(sl*NKH*HD*sizeof(float));
             for(int s=0;s<sl;s++){
-                int sb=s/BLOCK_SIZE,so=s%BLOCK_SIZE,sbid=kv->block_map[0][sb];
-                size_t src=base+(size_t)sbid*BLOCK_SIZE*NKH*HD+(size_t)so*NKH*HD;
-                memcpy(kct+s*NKH*HD, kv->k+src, NKH*HD*sizeof(float));
-                memcpy(vct+s*NKH*HD, kv->v+src, NKH*HD*sizeof(float));
+                int sb=s/BLOCK_SIZE,so=s%BLOCK_SIZE;
+                int sbid = (sb < MAX_BLOCKS) ? pt->table[sb] : -1;
+                if(sbid<0) continue;
+                /* Read from page table flat array (primary) */
+                size_t page_data = (size_t)pt->page_size * NKH * HD;
+                size_t layer_stride = (size_t)pt->n_pages * page_data;
+                size_t k_base_pt = (size_t)l * layer_stride;
+                size_t v_base_pt = (size_t)pt->_n_layers * layer_stride + k_base_pt;
+                size_t src_k = k_base_pt + (size_t)sbid * page_data + (size_t)so * NKH * HD;
+                size_t src_v = v_base_pt + (size_t)sbid * page_data + (size_t)so * NKH * HD;
+                memcpy(kct+s*NKH*HD, pt->pages+src_k, NKH*HD*sizeof(float));
+                memcpy(vct+s*NKH*HD, pt->pages+src_v, NKH*HD*sizeof(float));
             }
             gqa(att+b*N, qb, kct, vct, sl, NH, NKH, HD);
         }

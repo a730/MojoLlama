@@ -30,13 +30,20 @@ from typing import Optional, Dict, Any
 
 CONFIG_PATH = Path.home() / ".mojollama" / "config.json"
 
-def load_tuned_config() -> Optional[Dict[str, Any]]:
-    """Load auto-tuned server config, or None."""
+def load_tuned_config(section: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Load auto-tuned config.
+
+    If *section* is given (e.g. 'llama_server', 'mojollama_engine'),
+    returns only that section.  Otherwise returns the full config dict.
+    Returns None on any failure.
+    """
     try:
         if CONFIG_PATH.exists():
             with open(CONFIG_PATH) as f:
                 cfg = json.load(f)
-            return cfg.get("llama_server")
+            if section:
+                return cfg.get(section)
+            return cfg
     except Exception:
         pass
     return None
@@ -84,7 +91,8 @@ def build_server_cmd(server_path: str, model_path: str, port: int,
       - cpu_mask pins to physical cores only
     """
     if config is None:
-        config = load_tuned_config() or {}
+        cfg = load_tuned_config()
+        config = cfg.get("llama_server", {}) if cfg else {}
 
     n_cores = os.cpu_count() or 64
     # Threadripper: use physical cores only for generation

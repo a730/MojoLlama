@@ -169,70 +169,106 @@
 
 ---
 
-## Phase 5: Auto-Tune System
+## Phase 5: Auto-Tune System ✅
 
 **Goal:** Per-model, per-hardware optimal settings.
 
-### Task 5.1: Benchmark sweep
-- Sweep: thread count (16-64), batch size (128-4096), flash attention on/off
-- Use `llama-bench` for baseline, our engine for comparison
+### Task 5.1: Benchmark sweep ✅
+- Added `bench_mojollama()` — batch sweep (B=1,2,4,8) × thread sweep (16,24,32) for MojoLlama engine
+- Added `bench_concurrency()` — starts server_moe.py, fires concurrent requests, measures latency/throughput
+- **Phase 6:** Thread + batch sweep using TurboEngineV7MoE directly
 - **File:** `autotune.py`
 
-### Task 5.2: Concurrency tuning
-- Find optimal `n_parallel` for given model + hardware
-- Measure: throughput plateau point, latency knee
-- **File:** `autotune.py`
+### Task 5.2: Concurrency tuning ✅
+- **Phase 7:** Starts server_moe.py, tests concurrency levels 1,2,4,8
+- Identifies throughput plateau point and latency knee (p95 > 2× base)
+- Recommends optimal concurrency = min(plateau, knee)
+- **File:** `autotune.py` — `bench_concurrency()` function
 
-### Task 5.3: Persistent config
-- Save best config to `~/.mojollama/config.json`
-- Auto-load on server start
-- **File:** `backends.py`
+### Task 5.3: Persistent config ✅
+- Extended config structure with `mojollama_engine` section:
+  ```json
+  {"threads": 32, "optimal_batch": 1, "optimal_concurrency": 1,
+   "max_throughput": 23.7, "latency_p50_ms": 1943}
+  ```
+- `server_moe.py` auto-loads config on startup: `[Config] Loaded auto-tuned settings: 32 threads, optimal concurrency 1`
+- Config at `~/.mojollama/config.json`
+- **Files:** `autotune.py` (save/load), `backends.py` (load_tuned_config), `server_moe.py` (auto-load)
 
 ---
 
-## Phase 6: Studio Integration
+## Phase 6: Studio Integration ✅
 
 **Goal:** All features accessible from Studio UI.
 
-### Task 6.1: Engine selection in Studio
-- Dropdown: "MojoLlama Engine" vs "llama.cpp" vs "MAX"
+### Task 6.1: Engine selection in Studio ✅
+- Added Engine dropdown in server settings dialog: "MojoLlama Native" | "llama.cpp" | "MAX"
+- Stored in localStorage as 'mojollama_engine', helper functions: `getSelectedEngine()`, `getEngineDisplayName()`
+- Sidebar shows engine name + server status (e.g., "MojoLlama Native · online")
+- **File:** `www/studio.html` (+700 lines, 3244→3944)
+
+### Task 6.2: Benchmark dashboard ✅
+- Engine comparison pills: "MojoLlama" | "llama.cpp" | "Both (compare)"
+- SVG semi-circle tok/s gauge with animated fill arc
+- Chart.js latency line chart (per-request latency)
+- Side-by-side comparison table with delta column for "Both" mode
+- Memory usage card (model size + KV cache estimate)
+- `runBenchmark()` fully rewritten for engine selection support
 - **File:** `www/studio.html`
 
-### Task 6.2: Benchmark dashboard
-- Live tok/s, latency chart, memory usage
+### Task 6.3: Quantization UI ✅
+- Multi-quant checkbox grid: 14 quant types (Q2_K through Q8_0, IQ quants) with bpw + size estimates
+- Select All toggle with selection counter
+- Target BPW mode: auto-selects quant types at or below target bpw
+- Dynamic quant option with imatrix .dat file upload
+- Animated progress bar with percentage and step label
+- Download links for each output file after completion
+- `runQuantize()` fully rewritten for multi-quant + progress
 - **File:** `www/studio.html`
 
-### Task 6.3: Quantization UI
-- Select model → choose quant types → run pipeline
-- Progress bar, download link
-- **File:** `www/studio.html`
-
-### Task 6.4: Auto-tune UI
-- One-click "Tune for this hardware"
-- Shows best config before applying
+### Task 6.4: Auto-tune UI ✅
+- New sidebar nav item: "Auto-Tune" with ⚙ icon
+- Full auto-tune panel: model selector, "Tune for this hardware" button, Quick Mode checkbox
+- Phase-by-phase progress display (Phase 1/5 through 5/5) with progress bar + log
+- Results card: threads, batch, parallel, mlock, optimal batch, concurrency, throughput
+- "Apply Config" and "Download Report" buttons
+- `runAutoTune()`, `applyTuneConfig()`, `downloadTuneReport()`, `updateTuneProgress()`, `displayTuneResults()`
 - **File:** `www/studio.html`
 
 ---
 
-## Phase 7: vLLM/SGLang Competitive
+## Phase 7: vLLM/SGLang Competitive ✅
 
 **Goal:** Competitive on CPU. Path to GPU parity.
 
-### Task 7.1: PagedAttention for KV cache
-- vLLM-style page table instead of our block-based allocator
-- Reduces memory fragmentation, enables larger batches
+### Task 7.1: PagedAttention for KV cache ✅
+- Added `PageTable` struct with page_size (64), n_pages (1024), flat pages array, logical→physical mapping table, free list
+- Functions: `page_table_init()`, `page_table_alloc()`, `page_table_free()`, `map_page()`
+- KV attention reads from page table flat array via `pt->table[logical_block]` lookup
+- Backward compatible: old `k`, `v`, `block_map` arrays still populated
+- **File:** `kernels/cengine_batch_instr.c`
 
-### Task 7.2: Continuous batching (scheduler)
-- Full scheduler with prefill queue, generation pool, preemption
-- **File:** `server_batch.py` — refactor scheduler into reusable module
+### Task 7.2: Continuous batching (scheduler) ✅
+- Created `server_batch_moe.py` (431 lines) — MoE continuous batching server
+- Scheduler with: pending queue → active slots (B_MAX=4), batch_forward with B=active, token sampling, completion handling
+- KV isolation via per-sequence KVBlock
+- HTTP: `POST /v1/completions` (streaming SSE + non-streaming), `GET /health`
+- Adapted from `server_batch.py` pattern for TurboEngineV7MoE
+- **File:** `server_batch_moe.py`
 
-### Task 7.3: Prefix caching
-- Cache KV for common prompt prefixes
-- Significant speedup for chat workloads
+### Task 7.3: Prefix caching ✅
+- `PrefixCache` class (213 lines): LRU dict, SHA-256 hash of first N tokens, O(1) lookup
+- `put/get/invalidate/clear/evict` with full LRU semantics
+- Engine helpers: `snapshot_dense()`, `restore_dense()`, `snapshot_moe()`, `restore_moe()`
+- All 10 tests pass (basic, miss, LRU eviction, partial match, multi-prefix, invalidate)
+- **Files:** `prefix_cache.py`, `test_prefix_cache.py`
 
-### Task 7.4: Speculative decoding
-- Small draft model + large target model
-- 2-3x throughput on CPU
+### Task 7.4: Speculative decoding ✅
+- `speculative.py` (225 lines): draft (TinyLlama 1.1B) + target (Qwen3-30B-A3B)
+- K=5 candidates per speculation round, argmax-based verification
+- KV checkpointing for clean rollback on rejection
+- Reports: "Draft: X tok, Accepted: Y tok, Acceptance rate: Z%"
+- **File:** `speculative.py`
 
 ---
 

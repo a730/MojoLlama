@@ -9,9 +9,24 @@ from socketserver import ThreadingMixIn
 MODEL_PATH = sys.argv[1] if len(sys.argv) > 1 else '/tmp/models/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf'
 PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 8080
 
+# Auto-load tuned config for thread count & concurrency
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_moe_threads = 32
+try:
+    from mojollama.backends import load_tuned_config
+    _cfg = load_tuned_config()
+    if _cfg and 'mojollama_engine' in _cfg:
+        _me = _cfg['mojollama_engine']
+        _moe_threads = _me.get('threads', 32)
+        os.environ['OMP_NUM_THREADS'] = str(_moe_threads)
+        print(f"[Config] Loaded auto-tuned settings: {_moe_threads} threads, "
+              f"optimal concurrency {_me.get('optimal_concurrency', '?')}", flush=True)
+except Exception:
+    pass
+
 sys.path.insert(0,os.path.join(os.path.dirname(os.path.abspath(__file__)),'kernels'))
 from turbo_engine_v7_moe import TurboEngineV7MoE
-e = TurboEngineV7MoE(MODEL_PATH, 32)
+e = TurboEngineV7MoE(MODEL_PATH, _moe_threads)
 L=e.n_layers; N=e.n_embd; NH=e.n_head; NKH=e.n_kv_head; HD=e.head_dim; FF=e.n_ff; V=e.vocab_size
 NE=e.n_experts; NK=e.n_experts_per_tok; moe_int=e.n_ff_expert
 S = max(N, NH*HD, FF, NKH*HD, moe_int); BOS=1; EOS=2

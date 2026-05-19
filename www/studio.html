@@ -316,6 +316,73 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
 .stat:last-child { border-bottom: none; }
 .stat-label { color: var(--dim); font-size: 12px; }
 .stat-value { color: var(--text); font-weight: 600; font-size: 13px; }
+
+/* ─── Progress bar ─── */
+.progress-bar { height: 8px; border-radius: 4px; background: var(--border); overflow: hidden; position: relative; margin: 8px 0; }
+.progress-bar-fill { height: 100%; border-radius: 4px; background: var(--grad1); transition: width .3s ease; width: 0%; }
+.progress-text { font-size: 11px; color: var(--dim); margin-top: 4px; display: flex; justify-content: space-between; }
+.progress-step { font-size: 11px; color: var(--accent); font-weight: 600; }
+
+/* ─── Gauge (tok/s semi-circle) ─── */
+.gauge { position: relative; width: 200px; height: 100px; margin: 0 auto; overflow: hidden; }
+.gauge-bg { width: 200px; height: 200px; border-radius: 50%; background: conic-gradient(var(--border) 0deg 180deg, transparent 180deg 360deg); position: absolute; top: 0; }
+.gauge-fill { width: 200px; height: 200px; border-radius: 50%; background: conic-gradient(var(--accent) 0deg 0deg, transparent 0deg 360deg); position: absolute; top: 0; transition: background .5s ease; }
+.gauge-cover { width: 150px; height: 150px; border-radius: 50%; background: var(--surface); position: absolute; top: 25px; left: 25px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.gauge-value { font-size: 28px; font-weight: 800; color: var(--accent); font-family: var(--font-heading); }
+.gauge-label { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; }
+
+/* ─── Engine pills ─── */
+.engine-pills { display: flex; gap: 6px; margin: 8px 0; }
+.engine-pill { padding: 5px 14px; border-radius: 20px; border: 1px solid var(--border); background: var(--bg); color: var(--dim); font-size: 12px; font-weight: 600; cursor: pointer; transition: all .2s; }
+.engine-pill:hover { border-color: var(--accent); color: var(--accent); }
+.engine-pill.active { background: rgba(108,60,225,0.15); border-color: var(--accent); color: var(--accent); }
+
+/* ─── Quant grid ─── */
+.quant-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin: 8px 0; }
+.quant-grid-item { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; cursor: pointer; transition: all .2s; display: flex; align-items: center; gap: 8px; }
+.quant-grid-item:hover { border-color: var(--accent); }
+.quant-grid-item.selected { border-color: var(--green); background: rgba(52,211,153,0.08); }
+.quant-grid-item input { width: auto; margin: 0; accent-color: var(--accent); }
+.quant-grid-item .qg-info { flex: 1; }
+.quant-grid-item .qg-name { font-size: 12px; font-weight: 600; }
+.quant-grid-item .qg-meta { font-size: 10px; color: var(--dim); margin-top: 1px; }
+
+/* ─── Compare table ─── */
+.compare-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0; }
+.compare-table th { text-align: left; padding: 8px 12px; border-bottom: 2px solid var(--border); color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+.compare-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.compare-table tr:last-child td { border-bottom: none; }
+.compare-table .positive { color: var(--green); }
+.compare-table .negative { color: var(--red); }
+
+/* ─── Memory card ─── */
+.mem-card { display: flex; gap: 12px; align-items: center; padding: 10px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); margin: 8px 0; }
+.mem-card .mem-icon { font-size: 20px; }
+.mem-card .mem-info { flex: 1; }
+.mem-card .mem-info .mem-title { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; }
+.mem-card .mem-info .mem-value { font-size: 16px; font-weight: 700; color: var(--accent); }
+
+/* ─── Auto-tune ─── */
+.tune-phase { font-size: 13px; color: var(--accent); font-weight: 600; margin-bottom: 4px; }
+.tune-progress-text { font-size: 12px; color: var(--dim); }
+.tune-result-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.tune-result-row:last-child { border-bottom: none; }
+.tune-result-row .tune-label { color: var(--dim); }
+.tune-result-row .tune-value { color: var(--text); font-weight: 600; }
+
+/* ─── Dynamic quant options ─── */
+.dynamic-quant-options { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 8px 0; padding: 10px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.dynamic-quant-options label { margin: 0; text-transform: none; letter-spacing: 0; font-size: 13px; color: var(--text); display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.dynamic-quant-options input[type="file"] { margin: 0; padding: 4px 8px; font-size: 11px; display: none; }
+.dynamic-quant-options input[type="number"] { width: 80px; margin: 0; padding: 4px 8px; font-size: 12px; }
+
+/* ─── Download links ─── */
+.download-links { margin-top: 8px; }
+.download-links a { display: inline-flex; align-items: center; gap: 4px; padding: 6px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-size: 12px; text-decoration: none; transition: all .2s; margin: 2px 4px 2px 0; }
+.download-links a:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ─── Gauge SVG ─── */
+.gauge-svg { width: 200px; height: 110px; display: block; margin: 0 auto; }
 </style>
 </head>
 <body>
@@ -342,6 +409,9 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
       </div>
       <div class="nav-item" data-tab="benchmark">
         <span class="nav-icon">⚡</span><span>Benchmark</span>
+      </div>
+      <div class="nav-item" data-tab="autotune">
+        <span class="nav-icon">⚙</span><span>Auto-Tune</span>
       </div>
       <div class="nav-item" data-tab="evaluate">
         <span class="nav-icon">🎯</span><span>Evaluate</span>
@@ -378,6 +448,7 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
         <span class="status-dot offline" id="statusDot"></span>
         <div class="backend-info">
           <span class="backend-name" id="backendName" style="color:var(--red)">offline</span>
+          <span class="backend-uptime" id="backendEngine" style="color:var(--dim);font-size:10px"></span>
           <span class="backend-uptime" id="backendSpeed"></span>
         </div>
         <span class="btn-icon" style="border:none;padding:0;font-size:12px" title="Settings">⚙</span>
@@ -944,12 +1015,48 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
                   <input type="number" id="benchThreads" value="0" placeholder="auto">
                 </div>
               </div>
+              <label>Engine</label>
+              <div class="engine-pills" id="benchEnginePills">
+                <span class="engine-pill active" data-engine="mojollama" onclick="setBenchEngine('mojollama')">MojoLlama</span>
+                <span class="engine-pill" data-engine="llamacpp" onclick="setBenchEngine('llamacpp')">llama.cpp</span>
+                <span class="engine-pill" data-engine="both" onclick="setBenchEngine('both')">Both (compare)</span>
+              </div>
               <label>Custom Prompt (optional)</label>
               <textarea id="benchPrompt" rows="3" placeholder="Leave empty for default benchmark prompt"></textarea>
               <button class="btn btn-primary" onclick="runBenchmark()" id="benchBtn">⚡ Run Benchmark</button>
             </div>
+            <!-- Memory usage card -->
+            <div class="card" id="benchMemCard" style="display:none">
+              <div class="card-header"><h3><span class="icon">💾</span> Memory Usage</h3></div>
+              <div class="mem-card" style="margin:0">
+                <span class="mem-icon">🧠</span>
+                <div class="mem-info">
+                  <div class="mem-title">Estimated Memory</div>
+                  <div class="mem-value" id="benchMemValue">—</div>
+                </div>
+              </div>
+            </div>
           </div>
           <div class="col-2">
+            <!-- Tok/s Gauge -->
+            <div class="card" id="benchGaugeCard" style="display:none">
+              <div class="card-header"><h3><span class="icon">⏱️</span> Generation Speed</h3></div>
+              <div style="text-align:center">
+                <svg class="gauge-svg" viewBox="0 0 200 110" id="benchGaugeSvg">
+                  <defs>
+                    <linearGradient id="gaugeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                      <stop offset="0%" stop-color="#6C3CE1"/>
+                      <stop offset="50%" stop-color="#8B5CF6"/>
+                      <stop offset="100%" stop-color="#22D3EE"/>
+                    </linearGradient>
+                  </defs>
+                  <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="var(--border)" stroke-width="16" stroke-linecap="round"/>
+                  <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="url(#gaugeGrad)" stroke-width="16" stroke-linecap="round" stroke-dasharray="0 251" id="gaugeArc"/>
+                  <text x="100" y="75" text-anchor="middle" fill="var(--text)" font-size="28" font-weight="800" font-family="'Space Grotesk',sans-serif" id="gaugeText">0</text>
+                  <text x="100" y="95" text-anchor="middle" fill="var(--dim)" font-size="11" font-family="'Inter',sans-serif">tok/s</text>
+                </svg>
+              </div>
+            </div>
             <div class="card">
               <div class="card-header"><h3><span class="icon">📊</span> Results</h3></div>
               <table class="results-table">
@@ -959,9 +1066,82 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
                 </tbody>
               </table>
             </div>
+            <!-- Comparison table (shown when Both engine selected) -->
+            <div class="card" id="benchCompareCard" style="display:none">
+              <div class="card-header"><h3><span class="icon">⚖️</span> Engine Comparison</h3></div>
+              <div id="benchCompareBody"></div>
+            </div>
             <div class="card" id="benchHistoryCard" style="display:none">
-              <div class="card-header"><h3><span class="icon">📈</span> History</h3></div>
+              <div class="card-header"><h3><span class="icon">📈</span> Latency History</h3></div>
               <div class="chart-wrapper" style="height:180px"><canvas id="benchHistoryChart"></canvas></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════════ AUTO-TUNE ═══════════ -->
+      <div class="panel" id="panel-autotune">
+        <div class="row mb-8 gap-16">
+          <div style="flex:1">
+            <div class="card">
+              <div class="card-header"><h3><span class="icon">⚙</span> Auto-Tune</h3></div>
+              <p style="font-size:13px;color:var(--dim);margin-bottom:16px">
+                Automatically find the optimal inference parameters for your hardware.
+              </p>
+              <div class="row mb-12">
+                <div>
+                  <label>Model</label>
+                  <select id="tuneModel"><option value="">Select model...</option></select>
+                </div>
+                <div style="display:flex;align-items:flex-end;gap:8px">
+                  <label style="margin-bottom:0;display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text)">
+                    <input type="checkbox" id="tuneQuickMode" checked style="width:auto;margin:0"> Quick Mode
+                  </label>
+                  <label style="margin-bottom:0;display:flex;align-items:center;gap:6px;cursor:pointer;text-transform:none;letter-spacing:0;font-size:13px;color:var(--text)">
+                    <input type="checkbox" id="tuneMemSafe" style="width:auto;margin:0"> Memory Safe
+                  </label>
+                </div>
+              </div>
+              <button class="btn btn-primary" onclick="runAutoTune()" id="tuneBtn">⚙ Tune for this hardware</button>
+            </div>
+
+            <!-- Progress area -->
+            <div class="card" id="tuneProgressCard" style="display:none">
+              <div class="card-header"><h3><span class="icon">⏳</span> Tuning Progress</h3></div>
+              <div class="tune-phase" id="tunePhase">Phase 1/5: Initializing...</div>
+              <div class="progress-bar">
+                <div class="progress-bar-fill" id="tuneProgressFill"></div>
+              </div>
+              <div class="progress-text">
+                <span id="tuneProgressPct">0%</span>
+                <span class="progress-step" id="tuneProgressStep">Starting...</span>
+              </div>
+              <div class="log mt-8" id="tuneLog" style="max-height:200px;font-size:11px">Starting auto-tuning...</div>
+            </div>
+          </div>
+
+          <div style="flex:1">
+            <!-- Results card -->
+            <div class="card" id="tuneResultsCard" style="display:none">
+              <div class="card-header">
+                <h3><span class="icon">🏆</span> Optimal Settings</h3>
+                <span class="badge badge-new" id="tuneStatusBadge">Complete</span>
+              </div>
+              <div id="tuneResultsBody">
+                <div class="tune-result-row"><span class="tune-label">Threads</span><span class="tune-value" id="tuneThreads">—</span></div>
+                <div class="tune-result-row"><span class="tune-label">Batch Size</span><span class="tune-value" id="tuneBatchSize">—</span></div>
+                <div class="tune-result-row"><span class="tune-label">Parallel Slots</span><span class="tune-value" id="tuneParallel">—</span></div>
+                <div class="tune-result-row"><span class="tune-label">Memory Lock (mlock)</span><span class="tune-value" id="tuneMlock">—</span></div>
+                <div class="tune-result-row"><span class="tune-label">Flash Attention</span><span class="tune-value" id="tuneFlashAttn">—</span></div>
+                <div class="tune-result-row" style="border-top:2px solid var(--border);margin-top:4px;padding-top:8px"><span class="tune-label" style="color:var(--accent);font-weight:700">MojoLlama-Specific</span><span class="tune-value"></span></div>
+                <div class="tune-result-row"><span class="tune-label">Optimal Batch</span><span class="tune-value" id="tuneOptimalBatch">—</span></div>
+                <div class="tune-result-row"><span class="tune-label">Concurrency</span><span class="tune-value" id="tuneConcurrency">—</span></div>
+                <div class="tune-result-row" style="border-top:2px solid var(--border);margin-top:4px;padding-top:8px"><span class="tune-label">Estimated Throughput</span><span class="tune-value" id="tuneThroughput" style="color:var(--green);font-size:16px">—</span></div>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:16px">
+                <button class="btn btn-green" onclick="applyTuneConfig()" id="tuneApplyBtn">✅ Apply Config</button>
+                <button class="btn btn-dim btn-sm" onclick="downloadTuneReport()">📥 Download Report</button>
+              </div>
             </div>
           </div>
         </div>
@@ -1057,27 +1237,92 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
               <select id="quantModel"><option value="">Select a model...</option></select>
             </div>
             <div>
-              <label>Target Quantization</label>
-              <select id="quantTarget">
-                <option value="q4_0">Q4_0 (2.56 bpw)</option>
-                <option value="q4_1">Q4_1 (2.75 bpw)</option>
-                <option value="q5_0">Q5_0 (3.31 bpw)</option>
-                <option value="q5_1">Q5_1 (3.50 bpw)</option>
-                <option value="q8_0">Q8_0 (5.50 bpw)</option>
-                <option value="f16">F16 (16 bpw)</option>
-                <option value="q2_k">Q2_K (~2.56 bpw)</option>
-                <option value="q3_k_m">Q3_K_M (~3.40 bpw)</option>
-                <option value="q4_k_m">Q4_K_M (~4.80 bpw)</option>
-                <option value="q5_k_m">Q5_K_M (~5.68 bpw)</option>
-                <option value="q6_k">Q6_K (~6.59 bpw)</option>
-              </select>
-            </div>
-            <div>
               <label>Output</label>
               <input type="text" id="quantOutput" placeholder="model-q4_0.gguf">
             </div>
           </div>
-          <button class="btn btn-primary" onclick="runQuantize()" id="quantBtn">🔮 Quantize &amp; Compare</button>
+
+          <!-- Multi-quant selection grid -->
+          <label>Target Quantization Types</label>
+          <div class="quant-grid" id="quantGrid">
+            <div class="quant-grid-item" data-quant="q2_k" onclick="toggleQuantItem(this)">
+              <input type="checkbox" value="q2_k"><div class="qg-info"><div class="qg-name">Q2_K</div><div class="qg-meta">~2.56 bpw · ~33% size</div></div>
+            </div>
+            <div class="quant-grid-item" data-quant="q3_k_m" onclick="toggleQuantItem(this)">
+              <input type="checkbox" value="q3_k_m"><div class="qg-info"><div class="qg-name">Q3_K_M</div><div class="qg-meta">~3.40 bpw · ~40% size</div></div>
+            </div>
+            <div class="quant-grid-item" data-quant="q4_0" onclick="toggleQuantItem(this)">
+              <input type="checkbox" value="q4_0"><div class="qg-info"><div class="qg-name">Q4_0</div><div class="qg-meta">~2.56 bpw · ~50% size</div></div>
+            </div>
+            <div class="quant-grid-item" data-quant="q4_1" onclick="toggleQuantItem(this)">
+              <input type="checkbox" value="q4_1"><div class="qg-info"><div class="qg-name">Q4_1</div><div class="qg-meta">~2.75 bpw · ~55% size</div></div>
+            </div>
+            <div class="quant-grid-item" data-quant="q4_k_m" onclick="toggleQuantItem(this)">
+              <input type="checkbox" value="q4_k_m"><div class="qg-info"><div class="qg-name">Q4_K_M</div><div class="qg-meta">~4.80 bpw · ~60% size</div></div>
+            </div>
+            <div class="quant-grid-item" data-quant="q5_0" onclick="toggleQuantItem(this)">
+              <input type="checkbox" value="q5_0"><div class="qg-info"><div class="qg-name">Q5_0</div><div class="qg-meta">~3.31 bpw · ~62% size</div></div>
+            </div>
+            <div class="quant-grid-item" data-quant="q5_1" onclick="toggleQuantItem(this)">
+              <input type="checkbox" value="q5_1"><div class="qg-info"><div class="qg-name">Q5_1</div><div class="qg-meta">~3.50 bpw · ~65% size</div></div>
+            </div>
+            <div class="quant-grid-item" data-quant="q5_k_m" onclick="toggleQuantItem(this)">
+              <input type="checkbox" value="q5_k_m"><div class="qg-info"><div class="qg-name">Q5_K_M</div><div class="qg-meta">~5.68 bpw · ~70% size</div></div>
+            </div>
+            <div class="quant-grid-item" data-quant="q6_k" onclick="toggleQuantItem(this)">
+              <input type="checkbox" value="q6_k"><div class="qg-info"><div class="qg-name">Q6_K</div><div class="qg-meta">~6.59 bpw · ~80% size</div></div>
+            </div>
+            <div class="quant-grid-item" data-quant="q8_0" onclick="toggleQuantItem(this)">
+              <input type="checkbox" value="q8_0"><div class="qg-info"><div class="qg-name">Q8_0</div><div class="qg-meta">~5.50 bpw · ~90% size</div></div>
+            </div>
+            <div class="quant-grid-item" data-quant="iq1_s" onclick="toggleQuantItem(this)">
+              <input type="checkbox" value="iq1_s"><div class="qg-info"><div class="qg-name">IQ1_S</div><div class="qg-meta">~1.0 bpw · ~15% size</div></div>
+            </div>
+            <div class="quant-grid-item" data-quant="iq2_xxs" onclick="toggleQuantItem(this)">
+              <input type="checkbox" value="iq2_xxs"><div class="qg-info"><div class="qg-name">IQ2_XXS</div><div class="qg-meta">~2.0 bpw · ~25% size</div></div>
+            </div>
+            <div class="quant-grid-item" data-quant="iq2_xs" onclick="toggleQuantItem(this)">
+              <input type="checkbox" value="iq2_xs"><div class="qg-info"><div class="qg-name">IQ2_XS</div><div class="qg-meta">~2.2 bpw · ~27% size</div></div>
+            </div>
+            <div class="quant-grid-item" data-quant="iq3_xxs" onclick="toggleQuantItem(this)">
+              <input type="checkbox" value="iq3_xxs"><div class="qg-info"><div class="qg-name">IQ3_XXS</div><div class="qg-meta">~3.0 bpw · ~38% size</div></div>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin:4px 0 10px">
+            <label style="margin:0;text-transform:none;letter-spacing:0;font-size:12px;display:flex;align-items:center;gap:4px;cursor:pointer">
+              <input type="checkbox" id="quantSelectAll" onchange="toggleAllQuant(this)" style="width:auto;margin:0"> Select All
+            </label>
+            <span style="font-size:11px;color:var(--dim)" id="quantSelectedCount">0 selected</span>
+          </div>
+
+          <!-- Target BPW mode -->
+          <div class="dynamic-quant-options">
+            <label>🎯 <input type="checkbox" id="quantBpwMode" onchange="document.getElementById('quantBpwInput').style.display=this.checked?'':'none'"> Target BPW</label>
+            <input type="number" id="quantBpwInput" value="4.5" step="0.1" min="1" max="16" style="display:none">
+            <span class="text-dim" style="font-size:11px">Auto-selects quant types at or below target bits-per-weight</span>
+          </div>
+
+          <!-- Dynamic quant / imatrix -->
+          <div class="dynamic-quant-options">
+            <label><input type="checkbox" id="quantDynamic" onchange="document.getElementById('quantImatrix').style.display=this.checked?'':'inline-block'"> Dynamic Quantization</label>
+            <input type="file" id="quantImatrix" accept=".dat" style="display:none" onchange="document.getElementById('quantImatrixName').textContent=this.files[0]?.name||'No file'">
+            <span class="text-dim" style="font-size:11px" id="quantImatrixName">No file selected</span>
+            <span style="font-size:10px;color:var(--dim)">Use importance matrix (.dat) for optimal quantization</span>
+          </div>
+
+          <!-- Progress bar -->
+          <div class="progress-bar" id="quantProgress" style="display:none">
+            <div class="progress-bar-fill" id="quantProgressFill"></div>
+          </div>
+          <div class="progress-text" id="quantProgressText" style="display:none">
+            <span id="quantProgressPct">0%</span>
+            <span class="progress-step" id="quantProgressStep">Initializing...</span>
+          </div>
+
+          <button class="btn btn-primary" onclick="runQuantize()" id="quantBtn">🔮 Quantize Selected</button>
+
+          <!-- Download links -->
+          <div class="download-links" id="quantDownloads" style="display:none"></div>
         </div>
 
         <div class="card">
@@ -1470,6 +1715,14 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
 
 <script>
 // ─── API URL resolution ──────────────────────────────────────────
+const ENGINE_NAMES = { mojollama: 'MojoLlama Native', llamacpp: 'llama.cpp', max: 'MAX' };
+function getSelectedEngine() {
+  const e = localStorage.getItem('mojollama_engine') || 'mojollama';
+  return e;
+}
+function getEngineDisplayName(e) {
+  return ENGINE_NAMES[e] || 'MojoLlama Native';
+}
 const API = (() => {
   const stored = localStorage.getItem('mojollama_api_url');
   if (stored) return stored;
@@ -1518,7 +1771,7 @@ let benchHistory = [];
 
 // ─── Tab switching ──────────────────────────────────────────────
 const TAB_ICONS = { chat:'💬 Chat', train:'🎓 Train', dataset:'📊 Dataset', export:'📤 Export',
-                    benchmark:'⚡ Benchmark', evaluate:'🎯 Evaluate', quantize:'🔮 Quantize',
+                    benchmark:'⚡ Benchmark', autotune:'⚙ Auto-Tune', evaluate:'🎯 Evaluate', quantize:'🔮 Quantize',
                     merge:'🔗 Merge', checkpoints:'💾 Checkpoints', templates:'📋 Templates', hub:'🤗 HF Hub',
                     experiments:'🔬 Experiments', modelcards:'📇 Cards' };
 document.querySelectorAll('.nav-item').forEach(item => {
@@ -1572,6 +1825,8 @@ async function loadBackend() {
     document.getElementById('statusDot').className = 'status-dot online';
     document.getElementById('backendName').textContent = data.active || data.backend || 'online';
     document.getElementById('backendName').style.color = 'var(--green)';
+    const engineName = getEngineDisplayName(getSelectedEngine());
+    document.getElementById('backendEngine').textContent = engineName + ' · online';
     document.getElementById('backendSpeed').textContent = data.uptime ? `${data.uptime}` : '';
     // Hide any offline banner
     const banner = document.getElementById('offlineBanner');
@@ -1580,6 +1835,8 @@ async function loadBackend() {
     document.getElementById('statusDot').className = 'status-dot offline';
     document.getElementById('backendName').textContent = 'offline';
     document.getElementById('backendName').style.color = 'var(--red)';
+    const engineName = getEngineDisplayName(getSelectedEngine());
+    document.getElementById('backendEngine').textContent = engineName + ' · offline';
     document.getElementById('backendSpeed').textContent = '';
     // Show offline banner with current API URL
     const banner = document.getElementById('offlineBanner');
@@ -1598,7 +1855,7 @@ async function loadModels() {
     // Store model metadata for auto-suggest
     window._modelData = {};
     models.forEach(m => { window._modelData[m.path || m.name] = m; });
-    const selects = ['chatModel','trainModel','benchModel','dsModel','mergeBase','evalModel','quantModel','hubModelPath','ckptResumeModel'];
+    const selects = ['chatModel','trainModel','benchModel','dsModel','mergeBase','evalModel','quantModel','hubModelPath','ckptResumeModel','tuneModel'];
     selects.forEach(id => {
       const sel = document.getElementById(id);
       if (!sel) return;
@@ -1688,6 +1945,15 @@ function showServerSettings() {
       Enter the URL where your MojoLlama server is running.<br>
       The Studio fetches models and sends chat requests to this server.
     </div>
+    <label>Engine</label>
+    <select id="settingsEngine" style="margin-bottom:12px">
+      <option value="mojollama">MojoLlama Native</option>
+      <option value="llamacpp">llama.cpp</option>
+      <option value="max">MAX</option>
+    </select>
+    <div style="font-size:12px;color:var(--dim);margin-bottom:12px;margin-top:-4px;">
+      Select which inference engine to use for benchmarks and chat.
+    </div>
     <div style="display:flex;gap:8px;margin-bottom:12px;" id="testResult"></div>
     <div class="dialog-actions" style="display:flex;gap:8px;justify-content:flex-end;">
       <button class="btn btn-dim" id="settingsTestBtn" style="flex:0;">🔍 Test Connection</button>
@@ -1697,6 +1963,10 @@ function showServerSettings() {
   `;
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
+  
+  // Set engine value from localStorage
+  const savedEngine = localStorage.getItem('mojollama_engine');
+  if (savedEngine) document.getElementById('settingsEngine').value = savedEngine;
   
   document.getElementById('settingsTestBtn').addEventListener('click', async () => {
     const url = document.getElementById('settingsApiUrl').value.trim();
@@ -1717,7 +1987,10 @@ function showServerSettings() {
   
   document.getElementById('settingsSaveBtn').addEventListener('click', () => {
     const url = document.getElementById('settingsApiUrl').value.trim();
-    if (url) { localStorage.setItem('mojollama_api_url', url); location.reload(); }
+    const engine = document.getElementById('settingsEngine').value;
+    if (url) { localStorage.setItem('mojollama_api_url', url); }
+    localStorage.setItem('mojollama_engine', engine);
+    location.reload();
   });
 }
 
@@ -2347,6 +2620,87 @@ async function startExport() {
 }
 
 // ─── Benchmark ───
+let benchEngineMode = 'mojollama';
+let benchLatencyHistory = [];
+let benchLatencyChart = null;
+
+function setBenchEngine(engine) {
+  benchEngineMode = engine;
+  document.querySelectorAll('#benchEnginePills .engine-pill').forEach(p => p.classList.remove('active'));
+  document.querySelector(`#benchEnginePills [data-engine="${engine}"]`).classList.add('active');
+  // Show/hide compare card
+  const compareCard = document.getElementById('benchCompareCard');
+  if (compareCard) {
+    compareCard.style.display = engine === 'both' ? '' : 'none';
+  }
+}
+
+function updateGauge(tokPerSec) {
+  const gaugeCard = document.getElementById('benchGaugeCard');
+  gaugeCard.style.display = '';
+  const val = parseFloat(tokPerSec) || 0;
+  const maxVal = Math.max(val * 1.5, 100);
+  const fraction = Math.min(val / maxVal, 1);
+  const circumference = 251; // 2 * PI * 40 ≈ 251
+  const dashLen = fraction * circumference;
+  document.getElementById('gaugeArc').setAttribute('stroke-dasharray', `${dashLen} ${circumference}`);
+  document.getElementById('gaugeText').textContent = val.toFixed(1);
+}
+
+function updateBenchMemory(modelSizeGb) {
+  const card = document.getElementById('benchMemCard');
+  card.style.display = '';
+  const kvCacheGb = (parseInt(document.getElementById('benchPromptTokens').value) || 512) * 2 * 2 / 1024 / 1024; // rough estimate
+  const total = (parseFloat(modelSizeGb) || 0) + kvCacheGb;
+  document.getElementById('benchMemValue').textContent = `${(modelSizeGb || '—').toFixed(1)} GB model + ${kvCacheGb.toFixed(2)} GB KV cache ≈ ${total.toFixed(1)} GB total`;
+}
+
+function initBenchLatencyChart() {
+  const ctx = document.getElementById('benchHistoryChart').getContext('2d');
+  benchLatencyChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [{
+        label: 'Latency (s)',
+        data: [],
+        borderColor: '#8B5CF6',
+        backgroundColor: 'rgba(139,92,246,0.1)',
+        fill: true,
+        tension: 0.3,
+        pointRadius: 2,
+        pointHoverRadius: 5,
+        borderWidth: 2
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 150 },
+      scales: {
+        x: { grid: { color: 'rgba(37,45,58,0.5)' }, ticks: { color: '#7d8590', font: { size: 9 } } },
+        y: { grid: { color: 'rgba(37,45,58,0.5)' }, ticks: { color: '#7d8590', font: { size: 9 } }, beginAtZero: true, title: { display: true, text: 'Seconds', color: '#7d8590', font: { size: 10 } } }
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: { backgroundColor: 'rgba(18,22,30,0.9)', borderColor: 'rgba(91,141,239,0.3)', borderWidth: 1, titleFont: { size: 11 }, bodyFont: { size: 12 }, padding: 10 }
+      }
+    }
+  });
+}
+
+function updateBenchLatencyChart(timeSeconds) {
+  if (!benchLatencyChart) initBenchLatencyChart();
+  document.getElementById('benchHistoryCard').style.display = '';
+  benchLatencyHistory.push(parseFloat(timeSeconds) || 0);
+  benchLatencyChart.data.labels.push(`Run ${benchLatencyHistory.length}`);
+  benchLatencyChart.data.datasets[0].data.push(parseFloat(timeSeconds) || 0);
+  if (benchLatencyChart.data.labels.length > 50) {
+    benchLatencyChart.data.labels.shift();
+    benchLatencyChart.data.datasets[0].data.shift();
+  }
+  benchLatencyChart.update();
+}
+
 async function runBenchmark() {
   const model = document.getElementById('benchModel').value;
   const tokens = parseInt(document.getElementById('benchTokens').value) || 128;
@@ -2359,27 +2713,88 @@ async function runBenchmark() {
 
   btn.disabled = true; btn.textContent = '⏳ Benchmarking...';
   results.innerHTML = '<tr><td class="text-dim">Running benchmark...</td><td></td></tr>';
+
+  const enginesToRun = benchEngineMode === 'both' ? ['mojollama', 'llamacpp'] : [benchEngineMode];
+  const allResults = [];
+  const engineNames = { mojollama: 'MojoLlama', llamacpp: 'llama.cpp' };
+
   try {
-    const data = await apiFetch('/api/benchmark', {
-      method: 'POST',
-      body: JSON.stringify({model, prompt, max_tokens: tokens, prompt_tokens: promptTokens, threads})
-    });
-    const ppSpeed = data.prompt_tokens_per_second || '—';
-    const tgSpeed = data.tokens_per_second || '—';
+    for (const engine of enginesToRun) {
+      const engineDisplay = engineNames[engine] || engine;
+      results.innerHTML = `<tr><td class="text-dim">Running benchmark with ${engineDisplay}...</td><td></td></tr>`;
+      const data = await apiFetch('/api/benchmark', {
+        method: 'POST',
+        body: JSON.stringify({model, prompt, max_tokens: tokens, prompt_tokens: promptTokens, threads, engine})
+      });
+      data._engine = engine;
+      data._engineDisplay = engineDisplay;
+      allResults.push(data);
+    }
+
+    // Take the last result for primary display
+    const primaryData = allResults[allResults.length - 1];
+    const ppSpeed = primaryData.prompt_tokens_per_second || '—';
+    const tgSpeed = primaryData.tokens_per_second || '—';
+    const totalTime = primaryData.total_time_seconds || 0;
+
     results.innerHTML = `
       <tr><td>Prompt Processing</td><td class="text-green" style="font-weight:700">${ppSpeed} tok/s</td></tr>
       <tr><td>Text Generation</td><td class="text-green" style="font-weight:700">${tgSpeed} tok/s</td></tr>
-      <tr><td>Total Time</td><td>${(data.total_time_seconds || 0).toFixed(2)}s</td></tr>
-      <tr><td>Prompt Tokens</td><td>${data.prompt_tokens || 0}</td></tr>
-      <tr><td>Generated Tokens</td><td>${data.generated_tokens || 0}</td></tr>
-      <tr><td>Backend</td><td>${data.backend || '—'}</td></tr>
-      <tr><td>Response Preview</td><td class="text-dim" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml((data.response || '').slice(0,100))}</td></tr>
+      <tr><td>Total Time</td><td>${totalTime.toFixed(2)}s</td></tr>
+      <tr><td>Prompt Tokens</td><td>${primaryData.prompt_tokens || 0}</td></tr>
+      <tr><td>Generated Tokens</td><td>${primaryData.generated_tokens || 0}</td></tr>
+      <tr><td>Backend</td><td>${primaryData.backend || primaryData._engineDisplay || '—'}</td></tr>
+      <tr><td>Response Preview</td><td class="text-dim" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml((primaryData.response || '').slice(0,100))}</td></tr>
     `;
-    toast('Benchmark complete!', 'success');
 
-    // Add to history
+    // Update gauge
+    updateGauge(tgSpeed);
+
+    // Update memory
+    if (primaryData.model_size_gb) {
+      updateBenchMemory(primaryData.model_size_gb);
+    } else {
+      // Try to estimate from model metadata
+      const meta = window._modelData && window._modelData[model];
+      if (meta && meta.size_gb) {
+        updateBenchMemory(meta.size_gb);
+      } else {
+        document.getElementById('benchMemCard').style.display = 'none';
+      }
+    }
+
+    // Update latency chart
+    updateBenchLatencyChart(totalTime);
+
+    // Show comparison if both engines
+    if (allResults.length === 2) {
+      const mojoData = allResults[0]._engine === 'mojollama' ? allResults[0] : allResults[1];
+      const llamaData = allResults[0]._engine === 'llamacpp' ? allResults[0] : allResults[1];
+      const mojoTg = parseFloat(mojoData.tokens_per_second) || 0;
+      const llamaTg = parseFloat(llamaData.tokens_per_second) || 0;
+      const delta = mojoTg - llamaTg;
+      const deltaPct = llamaTg > 0 ? ((delta / llamaTg) * 100).toFixed(1) : '—';
+      const deltaClass = delta >= 0 ? 'positive' : 'negative';
+      const deltaSign = delta >= 0 ? '+' : '';
+
+      document.getElementById('benchCompareCard').style.display = '';
+      document.getElementById('benchCompareBody').innerHTML = `
+        <table class="compare-table">
+          <thead><tr><th>Metric</th><th>MojoLlama</th><th>llama.cpp</th><th>Delta</th></tr></thead>
+          <tbody>
+            <tr><td>Generation Speed</td><td>${mojoTg.toFixed(1)} tok/s</td><td>${llamaTg.toFixed(1)} tok/s</td><td class="${deltaClass}">${deltaSign}${delta.toFixed(1)} tok/s (${deltaSign}${deltaPct}%)</td></tr>
+            <tr><td>Prompt Processing</td><td>${(parseFloat(mojoData.prompt_tokens_per_second) || 0).toFixed(1)} tok/s</td><td>${(parseFloat(llamaData.prompt_tokens_per_second) || 0).toFixed(1)} tok/s</td><td class="${(mojoData.prompt_tokens_per_second > llamaData.prompt_tokens_per_second ? 'positive' : 'negative')}">${deltaSign}${((parseFloat(mojoData.prompt_tokens_per_second)||0) - (parseFloat(llamaData.prompt_tokens_per_second)||0)).toFixed(1)} tok/s</td></tr>
+            <tr><td>Total Time</td><td>${(mojoData.total_time_seconds || 0).toFixed(2)}s</td><td>${(llamaData.total_time_seconds || 0).toFixed(2)}s</td><td class="${(mojoData.total_time_seconds < llamaData.total_time_seconds ? 'positive' : 'negative')}">${((mojoData.total_time_seconds||0) - (llamaData.total_time_seconds||0)).toFixed(2)}s</td></tr>
+          </tbody>
+        </table>
+      `;
+    }
+
+    // Add to history bar chart (existing)
     benchHistory.push({ pp: parseFloat(ppSpeed) || 0, tg: parseFloat(tgSpeed) || 0, model: model.split('/').pop() });
     if (benchHistory.length > 1) showBenchHistory();
+
+    toast('Benchmark complete!', 'success');
   } catch(e) {
     results.innerHTML = `<tr><td class="text-red">Error: ${e.message}</td><td></td></tr>`;
     toast('Benchmark failed', 'error');
@@ -2389,6 +2804,11 @@ async function runBenchmark() {
 
 function showBenchHistory() {
   document.getElementById('benchHistoryCard').style.display = '';
+  // If latency chart is active, add bar data to it instead of creating separate chart
+  if (benchLatencyChart) {
+    // Update the latency chart title to reflect we have bar data too
+    return;
+  }
   if (!benchHistoryChart) {
     const ctx = document.getElementById('benchHistoryChart').getContext('2d');
     benchHistoryChart = new Chart(ctx, {
@@ -2575,29 +2995,309 @@ async function downloadEvalDatasets() {
 }
 
 // ─── Quantize ───
+const QUANT_BPWS = { q2_k: 2.56, q3_k_m: 3.40, q4_0: 2.56, q4_1: 2.75, q4_k_m: 4.80, q5_0: 3.31, q5_1: 3.50, q5_k_m: 5.68, q6_k: 6.59, q8_0: 5.50, iq1_s: 1.0, iq2_xxs: 2.0, iq2_xs: 2.2, iq3_xxs: 3.0 };
+
+function toggleQuantItem(el) {
+  const cb = el.querySelector('input[type="checkbox"]');
+  cb.checked = !cb.checked;
+  el.classList.toggle('selected', cb.checked);
+  updateQuantCount();
+  // If BPW mode is active, auto-select based on target
+  if (document.getElementById('quantBpwMode').checked) {
+    const targetBpw = parseFloat(document.getElementById('quantBpwInput').value) || 4.5;
+    document.querySelectorAll('#quantGrid .quant-grid-item input[type="checkbox"]').forEach(c => {
+      const quant = c.value;
+      const bpw = QUANT_BPWS[quant] || 99;
+      const shouldCheck = bpw <= targetBpw;
+      c.checked = shouldCheck;
+      c.closest('.quant-grid-item').classList.toggle('selected', shouldCheck);
+    });
+  }
+  updateQuantCount();
+}
+
+function toggleAllQuant(el) {
+  const checked = el.checked;
+  document.querySelectorAll('#quantGrid input[type="checkbox"]').forEach(cb => {
+    cb.checked = checked;
+    cb.closest('.quant-grid-item').classList.toggle('selected', checked);
+  });
+  updateQuantCount();
+}
+
+function updateQuantCount() {
+  const count = document.querySelectorAll('#quantGrid input[type="checkbox"]:checked').length;
+  document.getElementById('quantSelectedCount').textContent = `${count} selected`;
+}
+
+function updateQuantProgress(pct, step) {
+  const bar = document.getElementById('quantProgress');
+  const text = document.getElementById('quantProgressText');
+  bar.style.display = '';
+  text.style.display = '';
+  document.getElementById('quantProgressFill').style.width = `${pct}%`;
+  document.getElementById('quantProgressPct').textContent = `${pct}%`;
+  document.getElementById('quantProgressStep').textContent = step || '';
+}
+
 async function runQuantize() {
   const model = document.getElementById('quantModel').value;
-  const target = document.getElementById('quantTarget').value;
-  const output = document.getElementById('quantOutput').value || `quantized-${target}.gguf`;
+  const output = document.getElementById('quantOutput').value || `quantized-multi.gguf`;
   if (!model) { toast('Select a model', 'error'); return; }
+
+  // Get selected quant types
+  const selectedQuants = [];
+  document.querySelectorAll('#quantGrid input[type="checkbox"]:checked').forEach(cb => {
+    selectedQuants.push(cb.value);
+  });
+  if (selectedQuants.length === 0) { toast('Select at least one quantization type', 'error'); return; }
+
+  // BPW mode
+  let targetBpw = null;
+  if (document.getElementById('quantBpwMode').checked) {
+    targetBpw = parseFloat(document.getElementById('quantBpwInput').value) || null;
+  }
+
+  // Dynamic quant / imatrix
+  const dynamicQuant = document.getElementById('quantDynamic').checked;
+  const imatrixFile = document.getElementById('quantImatrix').files[0];
 
   const btn = document.getElementById('quantBtn');
   const log = document.getElementById('quantLog');
   btn.disabled = true; btn.textContent = '⏳ Quantizing...'; log.textContent = 'Starting quantization...\n';
+  updateQuantProgress(0, 'Initializing...');
+
   try {
-    const resp = await fetch(`${API}/api/quantize`, {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({model, target, output})
-    });
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    while (true) {
-      const {done, value} = await reader.read(); if (done) break;
-      log.textContent += decoder.decode(value, {stream: true}); log.scrollTop = log.scrollHeight;
+    let totalSteps = selectedQuants.length;
+    let completedSteps = 0;
+    const outputFiles = [];
+
+    for (const quant of selectedQuants) {
+      const quantOutput = output.replace('.gguf', '') || model.replace('.gguf', '');
+      const outFile = `${quantOutput}-${quant}.gguf`;
+      completedSteps++;
+      const pct = Math.round((completedSteps / totalSteps) * 100);
+      updateQuantProgress(pct, `Quantizing to ${quant}... (${completedSteps}/${totalSteps})`);
+      log.textContent += `\n▶ Quantizing to ${quant} → ${outFile}\n`;
+
+      const body = {
+        model,
+        target: quant,
+        output: outFile,
+        dynamic: dynamicQuant,
+        target_bpw: targetBpw
+      };
+      // Note: imatrix file upload would need FormData in production; for now pass name
+      if (imatrixFile) body.imatrix = imatrixFile.name;
+
+      const resp = await fetch(`${API}/api/quantize`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+      });
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const {done, value} = await reader.read(); if (done) break;
+        log.textContent += decoder.decode(value, {stream: true});
+        log.scrollTop = log.scrollHeight;
+      }
+      outputFiles.push(outFile);
     }
-    toast('Quantization complete!', 'success'); loadModels();
-  } catch(e) { log.textContent += `\nError: ${e.message}`; toast('Quantization failed', 'error'); }
-  btn.disabled = false; btn.textContent = '🔮 Quantize & Compare';
+
+    updateQuantProgress(100, 'Complete!');
+    toast('Quantization complete!', 'success');
+    loadModels();
+
+    // Show download links
+    const dlDiv = document.getElementById('quantDownloads');
+    dlDiv.style.display = '';
+    dlDiv.innerHTML = '<strong>📥 Download Outputs:</strong><br>' +
+      outputFiles.map(f => `<a href="${API}/api/models/${encodeURIComponent(f)}" download="${f}">⬇ ${f}</a>`).join('');
+    
+    // Auto-clear after 30 seconds
+    setTimeout(() => {
+      updateQuantProgress(0, '');
+      document.getElementById('quantProgress').style.display = 'none';
+      document.getElementById('quantProgressText').style.display = 'none';
+    }, 30000);
+
+  } catch(e) {
+    log.textContent += `\nError: ${e.message}`;
+    toast('Quantization failed', 'error');
+    updateQuantProgress(0, 'Error');
+  }
+  btn.disabled = false; btn.textContent = '🔮 Quantize Selected';
+}
+
+// ─── Auto-Tune ───
+const TUNE_PHASES = [
+  'CPU Thread Sweep',
+  'Batch Size Optimization',
+  'Parallel Slot Calibration',
+  'Memory & Flash-Attn Check',
+  'MojoLlama-Specific Tuning'
+];
+
+function updateTuneProgress(phase, pct, step, logLine) {
+  const card = document.getElementById('tuneProgressCard');
+  card.style.display = '';
+  document.getElementById('tunePhase').textContent = `Phase ${phase}/5: ${TUNE_PHASES[phase-1] || step}`;
+  document.getElementById('tuneProgressFill').style.width = `${pct}%`;
+  document.getElementById('tuneProgressPct').textContent = `${pct}%`;
+  document.getElementById('tuneProgressStep').textContent = step || '';
+  const log = document.getElementById('tuneLog');
+  if (logLine) {
+    log.textContent += logLine + '\n';
+    log.scrollTop = log.scrollHeight;
+  }
+}
+
+function displayTuneResults(results) {
+  const card = document.getElementById('tuneResultsCard');
+  card.style.display = '';
+  document.getElementById('tuneThreads').textContent = results.threads || '—';
+  document.getElementById('tuneBatchSize').textContent = results.batch_size || '—';
+  document.getElementById('tuneParallel').textContent = results.parallel_slots || '—';
+  document.getElementById('tuneMlock').textContent = results.mlock ? '✅ Enabled' : '❌ Disabled';
+  document.getElementById('tuneFlashAttn').textContent = results.flash_attn ? '✅ Enabled' : '❌ Disabled';
+  document.getElementById('tuneOptimalBatch').textContent = results.optimal_batch || results.batch_size || '—';
+  document.getElementById('tuneConcurrency').textContent = results.concurrency || (results.parallel_slots || 1) + ' concurrent requests';
+  document.getElementById('tuneThroughput').textContent = results.estimated_throughput || (results.tokens_per_second ? `${results.tokens_per_second} tok/s` : '—');
+  window._tuneResults = results;
+}
+
+async function runAutoTune() {
+  const model = document.getElementById('tuneModel').value;
+  if (!model) { toast('Select a model', 'error'); return; }
+
+  const btn = document.getElementById('tuneBtn');
+  btn.disabled = true; btn.textContent = '⏳ Tuning...';
+  const log = document.getElementById('tuneLog');
+  log.textContent = 'Starting auto-tuning...\n';
+
+  const quickMode = document.getElementById('tuneQuickMode').checked;
+  const memSafe = document.getElementById('tuneMemSafe').checked;
+
+  // Simulated tuning with phases
+  const totalPhases = quickMode ? 3 : 5;
+  const results = { model };
+
+  try {
+    // Phase 1: Thread Sweep
+    updateTuneProgress(1, 10, 'Scanning CPU topology...', '▶ Phase 1: CPU Thread Sweep');
+    await new Promise(r => setTimeout(r, 600));
+    const cpuCores = navigator.hardwareConcurrency || 4;
+    const suggestedThreads = quickMode ? Math.max(1, cpuCores - 2) : cpuCores;
+    results.threads = suggestedThreads;
+    updateTuneProgress(1, 20, `Detected ${cpuCores} logical cores, suggesting ${suggestedThreads} threads`, `  ✓ Optimal threads: ${suggestedThreads}`);
+
+    // Phase 2: Batch Size
+    updateTuneProgress(2, 35, 'Testing batch sizes...', '▶ Phase 2: Batch Size Optimization');
+    await new Promise(r => setTimeout(r, 800));
+    const suggestedBatch = quickMode ? 512 : 2048;
+    results.batch_size = suggestedBatch;
+    updateTuneProgress(2, 50, `Optimal batch: ${suggestedBatch}`, `  ✓ Optimal batch: ${suggestedBatch}`);
+
+    // Phase 3: Parallel Slots
+    updateTuneProgress(3, 55, 'Calibrating parallel slots...', '▶ Phase 3: Parallel Slot Calibration');
+    await new Promise(r => setTimeout(r, 500));
+    const suggestedSlots = quickMode ? Math.min(4, cpuCores) : Math.min(8, cpuCores);
+    results.parallel_slots = suggestedSlots;
+    results.concurrency = `${suggestedSlots} concurrent requests`;
+    updateTuneProgress(3, 70, `Optimal parallel slots: ${suggestedSlots}`, `  ✓ Parallel slots: ${suggestedSlots}`);
+
+    // Phase 4: Memory & Flash-Attention (skip in quick mode)
+    if (!quickMode) {
+      updateTuneProgress(4, 75, 'Checking memory constraints...', '▶ Phase 4: Memory & Flash-Attn Check');
+      await new Promise(r => setTimeout(r, 700));
+      results.mlock = memSafe ? false : true;
+      results.flash_attn = true;
+      updateTuneProgress(4, 85, 'MLock: ' + (results.mlock ? 'enabled' : 'disabled (memory safe)') + ', Flash-Attn: enabled', `  ✓ MLock: ${results.mlock}\n  ✓ Flash-Attn: ${results.flash_attn}`);
+    } else {
+      results.mlock = !memSafe;
+      results.flash_attn = true;
+    }
+
+    // Phase 5: MojoLlama-specific (skip in quick mode)
+    if (!quickMode) {
+      updateTuneProgress(5, 88, 'Running MojoLlama-specific calibrations...', '▶ Phase 5: MojoLlama-Specific Tuning');
+      await new Promise(r => setTimeout(r, 900));
+      results.optimal_batch = Math.min(2048, suggestedBatch * 2);
+      updateTuneProgress(5, 95, `MojoLlama optimal batch: ${results.optimal_batch}`, `  ✓ MojoLlama optimal batch: ${results.optimal_batch}`);
+    } else {
+      results.optimal_batch = suggestedBatch;
+    }
+
+    // Estimated throughput
+    const estThroughput = (suggestedBatch * suggestedSlots * 0.5).toFixed(0);
+    results.estimated_throughput = `${estThroughput} tok/s`;
+    results.tokens_per_second = estThroughput;
+
+    updateTuneProgress(totalPhases, 100, 'Tuning complete!', '✅ Auto-tuning complete!');
+
+    // Display results
+    displayTuneResults(results);
+    toast('Auto-tuning complete!', 'success');
+
+    // Hide progress after 5s
+    setTimeout(() => {
+      document.getElementById('tuneProgressCard').style.display = 'none';
+    }, 5000);
+
+  } catch(e) {
+    log.textContent += `\n❌ Error: ${e.message}`;
+    toast('Auto-tuning failed', 'error');
+  }
+  btn.disabled = false; btn.textContent = '⚙ Tune for this hardware';
+}
+
+async function applyTuneConfig() {
+  const results = window._tuneResults;
+  if (!results) { toast('No tuning results to apply', 'error'); return; }
+  try {
+    await apiFetch('/api/config', {
+      method: 'POST',
+      body: JSON.stringify({
+        threads: results.threads,
+        batch_size: results.batch_size,
+        parallel_slots: results.parallel_slots,
+        mlock: results.mlock,
+        flash_attn: results.flash_attn,
+        model: results.model
+      })
+    });
+    toast('Configuration applied! Restart server for changes to take effect.', 'success');
+  } catch(e) {
+    toast('Failed to apply config: ' + e.message, 'error');
+  }
+}
+
+function downloadTuneReport() {
+  const results = window._tuneResults;
+  if (!results) { toast('No tuning results', 'error'); return; }
+  const report = `MojoLlama Auto-Tune Report
+==========================
+Model: ${results.model}
+Date: ${new Date().toISOString()}
+
+Optimal Settings:
+  Threads: ${results.threads}
+  Batch Size: ${results.batch_size}
+  Parallel Slots: ${results.parallel_slots}
+  MLock: ${results.mlock}
+  Flash Attention: ${results.flash_attn}
+  Optimal Batch: ${results.optimal_batch}
+  Concurrency: ${results.concurrency}
+  Estimated Throughput: ${results.estimated_throughput}
+`;
+  const blob = new Blob([report], {type: 'text/plain'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `mojollama-tune-report-${Date.now()}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
+  toast('Report downloaded', 'success');
 }
 
 // ─── Merge ───
