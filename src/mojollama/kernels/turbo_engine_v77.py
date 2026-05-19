@@ -46,7 +46,7 @@ class TurboEngineV77:
                         if hasattr(d,'__iter__') and len(d)==1: return int(d[0])
                         return d
         arch='llama'
-        for p in ['qwen3moe','qwen2moe','llama','mistral']:
+        for p in ['qwen3moe','qwen2moe','qwen2vl','qwen2','llama','mistral']:
             for k in fields:
                 if f'{p}.block_count' in k: arch=p; break
         self.n_layers=int(_get(f'{arch}.block_count') or 16)
@@ -237,6 +237,7 @@ class TurboEngineV77:
 
         for i in range(L):
             lw=self._layers[i]
+            np.clip(bx, -1000.0, 1000.0, out=bx)
             np.copyto(br, bx)
             d.rms_norm(pxn, px, lw['ann_w'].ctypes.data_as(ctypes.POINTER(ctypes.c_float)), N, e)
 
@@ -271,6 +272,7 @@ class TurboEngineV77:
             bx[:N]=br[:N]+bo[:N]
 
             # FFN
+            np.clip(bx, -1000.0, 1000.0, out=bx)
             np.copyto(br, bx)
             d.rms_norm(pxn, px, lw['fnn_w'].ctypes.data_as(ctypes.POINTER(ctypes.c_float)), N, e)
 
@@ -290,6 +292,7 @@ class TurboEngineV77:
             bx[:N]=br[:N]+bf[:N]
 
         # Final
+        np.clip(bx, -1000.0, 1000.0, out=bx)
         d.rms_norm(pxn, px, self._onw.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), N, e)
         self._matmul(self._or, pxn, pl, self._onr, self._onc, self._oqt, self._ov2)
         self.pos+=1
