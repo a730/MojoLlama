@@ -1421,6 +1421,22 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self.wfile.write(f"\nERROR: {e}\n".encode())
 
+        # ── Studio API: /api/benchmarks ─────────────────────
+        elif path == "/api/benchmarks":
+            action = body.get("action", "list")
+            if action == "list":
+                from mojollama.eval.orchestrator import list_benchmarks
+                self._send_json({
+                    "benchmarks": list_benchmarks(),
+                    "datasets": []  # could add dataset info here
+                })
+            elif action == "dataset-info":
+                from mojollama.eval.dataset import list_available_datasets
+                cached = list_available_datasets()
+                self._send_json({"datasets": cached})
+            else:
+                self._send_error(f"Unknown action: {action}")
+
         # ── Studio API: /api/evaluate ──────────────────────
         elif path == "/api/evaluate":
             model = body.get("model", "")
@@ -1431,6 +1447,20 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
 
             if not model:
                 self._send_error("'model' is required")
+                return
+
+            # Download mode — stream download progress
+            if eval_type == "download":
+                self.send_response(200)
+                self._set_cors()
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                from mojollama.eval.orchestrator import download_all_datasets
+                results = download_all_datasets(lambda name, cur, total: None)
+                for name, ok in results.items():
+                    self.wfile.write(f"{name}: {'✅' if ok else '❌'}\n".encode())
+                self.wfile.flush()
                 return
 
             # Standard benchmarks use the llama.cpp backend URL
@@ -2061,6 +2091,7 @@ def main():
     print(f"  /api/benchmark           — run benchmark")
     print(f"  /api/templates           — training templates (filter: ?arch=gemma)")
     print(f"  /api/quantize            — quantize GGUF model")
+    print(f"  /api/benchmarks          — list benchmarks, dataset info")
     print(f"  /api/evaluate            — evaluate model (perplexity, mmlu, gsm8k, ceval, hellaswag, arc, bbh, humaneval)")
     print(f"  /api/merge               — merge LoRA into base model")
     print(f"  /api/train/metrics       — training metrics SSE")

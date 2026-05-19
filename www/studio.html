@@ -93,6 +93,12 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
 .badge-new { background: rgba(63,185,80,0.15); color: var(--green); }
 .badge-pro { background: rgba(163,124,240,0.15); color: var(--accent2); }
 .badge-beta { background: rgba(240,136,62,0.15); color: var(--orange); }
+.bench-check { display:inline-flex;align-items:center;gap:3px;cursor:pointer;font-size:12px;padding:2px 8px;background:var(--bg2);border-radius:12px;transition:.15s; }
+.bench-check:hover { background:var(--bg3); }
+.bench-check input { accent-color:var(--accent); }
+.result-table { border-collapse:collapse; }
+.result-table th,.result-table td { padding:4px 8px;text-align:left;border-bottom:1px solid var(--border); }
+.result-table tr:last-child td { border-bottom:none; }
 
 /* Forms */
 label { display: block; font-size: 11px; color: var(--dim); margin-bottom: 4px;
@@ -1397,8 +1403,8 @@ let benchHistory = [];
 // ─── Tab switching ──────────────────────────────────────────────
 const TAB_ICONS = { chat:'💬 Chat', train:'🎓 Train', dataset:'📊 Dataset', export:'📤 Export',
                     benchmark:'⚡ Benchmark', evaluate:'🎯 Evaluate', quantize:'🔮 Quantize',
-                    merge:'🔗 Merge', templates:'📋 Templates', experiments:'🔬 Experiments',
-                    'model-cards':'🆔 Model Cards' };
+                    merge:'🔗 Merge', templates:'📋 Templates', hub:'🤗 HF Hub',
+                    experiments:'🔬 Experiments', modelcards:'📇 Cards' };
 document.querySelectorAll('.nav-item').forEach(item => {
   item.addEventListener('click', () => {
     document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
@@ -1471,7 +1477,7 @@ async function loadModels() {
     // Store model metadata for auto-suggest
     window._modelData = {};
     models.forEach(m => { window._modelData[m.path || m.name] = m; });
-    const selects = ['chatModel','trainModel','benchModel','dsModel','mergeBase','evalModel','quantModel'];
+    const selects = ['chatModel','trainModel','benchModel','dsModel','mergeBase','evalModel','quantModel','hubModelPath'];
     selects.forEach(id => {
       const sel = document.getElementById(id);
       if (!sel) return;
@@ -2261,19 +2267,100 @@ function showBenchHistory() {
   benchHistoryChart.update();
 }
 
-// ─── Evaluate ───
-async function runEvaluation() {
+// ─── Evaluate — Benchmarks ───
+async function runBenchmarkEval() {
+  const model = document.getElementById('evalModel').value;
+  const maxSamples = parseInt(document.getElementById('evalMaxSamples').value) || 0;
+  if (!model) { toast('Select a model', 'error'); return; }
+
+  const checks = ['mmlu','gsm8k','ceval','hellaswag','arc','bbh','humaneval'];
+  const selected = checks.filter(id => document.getElementById('b-'+id).checked);
+  if (selected.length === 0) { toast('Select at least one benchmark', 'error'); return; }
+
+  const btn = document.getElementById('evalBtn');
+  const results = document.getElementById('evalResults');
+  const log = document.getElementById('evalLog');
+  btn.disabled = true; btn.textContent = '⏳ Benchmarking...';
+  log.style.display = ''; log.textContent = 'Starting benchmarks...\n';
+  results.innerHTML = '<div style="font-size:32px;margin-bottom:8px">⏳</div><div style="font-size:13px">Running benchmarks...</div>';
+
+  try {
+    const resp = await fetch(`${API}/api/evaluate`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model, type: 'benchmark', benchmarks: selected, max_samples: maxSamples})
+    });
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let fullLog = '';
+    let benchResults = [];
+
+    while (true) {
+      const {done, value} = await reader.read(); if (done) break;
+      const chunk = decoder.decode(value, {stream: true});
+      fullLog += chunk;
+
+      // Parse SSE data lines
+      for (const line of chunk.split('\n')) {
+        if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.slice(6));
+            if (data.type === 'progress') {
+              log.textContent += data.message + '\n';
+            } else if (data.type === 'result') {
+              benchResults.push(data);
+              const acc = ((data.accuracy || 0) * 100).toFixed(1);
+              const name = data.name || 'unknown';
+              log.textContent += `  ✅ ${name}: ${acc}% (${data.correct || 0}/${data.total || 0})\n`;
+            } else if (data.type === 'done') {
+              log.textContent += `\nOverall: ${data.overall_accuracy?.toFixed(1)}% (${data.total_correct}/${data.total_samples})\n`;
+            } else if (data.type === 'error') {
+              log.textContent += `\n❌ ${data.message}\n`;
+            }
+          } catch(e) {}
+        }
+      }
+      log.scrollTop = log.scrollHeight;
+    }
+
+    // Build results display
+    if (benchResults.length > 0) {
+      let overallCorrect = 0, overallTotal = 0;
+      const rows = benchResults.map(r => {
+        const acc = ((r.accuracy || 0) * 100).toFixed(1);
+        overallCorrect += r.correct || 0;
+        overallTotal += r.total || 0;
+        return `<tr><td>${r.name}</td><td style="font-weight:700">${acc}%</td><td>${r.correct || 0}/${r.total || 0}</td></tr>`;
+      }).join('');
+      const overall = overallTotal > 0 ? (overallCorrect/overallTotal*100).toFixed(1) : '—';
+      results.innerHTML = `
+        <div style="font-size:36px;font-weight:800;color:var(--accent);margin:8px 0">${overall}%</div>
+        <div class="stat-label" style="margin-bottom:8px">Overall Accuracy</div>
+        <table class="result-table" style="width:100%;font-size:12px">
+          <tr style="color:var(--dim)"><th>Benchmark</th><th>Accuracy</th><th>Correct/Total</th></tr>
+          ${rows}
+        </table>`;
+    } else {
+      results.innerHTML = `<div style="font-size:14px;color:var(--dim)">No benchmark results returned</div>`;
+    }
+    toast('Benchmarks complete!', 'success');
+  } catch(e) {
+    results.innerHTML = `<div class="text-red">Error: ${e.message}</div>`;
+    toast('Benchmark failed', 'error');
+  }
+  btn.disabled = false; btn.textContent = '🎯 Run Benchmarks';
+}
+
+// ─── Evaluate — Classic ───
+async function runClassicEval() {
   const model = document.getElementById('evalModel').value;
   const evalType = document.getElementById('evalType').value;
   const evalData = document.getElementById('evalData').value;
   const maxSamples = parseInt(document.getElementById('evalMaxSamples').value) || 100;
   if (!model) { toast('Select a model', 'error'); return; }
-  if (!evalData && evalType === 'accuracy') { toast('Provide evaluation dataset for accuracy test', 'error'); return; }
+  if (!evalData && evalType === 'accuracy') { toast('Provide evaluation dataset', 'error'); return; }
 
-  const btn = document.getElementById('evalBtn');
   const results = document.getElementById('evalResults');
   const log = document.getElementById('evalLog');
-  btn.disabled = true; btn.textContent = '⏳ Evaluating...';
   log.style.display = ''; log.textContent = 'Starting evaluation...\n';
   results.innerHTML = '<div style="font-size:32px;margin-bottom:12px">⏳</div><div style="font-size:14px">Evaluating...</div>';
 
@@ -2320,7 +2407,30 @@ async function runEvaluation() {
     results.innerHTML = `<div class="text-red">Error: ${e.message}</div>`;
     toast('Evaluation failed', 'error');
   }
-  btn.disabled = false; btn.textContent = '🎯 Run Evaluation';
+}
+
+// ─── Evaluate — Download Datasets ───
+async function downloadEvalDatasets() {
+  const log = document.getElementById('evalLog');
+  log.style.display = ''; log.textContent = 'Downloading evaluation datasets...\n';
+  toast('Downloading datasets...', 'info');
+  try {
+    const resp = await fetch(`${API}/api/evaluate`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model: 'download-helper', type: 'download'})
+    });
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const {done, value} = await reader.read(); if (done) break;
+      log.textContent += decoder.decode(value, {stream: true});
+      log.scrollTop = log.scrollHeight;
+    }
+    toast('Datasets downloaded!', 'success');
+  } catch(e) {
+    log.textContent += `\nError: ${e.message}`;
+    toast('Download failed', 'error');
+  }
 }
 
 // ─── Quantize ───
@@ -2707,6 +2817,118 @@ async function deleteModelCard(cardId) {
   } catch(e) {
     toast(`Error: ${e.message}`, 'error');
   }
+}
+
+// ─── Hub (HuggingFace) ────────────────────────────────────────────
+
+async function hubLogin() {
+  const token = document.getElementById('hubToken').value;
+  if (!token) { toast('Enter a HuggingFace token', 'error'); return; }
+  const btn = document.getElementById('hubLoginBtn');
+  btn.disabled = true; btn.textContent = '⏳ Logging in...';
+  try {
+    const resp = await fetch(`${API}/api/hub/login`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({token})
+    });
+    const data = await resp.json();
+    if (data.success) {
+      toast('Logged in to HF Hub!', 'success');
+      document.getElementById('hubStatus').textContent = '✅ Logged in.';
+    } else {
+      toast('Login failed', 'error');
+      document.getElementById('hubStatus').textContent = '❌ Login failed.';
+    }
+  } catch(e) {
+    toast(`Error: ${e.message}`, 'error');
+    document.getElementById('hubStatus').textContent = `❌ ${e.message}`;
+  }
+  btn.disabled = false; btn.textContent = '🔑 Login';
+}
+
+async function hubWhoami() {
+  const statusEl = document.getElementById('hubStatus');
+  const btn = document.getElementById('hubStatusBtn');
+  btn.disabled = true; btn.textContent = '⏳ ...';
+  try {
+    const data = await apiFetch('/api/hub/whoami');
+    if (data.logged_in) {
+      statusEl.textContent = `✅ Logged in as: ${data.user}${data.email ? ` (${data.email})` : ''}`;
+      toast(`Logged in as ${data.user}`, 'success');
+    } else {
+      statusEl.textContent = '❌ Not logged in. Enter a HF token and click Login.';
+      toast('Not logged in', 'info');
+    }
+  } catch(e) {
+    statusEl.textContent = `❌ ${e.message}`;
+    toast(`Error: ${e.message}`, 'error');
+  }
+  btn.disabled = false; btn.textContent = '👤 Status';
+}
+
+async function hubPush() {
+  const model = document.getElementById('hubModelPath').value;
+  const repo = document.getElementById('hubRepoId').value;
+  const quant = document.getElementById('hubQuant').value;
+  const params = document.getElementById('hubParams').value;
+  const desc = document.getElementById('hubDescription').value;
+  const priv = document.getElementById('hubPrivate').checked;
+  if (!model || !repo) { toast('Select a model and enter a repo ID', 'error'); return; }
+  const btn = document.getElementById('hubPushBtn');
+  const log = document.getElementById('hubLog');
+  btn.disabled = true; btn.textContent = '⏳ Uploading...';
+  log.textContent = 'Starting upload...\n';
+  try {
+    const metadata = { studio_version: '0.1.0' };
+    if (quant) metadata.quantization = quant;
+    if (params) metadata.parameters = params;
+    if (desc) metadata.description = desc;
+    const resp = await fetch(`${API}/api/hub/push`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model, repo, private: priv, metadata})
+    });
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const {done, value} = await reader.read(); if (done) break;
+      log.textContent += decoder.decode(value, {stream: true});
+      log.scrollTop = log.scrollHeight;
+    }
+    toast('Upload complete!', 'success');
+  } catch(e) { log.textContent += `\nError: ${e.message}`; toast('Upload failed', 'error'); }
+  btn.disabled = false; btn.textContent = '⬆️ Push to Hub';
+}
+
+async function hubPushAdapter() {
+  const adapter = document.getElementById('hubAdapterPath').value;
+  const baseModel = document.getElementById('hubBaseModel').value;
+  const repo = document.getElementById('hubAdapterRepo').value;
+  const priv = document.getElementById('hubAdapterPrivate').checked;
+  const rank = document.getElementById('hubAdapterRank').value;
+  const alpha = document.getElementById('hubAdapterAlpha').value;
+  if (!adapter || !baseModel || !repo) { toast('Fill all required fields', 'error'); return; }
+  const btn = document.getElementById('hubPushAdapterBtn');
+  const log = document.getElementById('hubLog');
+  btn.disabled = true; btn.textContent = '⏳ Uploading...';
+  log.textContent = 'Starting adapter upload...\n';
+  try {
+    const metadata = {};
+    if (rank) metadata.lora_rank = parseInt(rank);
+    if (alpha) metadata.lora_alpha = parseFloat(alpha);
+    const resp = await fetch(`${API}/api/hub/push-adapter`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({adapter, base_model: baseModel, repo, private: priv, metadata})
+    });
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const {done, value} = await reader.read(); if (done) break;
+      log.textContent += decoder.decode(value, {stream: true});
+      log.scrollTop = log.scrollHeight;
+    }
+    toast('Adapter upload complete!', 'success');
+  } catch(e) { log.textContent += `\nError: ${e.message}`; toast('Upload failed', 'error'); }
+  btn.disabled = false; btn.textContent = '⬆️ Push Adapter';
 }
 
 // ─── Init ───
