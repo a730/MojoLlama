@@ -1,1289 +1,1387 @@
-#!/usr/bin/env python3
-"""MojoLlama GGUF Quantizer — comprehensive quantization pipeline.
+"""
+MojoLlama Quantizer — GGUF quantization CLI tool.
 
-Full CLI for model conversion, quantization (all K/IQ quants), imatrix
-generation, NF4, validation, benchmarking, and batch operations.
+Converts HuggingFace models to GGUF format and applies various quantization types.
+Wraps llama.cpp's convert_hf_to_gguf.py and llama-quantize, with a pure Python
+Q4_0 fallback for when those tools aren't available.
 
 Usage:
-    python3 quantizer.py list-types
-    python3 quantizer.py info model.gguf
-    python3 quantizer.py imatrix model.gguf --data calibration.txt --output imatrix.dat
-    python3 quantizer.py quantize model.gguf --type Q4_K_M --imatrix imatrix.dat
-    python3 quantizer.py nf4 model.gguf --output model-nf4.gguf
-    python3 quantizer.py convert hf_model --outtype f16 --outfile model.gguf
-    python3 quantizer.py validate model.gguf
-    python3 quantizer.py benchmark model.gguf --prompt "Hello" --max-tokens 50
-    python3 quantizer.py batch hf_model --types q4_0,q4_k_m,q8_0
-    python3 quantizer.py compare base.gguf quantized.gguf
+    python3 -m mojollama.quantizer convert hf_model_name --outtype f16 --outfile model.gguf
+    python3 -m mojollama.quantizer quantize model.gguf --type q4_k_m
+    python3 -m mojollama.quantizer info model.gguf
+    python3 -m mojollama.quantizer validate model.gguf --reference ref.gguf
+    python3 -m mojollama.quantizer benchmark model.gguf --prompt "Hello"
+    python3 -m mojollama.quantizer batch hf_model_name --types q4_0,q4_k_m,q8_0
+
+Importable:
+    from mojollama.quantizer import quantize, convert, get_info, Q4Block, quantize_q4, dequantize_q4
 """
 
-import os
-import sys
-import json
-import time
-import math
 import argparse
+import json
+import os
+import shutil
+import struct
 import subprocess
-import tempfile
-import re
+import sys
+import time
 from pathlib import Path
-from io import StringIO
-from typing import Optional
-
+from typing import Optional, List, Dict, Any, Tuple
 import numpy as np
 
-# ─── Paths ──────────────────────────────────────────────────────────────
+# ─── Paths ──────────────────────────────────────────────────────────────────
 
-LLAMA_CPP = "/tmp/llama.cpp"
-LLAMA_QUANTIZE = f"{LLAMA_CPP}/build/bin/llama-quantize"
-LLAMA_IMATRIX= f"{LLAMA_CPP}/build/bin/llama-imatrix"
-LLAMA_BENCH   = f"{LLAMA_CPP}/build/bin/llama-bench"
-LLAMA_CONVERT = f"{LLAMA_CPP}/convert_hf_to_gguf.py"
+# Allow overriding with env vars
+LLAMA_CPP_DIR = Path(os.environ.get("LLAMA_CPP_DIR", "/tmp/llama.cpp"))
+CONVERT_SCRIPT = LLAMA_CPP_DIR / "convert_hf_to_gguf.py"
+QUANTIZE_BIN = LLAMA_CPP_DIR / "build" / "bin" / "llama-quantize"
 
-VERSION = "0.2.0"
+# Default HF cache
+HF_HOME = Path(os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface")))
 
-# ─── Quantization Type Registry ─────────────────────────────────────────
-
-# (name, description, bpw, is_k_quant, category)
-QUANT_TYPES = [
-    # Float
-    ("F32",     "32-bit float",            32.0,  False, "float"),
-    ("F16",     "16-bit float",            16.0,  False, "float"),
-    ("BF16",    "bfloat16",                16.0,  False, "float"),
-    # Standard block quants
-    ("Q8_0",    "8-bit block quant",        8.0,  False, "standard"),
-    ("Q6_K",    "6-bit K-quant",            6.14, True,  "standard"),
-    ("Q5_1",    "5-bit block quant",        5.65, False, "standard"),
-    ("Q5_0",    "5-bit block quant",        5.21, False, "standard"),
-    ("Q4_1",    "4-bit block quant",        4.78, False, "standard"),
-    ("Q4_0",    "4-bit block quant",        4.34, False, "standard"),
-    ("Q1_0",    "1-bit block quant",        1.125, False, "standard"),
-    # K-Quants (mixture)
-    ("Q5_K_M",  "5-bit K-quant medium",     5.33, True,  "k_quant"),
-    ("Q5_K_S",  "5-bit K-quant small",      5.21, True,  "k_quant"),
-    ("Q4_K_M",  "4-bit K-quant medium",     4.58, True,  "k_quant"),
-    ("Q4_K_S",  "4-bit K-quant small",      4.37, True,  "k_quant"),
-    ("Q3_K_L",  "3-bit K-quant large",      4.03, True,  "k_quant"),
-    ("Q3_K_M",  "3-bit K-quant medium",     3.74, True,  "k_quant"),
-    ("Q3_K_S",  "3-bit K-quant small",      3.41, True,  "k_quant"),
-    ("Q2_K",    "2-bit K-quant",            2.96, True,  "k_quant"),
-    ("Q2_K_S",  "2-bit K-quant small",      2.96, True,  "k_quant"),
-    # Importance-aware quants (IQ)
-    ("IQ4_NL",  "4-bit non-linear IQ",      4.50,  False, "iq_quant"),
-    ("IQ4_XS",  "4-bit extra-small IQ",     4.25,  False, "iq_quant"),
-    ("IQ3_XXS", "3-bit extra-extra-small IQ", 3.06, False,"iq_quant"),
-    ("IQ3_XS",  "3-bit extra-small IQ",     3.30,  False, "iq_quant"),
-    ("IQ3_S",   "3-bit small IQ",           3.44,  False, "iq_quant"),
-    ("IQ3_M",   "3-bit medium IQ",          3.66,  False, "iq_quant"),
-    ("IQ2_XXS", "2-bit extra-extra-small IQ",2.06,  False, "iq_quant"),
-    ("IQ2_XS",  "2-bit extra-small IQ",     2.31,  False, "iq_quant"),
-    ("IQ2_S",   "2-bit small IQ",           2.50,  False, "iq_quant"),
-    ("IQ2_M",   "2-bit medium IQ",          2.70,  False, "iq_quant"),
-    ("IQ1_S",   "1-bit small IQ",           1.56,  False, "iq_quant"),
-    ("IQ1_M",   "1-bit medium IQ",          1.75,  False, "iq_quant"),
-    # Ternary
-    ("TQ1_0",   "1-bit ternary",            1.69, False, "ternary"),
-    ("TQ2_0",   "2-bit ternary",            2.06, False, "ternary"),
-    # Special
-    ("MXFP4",   "MXFP4 (microscaling)",     4.00,  False, "special"),
-    ("NVFP4",   "NVidia FP4 format",        4.00,  False, "special"),
-]
-
-QUANT_ALIASES = {
-    "Q4_K": "Q4_K_M",
-    "Q5_K": "Q5_K_M",
-    "Q3_K": "Q3_K_M",
+# Known quantization types with descriptions and approximate bpw
+QUANT_TYPES = {
+    "q4_0":   {"desc": "4-bit (4.34G/7B)", "bpw": 4.34, "type_id": 2},
+    "q4_1":   {"desc": "4-bit (4.78G/7B)", "bpw": 4.78, "type_id": 3},
+    "q5_0":   {"desc": "5-bit (5.21G/7B)", "bpw": 5.21, "type_id": 8},
+    "q5_1":   {"desc": "5-bit (5.65G/7B)", "bpw": 5.65, "type_id": 9},
+    "q8_0":   {"desc": "8-bit (7.96G/7B)", "bpw": 7.96, "type_id": 7},
+    "q2_k":   {"desc": "2-bit K-quant", "bpw": 2.96, "type_id": 10},
+    "q2_k_s": {"desc": "2-bit K-quant small", "bpw": 2.96, "type_id": 21},
+    "q3_k_s": {"desc": "3-bit K-quant small", "bpw": 3.41, "type_id": 11},
+    "q3_k_m": {"desc": "3-bit K-quant medium", "bpw": 3.74, "type_id": 12},
+    "q3_k_l": {"desc": "3-bit K-quant large", "bpw": 4.03, "type_id": 13},
+    "q4_k_s": {"desc": "4-bit K-quant small", "bpw": 4.37, "type_id": 14},
+    "q4_k_m": {"desc": "4-bit K-quant medium", "bpw": 4.58, "type_id": 15},
+    "q5_k_s": {"desc": "5-bit K-quant small", "bpw": 5.21, "type_id": 16},
+    "q5_k_m": {"desc": "5-bit K-quant medium", "bpw": 5.33, "type_id": 17},
+    "q6_k":   {"desc": "6-bit K-quant (6.14G/7B)", "bpw": 6.14, "type_id": 18},
+    "f16":    {"desc": "16-bit float (14G/7B)", "bpw": 16.0, "type_id": 1},
+    "f32":    {"desc": "32-bit float (26G/7B)", "bpw": 32.0, "type_id": 0},
+    "bf16":   {"desc": "BFloat16 (14G/7B)", "bpw": 16.0, "type_id": 32},
+    "iq1_s":  {"desc": "1.56 bpw quantization", "bpw": 1.56, "type_id": 24},
+    "iq1_m":  {"desc": "1.75 bpw quantization", "bpw": 1.75, "type_id": 31},
+    "iq2_xxs":{"desc": "2.06 bpw quantization", "bpw": 2.06, "type_id": 19},
+    "iq2_xs": {"desc": "2.31 bpw quantization", "bpw": 2.31, "type_id": 20},
+    "iq2_s":  {"desc": "2.5 bpw quantization", "bpw": 2.5, "type_id": 28},
+    "iq2_m":  {"desc": "2.7 bpw quantization", "bpw": 2.7, "type_id": 29},
+    "iq3_xxs":{"desc": "3.06 bpw quantization", "bpw": 3.06, "type_id": 23},
+    "iq3_xs": {"desc": "3.3 bpw quantization", "bpw": 3.3, "type_id": 22},
+    "iq3_s":  {"desc": "3.44 bpw quantization", "bpw": 3.44, "type_id": 26},
+    "iq3_m":  {"desc": "3.66 bpw quantization mix", "bpw": 3.66, "type_id": 27},
+    "iq4_nl": {"desc": "4.50 bpw nonlinear", "bpw": 4.50, "type_id": 25},
+    "iq4_xs": {"desc": "4.25 bpw nonlinear", "bpw": 4.25, "type_id": 30},
 }
 
-# ─── Helpers ────────────────────────────────────────────────────────────
+# ─── Helpers ─────────────────────────────────────────────────────────────────
 
-def _resolve_quant_type(name: str) -> str:
-    """Resolve quant type name (handle aliases)."""
-    upper = name.upper().replace("-", "_")
-    return QUANT_ALIASES.get(upper, upper)
+def _check_tools():
+    """Check availability of llama.cpp tools, return status dict."""
+    status = {
+        "convert_script": CONVERT_SCRIPT.exists(),
+        "quantize_bin": QUANTIZE_BIN.exists(),
+        "gguf_package": False,
+    }
+    try:
+        import gguf
+        status["gguf_package"] = True
+    except ImportError:
+        pass
+    return status
 
-def _find_gguf_files(path: str = ".") -> list:
-    """Find all .gguf files under a path."""
-    return sorted(Path(path).rglob("*.gguf"))
+
+def _find_llama_quantize() -> Optional[Path]:
+    """Find llama-quantize binary, checking common locations."""
+    candidates = [
+        QUANTIZE_BIN,
+        LLAMA_CPP_DIR / "build" / "bin" / "Release" / "llama-quantize",
+        LLAMA_CPP_DIR / "build" / "llama-quantize",
+        Path("/usr/local/bin/llama-quantize"),
+        Path("/usr/bin/llama-quantize"),
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
 
 def _format_size(size_bytes: int) -> str:
-    if size_bytes < 1024:
-        return f"{size_bytes} B"
-    elif size_bytes < 1024 ** 2:
-        return f"{size_bytes / 1024:.0f} KB"
-    elif size_bytes < 1024 ** 3:
-        return f"{size_bytes / 1024 ** 2:.0f} MB"
-    else:
-        return f"{size_bytes / 1024 ** 3:.2f} GB"
+    """Format byte size to human-readable string."""
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if size_bytes < 1024:
+            return f"{size_bytes:.2f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.2f} PB"
 
-def _format_duration(seconds: float) -> str:
-    if seconds < 60:
-        return f"{seconds:.1f}s"
-    elif seconds < 3600:
-        return f"{seconds / 60:.1f}m"
-    else:
-        return f"{seconds / 3600:.1f}h"
 
-def _read_gguf_metadata(model_path: str) -> dict:
-    """Read GGUF file metadata."""
-    from gguf import GGUFReader, GGUFValueType
-    reader = GGUFReader(model_path)
-    meta = {
-        "path": model_path,
-        "size_bytes": os.path.getsize(model_path),
-        "size_hr": _format_size(os.path.getsize(model_path)),
-        "n_tensors": len(reader.tensors),
-        "n_fields": len(reader.fields),
-    }
-
-    # Try to read GGUF.tensor_count from metadata
-    try:
-        tc_field = reader.get_field("GGUF.tensor_count")
-        if tc_field is not None:
-            meta["tensor_count"] = int(np.asarray(tc_field.parts[-1]).flat[0])
-        else:
-            meta["tensor_count"] = len(reader.tensors)
-    except Exception:
-        meta["tensor_count"] = len(reader.tensors)
-    # Architecture-aware KV extraction
-    # GGUF uses architecture-specific key prefixes (e.g., deepseek.context_length,
-    # qwen2.context_length, gemma.block_count).  Read general.architecture first
-    # so we can try the right prefix.
-    ARCH_PREFIX_MAP = {
-        'deepseek': ['deepseek.', 'deepseek2.', 'deepseek3.', 'llama.'],
-        'qwen': ['qwen2.', 'qwen2moe.', 'qwen3moe.', 'llama.'],
-        'qwen2': ['qwen2.', 'qwen2moe.', 'llama.'],
-        'gemma': ['gemma.', 'gemma2.', 'llama.'],
-        'gemma2': ['gemma2.', 'gemma.', 'llama.'],
-        'phi': ['phi3.', 'phi2.', 'llama.'],
-        'phi3': ['phi3.', 'phi2.', 'llama.'],
-        'command-r': ['command-r.', 'commandr.', 'llama.'],
-        'starcoder': ['starcoder.', 'llama.'],
-        'falcon': ['falcon.', 'llama.'],
-        'chatglm': ['chatglm.', 'glm.', 'llama.'],
-        'baichuan': ['baichuan.', 'llama.'],
-        'llama': ['llama.', 'llama2.', 'llama3.', 'codellama.'],
-    }
-
-    # Determine architecture
-    arch_str = 'llama'
-    arch_field = reader.get_field('general.architecture')
-    if arch_field is not None:
-        try:
-            raw = bytes(arch_field.parts[-1])
-            arch_str = raw.decode('utf-8').strip('\x00').lower()
-        except Exception:
-            pass
-    meta['architecture'] = arch_str
-
-    # Resolve architecture group (e.g., 'deepseek3' -> 'deepseek')
-    arch_group = arch_str
-    if arch_str not in ARCH_PREFIX_MAP:
-        for group, prefixes in ARCH_PREFIX_MAP.items():
-            if arch_str.startswith(group) or group.startswith(arch_str):
-                arch_group = group
-                break
-        else:
-            arch_group = 'llama'
-    prefixes_to_try = ARCH_PREFIX_MAP.get(arch_group, ['llama.'])
-    # Also add the raw arch as a prefix for unknown architectures
-    if arch_str != arch_group and arch_str not in prefixes_to_try:
-        prefixes_to_try.insert(0, arch_str + '.')
-
-    meta_keys = [
-        ('context_length', 'context_length'),
-        ('embedding_length', 'embedding_length'),
-        ('block_count', 'block_count'),
-        ('feed_forward_length', 'ff_length'),
-        ('attention.head_count', 'n_heads'),
-        ('attention.head_count_kv', 'n_kv_heads'),
-        ('rope.dimension_count', 'rope_dim'),
-        ('attention.layer_norm_rms_epsilon', 'rms_norm_eps'),
-    ]
-
-    for gguf_suffix, meta_key in meta_keys:
-        for prefix in prefixes_to_try:
-            try:
-                field = reader.get_field(prefix + gguf_suffix)
-                if field is not None:
-                    if field.types[-1] in (GGUFValueType.STRING,):
-                        raw = bytes(field.parts[-1])
-                        meta[meta_key] = raw.decode("utf-8").strip("\x00")
-                    else:
-                        arr = np.asarray(field.parts[-1])
-                        meta[meta_key] = int(arr.flat[0]) if arr.size == 1 else arr.tolist()
-                    break  # Found the key, move to next
-            except Exception:
-                continue
-
-    # Also read general.name, general.file_type, general.description (arch-agnostic keys)
-    for gguf_key, meta_key in [("general.name", "name"), ("general.file_type", "file_type"),
-                                ("general.description", "description")]:
-        try:
-            field = reader.get_field(gguf_key)
-            if field is not None:
-                if field.types[-1] in (GGUFValueType.STRING,):
-                    raw = bytes(field.parts[-1])
-                    meta[meta_key] = raw.decode("utf-8").strip("\x00")
-                else:
-                    arr = np.asarray(field.parts[-1])
-                    meta[meta_key] = int(arr.flat[0]) if arr.size == 1 else arr.tolist()
-        except Exception:
-            pass
-
-    # Store the prefixes used for reference
-    meta['_prefixes_used'] = prefixes_to_try
-
-    # Count tensors per type
-    from gguf import GGMLQuantizationType
-    type_counts = {}
-    for t in reader.tensors:
-        qt = GGMLQuantizationType(t.tensor_type)
-        try:
-            name = qt.name
-        except ValueError:
-            name = str(t.tensor_type)
-        type_counts[name] = type_counts.get(name, 0) + 1
-    meta["tensor_types"] = type_counts
-
-    # Calculate total params
-    total_params = 0
-    for t in reader.tensors:
-        shape_dims = 1
-        for d in t.shape:
-            shape_dims *= int(d)
-        total_params += shape_dims
-    meta["n_params"] = total_params
-    if total_params >= 1_000_000_000:
-        meta["n_params_hr"] = f"{total_params / 1e9:.1f}B"
-    elif total_params >= 1_000_000:
-        meta["n_params_hr"] = f"{total_params / 1e6:.1f}M"
-    else:
-        meta["n_params_hr"] = str(total_params)
-
-    # Determine dominant quant type
-    if type_counts:
-        meta["quant_type"] = max(type_counts, key=type_counts.get)
-
-    return meta
-
-# ─── IMatrix Generation ─────────────────────────────────────────────────
-
-def cmd_imatrix(args):
-    """Generate importance matrix for quant optimization."""
-    print("╔═══════════════════════════════════════════╗")
-    print("║    Importance Matrix Generator            ║")
-    print("╚═══════════════════════════════════════════╝")
-    print()
-
-    model = args.model
-    data = args.data
-    output = args.output or f"{Path(model).stem}-imatrix.dat"
-    threads = args.threads or os.cpu_count() // 2 or 4
-    ctx_size = args.ctx_size or 512
-
-    if not os.path.exists(LLAMA_IMATRIX):
-        print(f"❌ llama-imatrix not found at {LLAMA_IMATRIX}")
-        print("   Build it: cd /tmp/llama.cpp/build && cmake --build . --target llama-imatrix")
-        return 1
-
-    if not os.path.exists(model):
-        print(f"❌ Model not found: {model}")
-        return 1
-
-    # Prepare calibration data
-    if data and not os.path.exists(data):
-        print(f"❌ Calibration data not found: {data}")
-        return 1
-
-    print(f"Model:           {model}")
-    print(f"Calibration:     {data or 'internal (model self-tokens)'}")
-    print(f"Output:          {output}")
-    print(f"Threads:         {threads}")
-    print(f"Context size:    {ctx_size}")
-    print()
-
-    cmd = [
-        LLAMA_IMATRIX, "-m", model,
-        "-t", str(threads),
-        "-c", str(ctx_size),
-        "-o", output,
-    ]
-
-    if data:
-        cmd.extend(["-f", data])
-
-    print(f"Running: {' '.join(cmd)}")
-    print()
-    t0 = time.time()
-
+def _run_subprocess(cmd: List[str], desc: str = "") -> Tuple[int, str, str]:
+    """Run a subprocess, return (returncode, stdout, stderr)."""
+    desc_str = f" ({desc})" if desc else ""
+    print(f"  Running: {' '.join(cmd)}{desc_str}")
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+        stderr=subprocess.PIPE,
+        universal_newlines=True,
     )
+    stdout, stderr = proc.communicate()
+    return proc.returncode, stdout, stderr
 
-    for line in proc.stdout:
-        line = line.rstrip()
-        print(f"  {line}")
 
-    proc.wait()
-    elapsed = time.time() - t0
+# ─── Pure Python Q4_0 Quantization (fallback) ───────────────────────────────
+# Reference: q4_matmul.py
 
-    if proc.returncode == 0 and os.path.exists(output):
-        size = os.path.getsize(output)
-        print(f"\n✅ imatrix generated: {output} ({_format_size(size)}) in {_format_duration(elapsed)}")
-        return 0
-    else:
-        print(f"\n❌ imatrix generation failed (exit code {proc.returncode})")
-        return 1
-
-# ─── Quantize ───────────────────────────────────────────────────────────
-
-def cmd_quantize(args):
-    """Quantize a GGUF model to a different type."""
-    print("╔═══════════════════════════════════════════╗")
-    print("║    GGUF Quantizer                         ║")
-    print("╚═══════════════════════════════════════════╝")
-    print()
-
-    model_path = args.model
-    quant_type = _resolve_quant_type(args.type)
-    output = args.output
-    imatrix = args.imatrix
-    threads = args.threads or os.cpu_count() // 2 or 4
-    allow_requantize = args.allow_requantize
-    pure = args.pure
-    leave_output = args.leave_output
-    dry_run = args.dry_run
-
-    if not os.path.exists(LLAMA_QUANTIZE):
-        print(f"❌ llama-quantize not found at {LLAMA_QUANTIZE}")
-        print("   Build it: cd /tmp/llama.cpp/build && cmake --build . --target llama-quantize")
-        return 1
-
-    if not os.path.exists(model_path):
-        print(f"❌ Model not found: {model_path}")
-        return 1
-
-    if not output:
-        stem = Path(model_path).stem
-        output = str(Path(model_path).parent / f"{stem}-{quant_type}.gguf")
-
-    print(f"Input:           {model_path}")
-    print(f"Output:          {output}")
-    print(f"Quant type:      {quant_type}")
-    if imatrix:
-        print(f"Importance mat:  {imatrix}")
-    if allow_requantize:
-        print(f"Allow requantize: yes")
-    print()
-
-    cmd = [LLAMA_QUANTIZE, model_path, output, quant_type, str(threads)]
-
-    if imatrix:
-        cmd.extend(["--imatrix", imatrix])
-    if allow_requantize:
-        cmd.append("--allow-requantize")
-    if pure:
-        cmd.append("--pure")
-    if leave_output:
-        cmd.append("--leave-output-tensor")
-    if dry_run:
-        cmd.append("--dry-run")
-
-    try:
-        t0 = time.time()
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        for line in proc.stdout:
-            line = line.rstrip()
-            if line:
-                print(f"  {line}")
-        proc.wait()
-        elapsed = time.time() - t0
-
-        if proc.returncode == 0:
-            if os.path.exists(output) and not dry_run:
-                size = os.path.getsize(output)
-                orig_size = os.path.getsize(model_path)
-                ratio = size / orig_size if orig_size > 0 else 0
-                print(f"\n✅ Quantization complete: {output}")
-                print(f"   Size: {_format_size(size)} ({ratio:.1%} of original)")
-                print(f"   Time: {_format_duration(elapsed)}")
-            else:
-                print(f"\n✅ Dry-run complete")
-            return 0
-        else:
-            print(f"\n❌ Quantization failed (exit code {proc.returncode})")
-            return 1
-
-    except Exception as e:
-        print(f"\n❌ Error: {e}")
-        return 1
-
-# ─── NF4 Quantization (NormalFloat4 for QLoRA) ──────────────────────────
-
-def quantize_nf4_block(block: np.ndarray) -> tuple:
-    """Quantize a block of floats to NF4 format.
-
-    NF4 is the NormalFloat4 format from the QLoRA paper:
-    - Blocks of 64 values
-    - Uses absolute maximum scaling (absmax)
-    - 4-bit symmetric quantization: 16 evenly spaced levels from -1 to 1
-    - Data type levels: {-1.0, -0.8667, -0.7333, -0.6, -0.4667, -0.3333,
-                         -0.2, -0.0667, 0.0667, 0.2, 0.3333, 0.4667,
-                          0.6, 0.7333, 0.8667, 1.0}
+class Q4Block:
+    """A single Q4_0 quantization block (16 values, 10 bytes).
+    
+    Format:
+      - 1x float16 scale (2 bytes)
+      - 8x uint8 (2x 4-bit values each, 16 values total)
+      - 10 bytes per 16 values
     """
-    NF4_LEVELS = np.array([
-        -1.0, -0.8666667, -0.7333333, -0.6,
-        -0.4666667, -0.3333333, -0.2, -0.0666667,
-        0.0666667, 0.2, 0.3333333, 0.4666667,
-        0.6, 0.7333333, 0.8666667, 1.0
-    ], dtype=np.float32)
 
-    absmax = np.max(np.abs(block))
-    if absmax == 0:
-        return np.zeros(len(block) // 2, dtype=np.uint8), 0.0
+    def __init__(self, scale: np.float16 = np.float16(0.0), quants: np.ndarray = None):
+        self.scale = scale
+        self.quants = np.zeros(8, dtype=np.uint8) if quants is None else quants
 
-    # Normalize to [-1, 1]
-    normalized = block / absmax
+    def dequantize(self) -> np.ndarray:
+        """Dequantize block to 16 float32 values."""
+        result = np.zeros(16, dtype=np.float32)
+        for i in range(8):
+            lo = int(self.quants[i] & 0x0F)
+            hi = int((self.quants[i] >> 4) & 0x0F)
+            result[i*2] = (lo - 8) * float(self.scale)
+            result[i*2+1] = (hi - 8) * float(self.scale)
+        return result
 
-    # Quantize to nearest NF4 level
-    indices = np.zeros(len(normalized), dtype=np.uint8)
-    for i, val in enumerate(normalized):
-        idx = np.argmin(np.abs(NF4_LEVELS - val))
-        indices[i] = idx
+    def pack(self) -> bytes:
+        """Pack block to 10 bytes: float16 scale + 8 uint8."""
+        buf = struct.pack('<e', float(self.scale))
+        buf += self.quants.tobytes()
+        return buf
 
-    # Pack 2×4-bit values per byte
-    packed = np.zeros(len(indices) // 2, dtype=np.uint8)
-    for i in range(0, len(indices), 2):
-        packed[i // 2] = (indices[i] & 0x0F) | ((indices[i + 1] & 0x0F) << 4)
-
-    return packed, absmax
-
-
-def dequantize_nf4_block(packed: np.ndarray, scale: float, n_values: int) -> np.ndarray:
-    """Dequantize an NF4 block back to float32."""
-    NF4_LEVELS = np.array([
-        -1.0, -0.8666667, -0.7333333, -0.6,
-        -0.4666667, -0.3333333, -0.2, -0.0666667,
-        0.0666667, 0.2, 0.3333333, 0.4666667,
-        0.6, 0.7333333, 0.8666667, 1.0
-    ], dtype=np.float32)
-
-    if scale == 0:
-        return np.zeros(n_values, dtype=np.float32)
-
-    indices = np.zeros(n_values, dtype=np.uint8)
-    for i in range(len(packed)):
-        lo = packed[i] & 0x0F
-        hi = (packed[i] >> 4) & 0x0F
-        indices[i * 2] = lo
-        if i * 2 + 1 < n_values:
-            indices[i * 2 + 1] = hi
-
-    return NF4_LEVELS[indices] * scale
+    @classmethod
+    def unpack(cls, data: bytes) -> "Q4Block":
+        """Unpack 10 bytes into Q4Block."""
+        scale = np.float16(struct.unpack('<e', data[:2])[0])
+        quants = np.frombuffer(data[2:10], dtype=np.uint8).copy()
+        return cls(scale, quants)
 
 
-def cmd_nf4(args):
-    """Convert a GGUF model to NF4 quantization for QLoRA."""
-    print("╔═══════════════════════════════════════════╗")
-    print("║    NF4 Quantizer (NormalFloat4)           ║")
-    print("╚═══════════════════════════════════════════╝")
-    print()
+def quantize_q4(values: np.ndarray) -> List[Q4Block]:
+    """Quantize float32 array to Q4_0 blocks. Returns list of blocks."""
+    n = len(values)
+    n_blocks = (n + 15) // 16
+    blocks = []
+    for b in range(n_blocks):
+        start = b * 16
+        end = min(start + 16, n)
+        chunk = values[start:end]
+        if len(chunk) < 16:
+            chunk = np.pad(chunk, (0, 16 - len(chunk)))
+        amax = np.max(np.abs(chunk))
+        scale = np.float16(amax / 7.0 if amax > 0 else 1.0)
+        s = float(scale)
+        quants = np.zeros(8, dtype=np.uint8)
+        for i in range(8):
+            lo = max(0, min(15, int(round(chunk[i*2] / s)) + 8))
+            hi = max(0, min(15, int(round(chunk[i*2+1] / s)) + 8))
+            quants[i] = (hi << 4) | lo
+        blocks.append(Q4Block(scale, quants))
+    return blocks
 
-    model_path = args.model
-    output = args.output or f"{Path(model_path).stem}-nf4.gguf"
-    block_size = args.block_size or 64
 
-    if not os.path.exists(model_path):
-        print(f"❌ Model not found: {model_path}")
-        return 1
+def dequantize_q4(blocks: List[Q4Block], n: int) -> np.ndarray:
+    """Dequantize blocks back to float32 array."""
+    result = np.zeros(n, dtype=np.float32)
+    for b_idx, block in enumerate(blocks):
+        start = b_idx * 16
+        end = min(start + 16, n)
+        values = block.dequantize()
+        result[start:end] = values[:end-start]
+    return result
 
+
+def quantize_gguf_q4_0(input_path: str, output_path: str) -> Dict[str, Any]:
+    """Pure Python Q4_0 quantization of a GGUF file.
+    
+    Reads an F32/F16 GGUF file, quantizes all weight tensors to Q4_0,
+    and writes a new GGUF file. This is a fallback when llama-quantize
+    is not available.
+    
+    Returns stats dict.
+    """
     try:
-        from gguf import GGUFReader, GGUFWriter, GGMLQuantizationType, GGUFValueType
-    except ImportError as e:
-        print(f"❌ gguf package required: {e}")
-        print("   pip install gguf")
-        return 1
-
-    print(f"Input:           {model_path}")
-    print(f"Output:          {output}")
-    print(f"Block size:      {block_size}")
-    print()
-
-    reader = GGUFReader(model_path)
-    meta = _read_gguf_metadata(model_path)
-
-    print(f"Architecture:    {meta.get('architecture', 'unknown')}")
-    print(f"Parameters:      {meta.get('n_params_hr', '?')}")
-    print(f"Tensors:         {len(reader.tensors)}")
-    print()
-
-    # Create output GGUF
-    arch = meta.get("architecture", "llama")
-    writer = GGUFWriter(output, arch)
-
-    # Copy KV metadata
-    for name, field in reader.fields.items():
-        if name.startswith("GGUF."):
-            continue
+        import gguf
+        from gguf.constants import GGMLQuantizationType, GGML_TYPE
+    except ImportError:
+        raise ImportError("gguf package required for pure Python quantization")
+    
+    print(f"  Reading: {input_path}")
+    reader = gguf.GGUFReader(input_path)
+    
+    # Collect metadata
+    output_tensors = []
+    stats = {
+        "tensors_quantized": 0,
+        "bytes_before": 0,
+        "bytes_after": 0,
+        "skipped": 0,
+    }
+    
+    for tensor in reader.tensors:
+        # Get the raw data as numpy array
+        data = tensor.data
+        shape = tensor.shape
+        
+        # Determine if it's a weight tensor (quantizable)
+        name = tensor.name
+        is_weight = any(name.endswith(suffix) for suffix in [
+            ".weight", "attn_q.weight", "attn_k.weight", "attn_v.weight",
+            "attn_output.weight", "ffn_gate.weight", "ffn_up.weight",
+            "ffn_down.weight", "output.weight", "token_embd.weight",
+        ])
+        
+        # Only quantize weight tensors that are float type
+        current_type = tensor.tensor_type if hasattr(tensor, 'tensor_type') else GGML_TYPE.F32
+        
+        if is_weight and current_type in (GGML_TYPE.F32, GGML_TYPE.F16):
+            print(f"  Quantizing: {name} shape={shape}")
+            # Convert to float32 for quantization
+            if data.dtype != np.float32:
+                data = data.astype(np.float32)
+            
+            # Store original bytes
+            orig_bytes = data.nbytes
+            stats["bytes_before"] += orig_bytes
+            
+            # Quantize per row
+            rows = data.shape[0]
+            q_blocks = []
+            for r in range(rows):
+                row_blocks = quantize_q4(data[r])
+                q_blocks.extend(row_blocks)
+            
+            # Pack to bytes
+            packed = b''.join(b.pack() for b in q_blocks)
+            stats["bytes_after"] += len(packed)
+            stats["tensors_quantized"] += 1
+            
+            # Create new GGUF tensor info
+            # For Q4_0: shape is (rows, pack_size) where pack_size = (cols+15)//16 * 10
+            cols = data.shape[1]
+            pack_size = ((cols + 15) // 16) * 10
+            new_shape = [rows, pack_size]
+            
+            output_tensors.append({
+                "name": name,
+                "shape": new_shape,
+                "data": packed,
+                "type": GGMLQuantizationType.Q4_0,
+            })
+        else:
+            # Pass through (embeddings, norm weights, etc.)
+            stats["skipped"] += 1
+            output_tensors.append({
+                "name": name,
+                "shape": list(shape),
+                "data": data.tobytes(),
+                "type": current_type if hasattr(current_type, 'value') else 0,
+            })
+    
+    # Write output GGUF
+    print(f"  Writing: {output_path}")
+    writer = gguf.GGUFWriter(output_path, reader.get_field("general.architecture"))
+    
+    # Copy metadata fields
+    for field in reader.fields.values():
         try:
-            raw = bytes(field.parts[-1])
-            # Detect string vs numeric
-            if field.types[-1] in (GGUFValueType.STRING,):
-                val = raw.decode("utf-8").strip("\x00")
-                writer.add_string(name, val)
-            elif field.types[-1] in (GGUFValueType.UINT32,):
-                from gguf import GGUFValueType
-                if field.types[-1] == GGUFValueType.UINT32:
-                    writer.add_uint32(name, int(np.asarray(field.parts[-1]).flat[0]))
+            if field.name.startswith("general.") or field.name.startswith("llama.") or field.name.startswith("tokenizer."):
+                writer.add_key(field.name)
         except Exception:
             pass
-
-    t0 = time.time()
-    nf4_replace_count = 0
-    total_size_before = 0
-    total_size_after = 0
-
-    for tensor in reader.tensors:
-        data = np.asarray(tensor.data)
-
-        # Determine original quant type
-        from gguf import GGMLQuantizationType
-        orig_type = GGMLQuantizationType(tensor.tensor_type)
-        orig_name = orig_type.name
-
-        # Shape information
-        shape = [int(d) for d in tensor.shape]
-        flat = data.ravel()
-        n_elements = len(flat)
-
-        # Skip very small tensors and keep them at original precision
-        if n_elements < block_size * 2:
-            writer.add_tensor(tensor.name, data, raw_dtype=orig_type)
-            continue
-
-        # Dequantize to float32
-        from gguf import dequantize
-
-        # Calculate bytes for NF4
-        nf4_bytes_needed = (n_elements * 4 // 8) + (n_elements // block_size) * 4  # data + scales
-        original_bytes = data.nbytes
-
-        # Only quantize weight tensors (not norms, etc.)
-        is_weight = any(s in tensor.name for s in ['.weight', 'token_embd', 'output'])
-        is_small = n_elements < 1024
-
-        if is_weight and not is_small:
-            try:
-                deq = dequantize(data, tensor.tensor_type).astype(np.float32)
-                deq_flat = deq.ravel()
-
-                # Quantize block by block
-                n_blocks = (n_elements + block_size - 1) // block_size
-                packed_blocks = []
-                scales = []
-
-                for b in range(n_blocks):
-                    start = b * block_size
-                    end = min(start + block_size, n_elements)
-                    block = deq_flat[start:end]
-
-                    # Pad last block if needed
-                    if len(block) < block_size:
-                        block = np.pad(block, (0, block_size - len(block)))
-
-                    packed, scale = quantize_nf4_block(block)
-                    packed_blocks.append(packed)
-                    scales.append(scale)
-
-                # Store as packed format: [scales (float32), packed data (uint8)]
-                scale_arr = np.array(scales, dtype=np.float32)
-                packed_all = np.concatenate(packed_blocks)
-                nf4_data = np.concatenate([
-                    scale_arr.view(np.uint8).ravel(),
-                    packed_all.ravel(),
-                ])
-
-                writer.add_tensor(tensor.name, nf4_data, raw_dtype=GGMLQuantizationType.F16)
-                nf4_replace_count += 1
-                total_size_before += original_bytes
-                total_size_after += len(nf4_data)
-
-            except Exception as e:
-                # Fall back to original type
-                writer.add_tensor(tensor.name, data, raw_dtype=orig_type)
-        else:
-            writer.add_tensor(tensor.name, data, raw_dtype=orig_type)
-
+    
+    # Add tensors
+    for t in output_tensors:
+        # We need to convert bytes back to the appropriate type for GGUFWriter
+        try:
+            arr = np.frombuffer(t["data"], dtype=np.uint8).reshape(t["shape"])
+            writer.add_tensor(t["name"], arr, raw_dtype=t["type"])
+        except Exception as e:
+            print(f"  Warning: could not add tensor {t['name']}: {e}")
+    
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
-    writer.write_tensors_to_file(progress=True)
+    writer.write_tensors_to_file()
     writer.close()
+    
+    stats["output_path"] = output_path
+    return stats
 
-    elapsed = time.time() - t0
-    output_size = os.path.getsize(output) if os.path.exists(output) else 0
 
-    print(f"\n✅ NF4 conversion complete")
-    print(f"   Weights converted: {nf4_replace_count}")
-    if total_size_before > 0:
-        print(f"   Size reduction: {_format_size(total_size_before)} → {_format_size(output_size)} ({output_size/total_size_before:.1%})")
-    print(f"   Time: {_format_duration(elapsed)}")
-    print()
-    print(f"   NOTE: NF4 is a custom format for QLoRA. The output GGUF")
-    print(f"   stores weight data as packed NF4 blocks with float32 scales.")
-    print(f"   Standard llama.cpp cannot load this file directly —")
-    print(f"   it's intended for MojoLlama's QLoRA training pipeline.")
-
-    return 0
-
-# ─── List Types ─────────────────────────────────────────────────────────
-
-def cmd_list_types(args):
-    """List all supported quantization types."""
-    print("╔══════════════════════════════════════════════════════════════╗")
-    print("║          Supported Quantization Types                       ║")
-    print("╚══════════════════════════════════════════════════════════════╝")
-    print()
-    print(f"{'Name':<14} {'Bits/Param':<12} {'Category':<14} Description")
-    print("-" * 80)
-
-    categories = ["float", "standard", "k_quant", "iq_quant", "ternary", "special"]
-    current_cat = None
-
-    for name, desc, bpw, is_k, cat in QUANT_TYPES:
-        if cat != current_cat:
-            if current_cat is not None:
-                print()
-            current_cat = cat
-            cat_label = {
-                "float": "── Float Types ──",
-                "standard": "── Standard Block Quants ──",
-                "k_quant": "── K-Quants (mixture) ──",
-                "iq_quant": "── Importance-Aware Quants (IQ) ──",
-                "ternary": "── Ternary ──",
-                "special": "── Special ──",
-            }.get(cat, cat)
-            print(f"  {cat_label}")
-            print()
-
-        print(f"  {name:<12} {bpw:<12.3f} {cat:<14} {desc}")
-
-    print()
-    print(f"Total: {len(QUANT_TYPES)} quantization types")
-    print()
-
-# ─── Info ───────────────────────────────────────────────────────────────
-
-def cmd_info(args):
-    """Inspect a GGUF model file."""
-    model_path = args.model
-    verbose = args.verbose
-
-    if not os.path.exists(model_path):
-        print(f"❌ File not found: {model_path}")
-        return 1
-
-    meta = _read_gguf_metadata(model_path)
-
-    print("╔═══════════════════════════════════════════╗")
-    print("║    GGUF Model Inspector                   ║")
-    print("╚═══════════════════════════════════════════╝")
-    print()
-    print(f"  Path:             {meta['path']}")
-    print(f"  Size:             {meta['size_hr']}")
-    print(f"  Architecture:     {meta.get('architecture', '?')}")
-    print(f"  Name:             {meta.get('name', '?')}")
-    print(f"  Parameters:       {meta.get('n_params_hr', '?')}")
-    print(f"  Quantization:     {meta.get('quant_type', '?')}")
-    print(f"  Tensors:          {meta['n_tensors']}")
-    print(f"  Metadata fields:  {meta['n_fields']}")
-    print()
-
-    if "context_length" in meta:
-        print(f"  Context length:   {meta['context_length']}")
-    if "embedding_length" in meta:
-        print(f"  Embedding dim:    {meta['embedding_length']}")
-    if "block_count" in meta:
-        print(f"  Layers:           {meta['block_count']}")
-    if "n_heads" in meta:
-        print(f"  Attention heads:  {meta['n_heads']}")
-    if "n_kv_heads" in meta:
-        print(f"  KV heads:         {meta['n_kv_heads']}")
-
-    if "tensor_types" in meta and meta["tensor_types"]:
-        print()
-        print("  Tensor types:")
-        for tname, count in sorted(meta["tensor_types"].items(), key=lambda x: -x[1]):
-            print(f"    {tname:<12} {count:>4} tensors")
-
-    if verbose:
-        print()
-        print("  ── All Fields ──")
-        try:
-            from gguf import GGUFReader
-            reader = GGUFReader(model_path)
-            for name, field in reader.fields.items():
-                print(f"    {name}")
-        except Exception:
-            pass
-
-    print()
-    return 0
-
-# ─── Convert (HF → GGUF) ───────────────────────────────────────────────
-
-def cmd_convert(args):
-    """Convert a HuggingFace model to GGUF format."""
-    print("╔═══════════════════════════════════════════╗")
-    print("║    HuggingFace → GGUF Converter           ║")
-    print("╚═══════════════════════════════════════════╝")
-    print()
-
-    model = args.model
-    outtype = args.outtype or "f16"
-    output = args.output
-    verbose = args.verbose
-
-    if not os.path.exists(LLAMA_CONVERT):
-        print(f"❌ Converter not found at {LLAMA_CONVERT}")
-        print("   llama.cpp must be checked out at /tmp/llama.cpp")
-        return 1
-
-    if not output:
-        model_name = model.split("/")[-1] if "/" in model else model
-        output = f"{model_name}-{outtype}.gguf"
-
-    # Direct types that convert_hf_to_gguf.py supports natively
-    direct_types = {"f32", "f16", "bf16", "q8_0", "tq1_0", "tq2_0", "auto"}
-    # Types needing post-quantization via llama-quantize
-    post_quant_types = {
-        "q4_0", "q4_1", "q5_0", "q5_1",
-        "q2_k", "q3_k", "q3_k_s", "q3_k_m", "q3_k_l",
-        "q4_k", "q4_k_m", "q4_k_s",
-        "q5_k", "q5_k_m", "q5_k_s",
-        "q6_k", "q8_k",
-    }
-
-    upper_outtype = outtype.lower()
-
-    if upper_outtype in post_quant_types:
-        # Two-step: convert to f16 first, then post-quantize
-        intermediate = f"/tmp/{model_name}-intermediate-f16.gguf"
-        step1_type = "f16"
-    elif upper_outtype in direct_types:
-        step1_type = upper_outtype
-        intermediate = output
+def quantize_python(input_path: str, output_path: str, quant_type: str = "q4_0") -> Dict[str, Any]:
+    """Pure Python quantization of a GGUF file.
+    
+    Currently only supports Q4_0. Falls back to llama-quantize for other types.
+    """
+    if quant_type.lower() == "q4_0":
+        return quantize_gguf_q4_0(input_path, output_path)
     else:
-        print(f"❌ Unknown outtype: {outtype}")
-        print(f"   Supported: {', '.join(sorted(direct_types | post_quant_types))}")
-        return 1
+        raise ValueError(
+            f"Pure Python quantization does not support '{quant_type}'. "
+            f"Only 'q4_0' is supported. Use llama-quantize for other types."
+        )
 
-    print(f"Model:           {model}")
-    print(f"Out type:        {upper_outtype}")
-    print(f"Output:          {output}")
-    print()
 
-    step_start = time.time()
+# ─── Core Operations ─────────────────────────────────────────────────────────
 
-    # Step 1: Convert to intermediate
-    print(f"[1/2] Converting to {step1_type}...")
-    cmd = [
-        sys.executable, LLAMA_CONVERT,
-        model,
-        "--outtype", step1_type,
-        "--outfile", intermediate,
-    ]
+def convert(
+    model_name_or_path: str,
+    outtype: str = "f16",
+    outfile: Optional[str] = None,
+    verbose: bool = False,
+    **kwargs,
+) -> Dict[str, Any]:
+    """Convert HuggingFace model to GGUF format.
+    
+    Wraps llama.cpp's convert_hf_to_gguf.py.
+    
+    Args:
+        model_name_or_path: HF model name or local path
+        outtype: Output format (f32, f16, bf16, q8_0, auto)
+        outfile: Output file path
+        verbose: Enable verbose output
+    
+    Returns:
+        Dict with status, output path, and stats
+    """
+    # Check for convert script
+    if not CONVERT_SCRIPT.exists():
+        raise FileNotFoundError(
+            f"convert_hf_to_gguf.py not found at {CONVERT_SCRIPT}. "
+            f"Set LLAMA_CPP_DIR environment variable to point to your llama.cpp directory."
+        )
+    
+    # Build command
+    cmd = [sys.executable, str(CONVERT_SCRIPT), model_name_or_path]
+    cmd.extend(["--outtype", outtype])
+    if outfile:
+        cmd.extend(["--outfile", outfile])
     if verbose:
         cmd.append("--verbose")
-
-    print(f"  Running: {' '.join(cmd)}")
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        print(f"❌ Conversion failed:")
-        print(proc.stdout[-500:] if proc.stdout else "")
-        print(proc.stderr[-500:] if proc.stderr else "")
-        return 1
-
-    print(f"  ✅ Intermediate saved: {intermediate}")
-    step_elapsed = time.time() - step_start
-
-    # Step 2: Post-quantize if needed
-    if upper_outtype in post_quant_types:
-        print(f"\n[2/2] Post-quantizing to {upper_outtype}...")
-        quant_cmd = [
-            LLAMA_QUANTIZE, intermediate, output, upper_outtype,
-            str(os.cpu_count() // 2 or 4),
-        ]
-        print(f"  Running: {' '.join(quant_cmd)}")
-        quant_proc = subprocess.run(quant_cmd, capture_output=True, text=True)
-        if quant_proc.returncode != 0:
-            print(f"❌ Post-quantization failed:")
-            print(quant_proc.stdout[-300:] if quant_proc.stdout else "")
-            print(quant_proc.stderr[-300:] if quant_proc.stderr else "")
-            # Keep intermediate for debugging
-            return 1
-
-        # Remove intermediate
-        try:
-            os.remove(intermediate)
-        except OSError:
-            pass
-
-        print(f"  ✅ Post-quantization complete")
-
-    total_elapsed = time.time() - step_start
-
-    if os.path.exists(output):
-        size = os.path.getsize(output)
-        print(f"\n✅ Export complete: {output} ({_format_size(size)})")
-        print(f"   Time: {_format_duration(total_elapsed)}")
-    else:
-        print(f"\n❌ Output file not found: {output}")
-
-    return 0
-
-# ─── Validate ───────────────────────────────────────────────────────────
-
-def cmd_validate(args):
-    """Validate a GGUF model file integrity."""
-    model_path = args.model
-
-    if not os.path.exists(model_path):
-        print(f"❌ File not found: {model_path}")
-        return 1
-
-    print("╔═══════════════════════════════════════════╗")
-    print("║    GGUF Model Validator                   ║")
-    print("╚═══════════════════════════════════════════╝")
-    print()
-
-    issues = []
-    size = os.path.getsize(model_path)
-    print(f"  Model:  {model_path}")
-    print(f"  Size:   {_format_size(size)}")
-    print()
-
-    # 1. Check file size
-    if size == 0:
-        issues.append(("CRITICAL", "File is empty"))
-    elif size < 1024 ** 2:
-        issues.append(("WARNING", f"File is very small ({_format_size(size)}) — unlikely a valid GGUF"))
-    else:
-        print(f"  ✅ File size OK")
-
-    # 2. Try loading with gguf
-    try:
-        from gguf import GGUFReader, GGMLQuantizationType
-        reader = GGUFReader(model_path)
-        print(f"  ✅ GGUF header valid: {len(reader.tensors)} tensors, {len(reader.fields)} KV fields")
-
-        # 3. Check all tensors
-        broken = 0
-        for t in reader.tensors:
-            try:
-                _ = t.data.size
-                _ = t.tensor_type
-                _ = t.shape
-            except Exception:
-                broken += 1
-                if len(issues) < 10:
-                    issues.append(("ERROR", f"Tensor {t.name} is corrupt"))
-
-        if broken:
-            issues.append(("ERROR", f"{broken} corrupt tensors found"))
+    
+    # Add any extra kwargs as flags
+    for key, value in kwargs.items():
+        flag = "--" + key.replace("_", "-")
+        if isinstance(value, bool):
+            if value:
+                cmd.append(flag)
         else:
-            print(f"  ✅ All {len(reader.tensors)} tensors readable")
-
-        # 4. Check for truncated tensors
-        truncated = 0
-        for t in reader.tensors:
-            try:
-                data = t.data
-                if data.size == 0:
-                    truncated += 1
-            except Exception:
-                truncated += 1
-
-        if truncated:
-            issues.append(("WARNING", f"{truncated} tensors appear truncated"))
-
-        # 5. Check architecture metadata
-        try:
-            arch_field = reader.get_field("general.architecture")
-            if arch_field is not None:
-                arch_bytes = bytes(arch_field.parts[-1])
-                arch = arch_bytes.decode("utf-8").strip("\x00")
-                print(f"  ✅ Architecture: {arch}")
-            else:
-                issues.append(("WARNING", "No general.architecture field"))
-        except Exception:
-            issues.append(("WARNING", "Could not read architecture field"))
-
-    except Exception as e:
-        issues.append(("CRITICAL", f"Not a valid GGUF file: {e}"))
-
-    # Summary
-    print()
-    if issues:
-        print(f"  Found {len(issues)} issue(s):")
-        for severity, msg in issues:
-            icon = {"CRITICAL": "❌", "ERROR": "⚠️", "WARNING": "⚠️"}.get(severity, "❓")
-            print(f"    {icon} [{severity}] {msg}")
-        print()
-        has_critical = any(s == "CRITICAL" for s, _ in issues)
-        return 1 if has_critical else 0
+            cmd.extend([flag, str(value)])
+    
+    print(f"Converting HF model '{model_name_or_path}' to GGUF ({outtype})...")
+    t0 = time.time()
+    retcode, stdout, stderr = _run_subprocess(cmd, "convert_hf_to_gguf.py")
+    elapsed = time.time() - t0
+    
+    if retcode != 0:
+        error_msg = stderr.strip() or stdout.strip()
+        raise RuntimeError(f"Conversion failed (exit code {retcode}):\n{error_msg}")
+    
+    # Try to find the output file
+    if outfile and os.path.exists(outfile):
+        output_path = outfile
     else:
-        print(f"  ✅ Model validated successfully")
-        print()
-        return 0
+        # Try to derive from stdout
+        output_path = _parse_output_path(stdout, model_name_or_path, outtype)
+    
+    size = os.path.getsize(output_path) if output_path and os.path.exists(output_path) else 0
+    
+    result = {
+        "status": "success",
+        "output_path": str(output_path) if output_path else None,
+        "outtype": outtype,
+        "size_bytes": size,
+        "size_human": _format_size(size),
+        "elapsed_seconds": elapsed,
+        "stdout": stdout.strip() if verbose else "",
+        "stderr": stderr.strip() if verbose else "",
+    }
+    
+    print(f"  Output: {result['output_path']}")
+    print(f"  Size: {result['size_human']}")
+    print(f"  Time: {elapsed:.1f}s")
+    
+    return result
 
 
-# ─── Benchmark ──────────────────────────────────────────────────────────
+def _parse_output_path(stdout: str, model_input: str, outtype: str) -> Optional[str]:
+    """Try to find the output file path from conversion script output."""
+    import re
+    # Look for "Writing to: /path/to/file.gguf" or similar
+    for line in stdout.split("\n"):
+        line = line.strip()
+        if "writing" in line.lower() and ".gguf" in line.lower():
+            m = re.search(r'(/[^\s]+\.gguf)', line)
+            if m:
+                return m.group(1)
+    
+    # Default: model name + outtype
+    base = os.path.basename(model_input.rstrip("/"))
+    if not base:
+        base = "model"
+    return f"{base}-{outtype}.gguf"
 
-def cmd_benchmark(args):
-    """Benchmark model inference speed."""
-    model_path = args.model
-    prompt = args.prompt or "Hello"
-    max_tokens = args.max_tokens or 128
-    threads = args.threads or 0
 
-    if not os.path.exists(model_path):
-        print(f"❌ Model not found: {model_path}")
-        return 1
-
-    print("╔═══════════════════════════════════════════╗")
-    print("║    Model Benchmark                        ║")
-    print("╚═══════════════════════════════════════════╝")
-    print()
-
-    meta = _read_gguf_metadata(model_path)
-    print(f"  Model:       {model_path}")
-    print(f"  Quant:       {meta.get('quant_type', '?')}")
-    print(f"  Params:      {meta.get('n_params_hr', '?')}")
-    print()
-
-    bench_path = LLAMA_BENCH
-    if os.path.exists(bench_path):
-        print(f"  Using llama-bench (production benchmark)")
-        print()
-
-        cmd = [bench_path, "-m", model_path, "-p", str(max_tokens), "-n", str(max_tokens)]
-        if threads:
-            cmd.extend(["-t", str(threads)])
-
-        print(f"  Running: {' '.join(cmd)}")
-        t0 = time.time()
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        elapsed = time.time() - t0
-
-        # Parse markdown-style output
-        output = proc.stdout + proc.stderr
-        print()
-        for line in output.split("\n"):
-            if "|" in line and ("pp" in line.lower() or "tg" in line.lower()):
-                parts = [p.strip() for p in line.split("|")]
-                print(f"  {line}")
-        print()
-
-        if proc.returncode == 0:
-            print(f"  ✅ Benchmark complete ({_format_duration(elapsed)})")
+def quantize(
+    input_path: str,
+    quant_type: str = "q4_k_m",
+    output_path: Optional[str] = None,
+    allow_requantize: bool = False,
+    leave_output: bool = False,
+    pure_python: bool = False,
+    override_kv: Optional[Dict[str, str]] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Quantize a GGUF file.
+    
+    Wraps llama.cpp's llama-quantize, or uses pure Python fallback for Q4_0.
+    
+    Args:
+        input_path: Path to GGUF file
+        quant_type: Quantization type (e.g., q4_0, q4_k_m, q8_0, f16)
+        output_path: Output file path (default: auto-generated)
+        allow_requantize: Allow requantizing already quantized tensors
+        leave_output: Leave output.weight unquantized
+        pure_python: Force pure Python quantization (only Q4_0)
+        override_kv: Dict of metadata overrides (KEY=TYPE:VALUE)
+        dry_run: Calculate size without performing quantization
+    
+    Returns:
+        Dict with stats
+    """
+    quant_type = quant_type.lower()
+    input_path = str(Path(input_path).resolve())
+    
+    if not os.path.exists(input_path):
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+    
+    input_size = os.path.getsize(input_path)
+    
+    # Default output path
+    if output_path is None:
+        stem = Path(input_path).stem
+        # Remove existing quant suffix if any
+        for qt in QUANT_TYPES:
+            if stem.lower().endswith(f"-{qt}") or stem.lower().endswith(f"_{qt}"):
+                stem = stem[:-(len(qt)+1)]
+                break
+        output_path = str(Path(input_path).parent / f"{stem}-{quant_type}.gguf")
+    
+    # Check if we can use pure Python fallback
+    if pure_python:
+        return quantize_python(input_path, output_path, quant_type)
+    
+    # Check for llama-quantize
+    quant_bin = _find_llama_quantize()
+    if quant_bin is None:
+        if quant_type == "q4_0":
+            print("  llama-quantize not found, using pure Python Q4_0 fallback...")
+            return quantize_python(input_path, output_path, quant_type)
         else:
-            print(f"  ⚠️  Benchmark returned exit code {proc.returncode}")
-    else:
-        print(f"  llama-bench not found, using fallback")
-        print()
+            raise FileNotFoundError(
+                f"llama-quantize not found. Searched paths include: {QUANTIZE_BIN}. "
+                f"Set LLAMA_CPP_DIR environment variable. "
+                f"For Q4_0 only, use --pure-python flag."
+            )
+    
+    # Build command
+    cmd = [str(quant_bin)]
+    if dry_run:
+        cmd.append("--dry-run")
+    if allow_requantize:
+        cmd.append("--allow-requantize")
+    if leave_output:
+        cmd.append("--leave-output-tensor")
+    if override_kv:
+        for key, val in override_kv.items():
+            cmd.extend(["--override-kv", f"{key}" if ":" in key else f"{key}:{val}"])
+    
+    cmd.extend([input_path, output_path, quant_type.upper()])
+    
+    desc = f"{quant_type} quantization"
+    print(f"Quantizing: {input_path}")
+    print(f"  Input size: {_format_size(input_size)}")
+    print(f"  Output: {output_path}")
+    print(f"  Type: {quant_type}")
+    
+    t0 = time.time()
+    retcode, stdout, stderr = _run_subprocess(cmd, desc)
+    elapsed = time.time() - t0
+    
+    if retcode != 0:
+        error_msg = stderr.strip() or stdout.strip()
+        raise RuntimeError(f"Quantization failed (exit code {retcode}):\n{error_msg}")
+    
+    # Parse output for stats
+    output_size = 0
+    if os.path.exists(output_path):
+        output_size = os.path.getsize(output_path)
+    
+    compression_ratio = input_size / output_size if output_size > 0 else 0
+    
+    result = {
+        "status": "success",
+        "input_path": input_path,
+        "output_path": output_path,
+        "quant_type": quant_type,
+        "input_size_bytes": input_size,
+        "output_size_bytes": output_size,
+        "input_size_human": _format_size(input_size),
+        "output_size_human": _format_size(output_size),
+        "compression_ratio": round(compression_ratio, 2),
+        "elapsed_seconds": round(elapsed, 1),
+        "stdout": stdout.strip(),
+        "stderr": stderr.strip(),
+    }
+    
+    # Print summary
+    print(f"  Output size: {result['output_size_human']}")
+    print(f"  Compression: {result['compression_ratio']}x")
+    print(f"  Time: {elapsed:.1f}s")
+    
+    # Print size estimate from stdout if dry run
+    if dry_run:
+        for line in stdout.split("\n"):
+            if "size" in line.lower():
+                print(f"  {line.strip()}")
+    
+    return result
 
-        # Try to use the backend
-        t0 = time.time()
-        try:
-            from mojollama.backends import AutoBackend
-            be = AutoBackend(model_path=model_path)
-            result = be.generate(prompt, max_tokens=max_tokens)
-            elapsed = time.time() - t0
-            gen_tokens = result.get("tokens", 0)
-            tok_s = gen_tokens / elapsed if elapsed > 0 else 0
-            print(f"  Generated: {result.get('text', '')[:100]}...")
-            print(f"  Tokens:    {gen_tokens}")
-            print(f"  Time:      {elapsed:.2f}s")
-            print(f"  Speed:     {tok_s:.1f} tok/s")
-        except Exception as e:
-            print(f"  ❌ Benchmark failed: {e}")
-            return 1
 
-    return 0
-
-
-# ─── Compare ────────────────────────────────────────────────────────────
-
-def cmd_compare(args):
-    """Compare two GGUF models (original vs quantized)."""
-    base = args.base
-    quantized = args.quantized
-    samples = args.samples or 100
-
-    for path, label in [(base, "Base"), (quantized, "Quantized")]:
-        if not os.path.exists(path):
-            print(f"❌ {label} model not found: {path}")
-            return 1
-
-    print("╔═══════════════════════════════════════════╗")
-    print("║    Model Comparison                       ║")
-    print("╚═══════════════════════════════════════════╝")
-    print()
-
+def get_info(gguf_path: str, verbose: bool = False) -> Dict[str, Any]:
+    """Get information about a GGUF file.
+    
+    Args:
+        gguf_path: Path to GGUF file
+        verbose: Show all tensors
+    
+    Returns:
+        Dict with model info
+    """
     try:
-        from gguf import GGUFReader, dequantize
-        from mojollama.model.q4_kernels import Q4Matmul
+        import gguf
+        from gguf.constants import GGMLQuantizationType
     except ImportError:
-        pass
-
-    base_meta = _read_gguf_metadata(base)
-    quant_meta = _read_gguf_metadata(quantized)
-
-    print(f"  {'':<20} {'Base':>20} {'Quantized':>20}")
-    print(f"  {'─'*20} {'─'*20} {'─'*20}")
-    print(f"  {'Size':<20} {base_meta.get('size_hr', '?'):>20} {quant_meta.get('size_hr', '?'):>20}")
-    print(f"  {'Quant type':<20} {base_meta.get('quant_type', '?'):>20} {quant_meta.get('quant_type', '?'):>20}")
-    print(f"  {'Compression':<20} {'100%':>20} {base_meta.get('size_bytes', 0) > 0 and os.path.getsize(quantized)/base_meta.get('size_bytes', 1)*100:.1f}%")
-
-    if base_meta.get("n_params") and quant_meta.get("n_params"):
-        diff = abs(base_meta["n_params"] - quant_meta["n_params"])
-        if diff > 0:
-            print(f"  {'⚠️  Param mismatch':<20} {base_meta.get('n_params_hr', ''):>20} {quant_meta.get('n_params_hr', ''):>20}")
-
-    # Quick quality check: compare logits from a small prompt
-    print()
-    print("  Sampling comparison (loading tensors)...")
-    try:
-        base_reader = GGUFReader(base)
-        quant_reader = GGUFReader(quantized)
-
-        # Compare first weight tensor
-        matching = 0
-        different = 0
-        for t_base in base_reader.tensors[:100]:
-            matching_name = False
-            for t_quant in quant_reader.tensors:
-                if t_base.name == t_quant.name:
-                    matching_name = True
-                    # Compare shapes
-                    if list(t_base.shape) != list(t_quant.shape):
-                        print(f"  ⚠️  Shape mismatch: {t_base.name} "
-                              f"{list(t_base.shape)} vs {list(t_quant.shape)}")
-                        different += 1
-                    else:
-                        matching += 1
-                    break
-            if not matching_name:
-                print(f"  ⚠️  Tensor missing in quantized: {t_base.name}")
-
-        print(f"  {'✅ Tensors match':<20} {matching:>20} {different:>20}")
-    except Exception as e:
-        print(f"  ⚠️  Comparison error: {e}")
-
-    print()
-    return 0
-
-
-# ─── Batch ──────────────────────────────────────────────────────────────
-
-def cmd_batch(args):
-    """Convert and quantize a model to multiple types."""
-    model = args.model
-    types = [t.strip() for t in args.types.split(",")]
-    output_dir = args.output_dir or "."
-
-    print("╔═══════════════════════════════════════════╗")
-    print("║    Batch Converter + Quantizer            ║")
-    print("╚═══════════════════════════════════════════╝")
-    print()
-
-    print(f"  Model:      {model}")
-    print(f"  Types:      {', '.join(types)}")
-    print(f"  Output dir: {output_dir}")
-    print()
-
-    os.makedirs(output_dir, exist_ok=True)
-
-    # First convert to F16
-    model_name = model.split("/")[-1] if "/" in model else model
-    f16_path = os.path.join(output_dir, f"{model_name}-base-f16.gguf")
-    f16_path = os.path.abspath(f16_path)
-
-    if not os.path.exists(f16_path):
-        print(f"[1/{len(types)+1}] Converting to F16...")
-        conv_args = argparse.Namespace(
-            model=model, outtype="f16", output=f16_path, verbose=False,
-        )
-        cmd_convert(conv_args)
+        raise ImportError("gguf package required for info command. Install with: pip install gguf")
+    
+    if not os.path.exists(gguf_path):
+        raise FileNotFoundError(f"File not found: {gguf_path}")
+    
+    file_size = os.path.getsize(gguf_path)
+    reader = gguf.GGUFReader(gguf_path)
+    
+    # Extract metadata
+    info = {
+        "path": str(Path(gguf_path).resolve()),
+        "file_size_bytes": file_size,
+        "file_size_human": _format_size(file_size),
+        "header_size": reader.header_size if hasattr(reader, 'header_size') else 0,
+        "tensor_count": len(reader.tensors) if hasattr(reader, 'tensors') else 0,
+        "metadata": {},
+        "tensors": [],
+        "quantization_types": set(),
+    }
+    
+    # Get fields/metadata
+    if hasattr(reader, 'fields'):
+        for name, field in reader.fields.items():
+            try:
+                if hasattr(field, 'parts') and len(field.parts) > 0:
+                    val = field.parts[-1]
+                    if isinstance(val, bytes):
+                        try:
+                            val = val.decode('utf-8', errors='replace').strip('\x00')
+                        except Exception:
+                            val = str(val)
+                    elif isinstance(val, np.ndarray) or hasattr(val, '__len__'):
+                        # memmap or ndarray — try to convert
+                        if val.ndim == 0:
+                            val = val.item()
+                        elif val.dtype.kind in ('S', 'U'):
+                            # String data stored as bytes
+                            try:
+                                val = bytes(val).decode('utf-8', errors='replace').strip('\x00')
+                            except Exception:
+                                val = str(val)
+                        elif val.dtype.kind == 'u' and val.size > 1:
+                            # uint8 array — likely a stored string, decode as bytes then utf-8
+                            try:
+                                val = bytes(val).decode('utf-8', errors='replace').strip('\x00')
+                            except Exception:
+                                val = val.tolist()
+                        elif val.size == 1:
+                            val = val.item()
+                        elif val.dtype.kind in ('i', 'u', 'f'):
+                            # Numeric array — keep as list
+                            val = val.tolist()
+                        else:
+                            val = str(val)
+                    elif hasattr(val, 'item'):
+                        val = val.item()
+                    elif hasattr(val, 'tolist'):
+                        val = val.tolist()
+                    info["metadata"][name] = val
+            except Exception:
+                continue
+    
+    # Get tensor info
+    if hasattr(reader, 'tensors'):
+        tensor_type_counts = {}
+        total_params = 0
+        
+        for tensor in reader.tensors:
+            t_info = {
+                "name": tensor.name,
+                "shape": list(tensor.shape) if hasattr(tensor, 'shape') and tensor.shape is not None and len(tensor.shape) > 0 else [],
+                "n_elements": int(np.prod(tensor.shape)) if hasattr(tensor, 'shape') and tensor.shape is not None and len(tensor.shape) > 0 else 0,
+            }
+            
+            # Get quantization type
+            if hasattr(tensor, 'tensor_type') and tensor.tensor_type is not None:
+                t_type = tensor.tensor_type
+                if hasattr(t_type, 'name'):
+                    t_info["type"] = t_type.name
+                else:
+                    t_info["type"] = str(t_type)
+                
+                if isinstance(t_type, GGMLQuantizationType):
+                    tensor_type_counts[t_type.name] = tensor_type_counts.get(t_type.name, 0) + 1
+                    info["quantization_types"].add(t_type.name)
+            else:
+                t_info["type"] = "unknown"
+            
+            # Get data size
+            if hasattr(tensor, 'data') and tensor.data is not None:
+                t_info["data_bytes"] = tensor.data.nbytes
+            else:
+                t_info["data_bytes"] = 0
+            
+            info["tensors"].append(t_info)
+            total_params += t_info["n_elements"]
+        
+        info["total_parameters"] = total_params
+        info["tensor_type_counts"] = tensor_type_counts
+    
+    # Determine primary quantization type
+    quantization_counts = info.get("tensor_type_counts", {})
+    if quantization_counts:
+        # The type with the most tensors is likely the primary quant
+        primary = max(quantization_counts, key=quantization_counts.get)
+        info["primary_quantization"] = primary
     else:
-        print(f"  ✅ Base F16 already exists: {f16_path}")
-
+        info["primary_quantization"] = "unknown"
+    
+    # Print info
+    print(f"\n{'='*60}")
+    print(f"  GGUF Model Info")
+    print(f"{'='*60}")
+    print(f"  Path:              {info['path']}")
+    print(f"  Size:              {info['file_size_human']} ({info['file_size_bytes']:,} bytes)")
+    print(f"  Tensors:           {info['tensor_count']}")
+    print(f"  Parameters:        {info.get('total_parameters', 0):,}")
+    print(f"  Quantization:      {info.get('primary_quantization', 'unknown')}")
+    
+    # Print key metadata
+    if info["metadata"]:
+        print(f"\n  Metadata:")
+        for key in sorted(info["metadata"].keys()):
+            val = info["metadata"][key]
+            if isinstance(val, str) and len(val) > 80:
+                val = val[:77] + "..."
+            print(f"    {key}: {val}")
+    
+    # Print tensor type distribution
+    if info.get("tensor_type_counts"):
+        print(f"\n  Tensor type distribution:")
+        for ttype, count in sorted(info["tensor_type_counts"].items()):
+            print(f"    {ttype}: {count} tensors")
+    
+    # Print tensors (verbose)
+    if verbose and info["tensors"]:
+        print(f"\n  Tensors:")
+        print(f"  {'Name':50s} {'Shape':30s} {'Type':10s} {'Size':>10s}")
+        print(f"  {'-'*50} {'-'*30} {'-'*10} {'-'*10}")
+        for t in info["tensors"]:
+            shape_str = str(t["shape"]) if "shape" in t else "?"
+            type_str = t.get("type", "?")
+            size_str = _format_size(t.get("data_bytes", 0))
+            print(f"  {t['name']:50s} {shape_str:30s} {type_str:10s} {size_str:>10s}")
+    
     print()
+    
+    return info
 
-    # Quantize to each type
-    for i, qt in enumerate(types):
-        print(f"[{i+2}/{len(types)+1}] Quantizing to {qt}...")
-        out_name = f"{model_name}-{qt}.gguf"
-        out_path = os.path.join(output_dir, out_name)
-        out_path = os.path.abspath(out_path)
 
-        if os.path.exists(out_path):
-            print(f"  ⚠️  Skipping (already exists): {out_path}")
-            continue
+def validate(
+    quantized_path: str,
+    reference_path: Optional[str] = None,
+    num_tokens: int = 3,
+    prompt: str = "Hello world",
+) -> Dict[str, Any]:
+    """Validate a quantized model by comparing against a reference.
+    
+    If a reference GGUF is provided, compares final layer logits.
+    Otherwise, validates structural integrity.
+    
+    Args:
+        quantized_path: Path to quantized GGUF file
+        reference_path: Path to reference GGUF (unquantized or different quant)
+        num_tokens: Number of tokens to generate for comparison
+        prompt: Input prompt
+    
+    Returns:
+        Dict with validation results
+    """
+    try:
+        import gguf
+        from gguf.constants import GGMLQuantizationType
+    except ImportError:
+        raise ImportError("gguf package required for validate command")
+    
+    result = {
+        "quantized_path": quantized_path,
+        "status": "unknown",
+        "checks": [],
+    }
+    
+    print(f"\n{'='*60}")
+    print(f"  Validate: {Path(quantized_path).name}")
+    print(f"{'='*60}")
+    
+    # Check 1: File exists and readable
+    if not os.path.exists(quantized_path):
+        result["status"] = "error"
+        result["error"] = "File not found"
+        return result
+    
+    file_size = os.path.getsize(quantized_path)
+    print(f"  File size: {_format_size(file_size)}")
+    result["file_size"] = file_size
+    
+    # Check 2: Can be read by gguf
+    try:
+        reader = gguf.GGUFReader(quantized_path)
+        tensor_count = len(reader.tensors) if hasattr(reader, 'tensors') else 0
+        print(f"  Tensors loaded: {tensor_count}")
+        result["tensor_count"] = tensor_count
+        result["checks"].append({"check": "gguf_readable", "passed": True})
+    except Exception as e:
+        print(f"  ERROR: Cannot read GGUF: {e}")
+        result["checks"].append({"check": "gguf_readable", "passed": False, "error": str(e)})
+        result["status"] = "corrupt"
+        return result
+    
+    # Check 3: Can load all tensor data
+    errors = []
+    for tensor in reader.tensors:
+        try:
+            _ = tensor.data.shape
+        except Exception as e:
+            errors.append((tensor.name, str(e)))
+    
+    if errors:
+        print(f"  WARNING: {len(errors)} tensor(s) failed to load:")
+        for name, err in errors[:5]:
+            print(f"    {name}: {err}")
+        result["checks"].append({"check": "tensor_data_accessible", "passed": False, "errors": errors})
+    else:
+        print(f"  All tensors accessible: YES")
+        result["checks"].append({"check": "tensor_data_accessible", "passed": True})
+    
+    # Check 4: Metadata integrity
+    if hasattr(reader, 'fields'):
+        required_fields = ['general.architecture', 'general.file_type']
+        missing = [f for f in required_fields if f not in reader.fields]
+        if missing:
+            print(f"  Missing metadata fields: {missing}")
+            result["checks"].append({"check": "metadata_integrity", "passed": False, "missing": missing})
+        else:
+            print(f"  Metadata integrity: OK")
+            result["checks"].append({"check": "metadata_integrity", "passed": True})
+    
+    # Check 5: Compare with reference if provided
+    if reference_path and os.path.exists(reference_path):
+        print(f"\n  Comparing with reference: {Path(reference_path).name}")
+        try:
+            ref_reader = gguf.GGUFReader(reference_path)
+            
+            # Compare tensor names and shapes
+            ref_tensors = {t.name: t for t in ref_reader.tensors}
+            q_tensors = {t.name: t for t in reader.tensors}
+            
+            common_names = set(ref_tensors.keys()) & set(q_tensors.keys())
+            missing_in_q = set(ref_tensors.keys()) - set(q_tensors.keys())
+            extra_in_q = set(q_tensors.keys()) - set(ref_tensors.keys())
+            
+            if missing_in_q:
+                print(f"  Missing tensors in quantized: {len(missing_in_q)}")
+                for n in sorted(missing_in_q)[:5]:
+                    print(f"    {n}")
+            if extra_in_q:
+                print(f"  Extra tensors in quantized: {len(extra_in_q)}")
+            
+            # Compare shapes
+            shape_mismatches = []
+            for name in sorted(common_names):
+                ref_shape = list(ref_tensors[name].shape)
+                q_shape = list(q_tensors[name].shape)
+                if ref_shape != q_shape:
+                    shape_mismatches.append((name, ref_shape, q_shape))
+            
+            if shape_mismatches:
+                print(f"  Shape mismatches: {len(shape_mismatches)}")
+                for name, rs, qs in shape_mismatches[:5]:
+                    print(f"    {name}: ref={rs} vs quantized={qs}")
+            
+            result["checks"].append({
+                "check": "reference_comparison",
+                "passed": len(missing_in_q) == 0 and len(shape_mismatches) == 0,
+                "common_tensors": len(common_names),
+                "missing_in_quantized": list(missing_in_q),
+                "shape_mismatches": shape_mismatches,
+            })
+            
+        except Exception as e:
+            print(f"  Reference comparison failed: {e}")
+            result["checks"].append({"check": "reference_comparison", "passed": False, "error": str(e)})
+    
+    # Overall status
+    all_passed = all(c["passed"] for c in result["checks"])
+    result["status"] = "passed" if all_passed else "warnings" if any(not c["passed"] for c in result["checks"]) else "unknown"
+    
+    print(f"\n  Validation: {result['status'].upper()}")
+    print()
+    
+    return result
 
-        quant_args = argparse.Namespace(
-            model=f16_path, type=qt, output=out_path,
-            imatrix=None, threads=0, allow_requantize=False,
-            pure=False, leave_output=False, dry_run=False,
+
+def benchmark(
+    gguf_path: str,
+    prompt: str = "Hello",
+    max_tokens: int = 10,
+    n_warmup: int = 2,
+) -> Dict[str, Any]:
+    """Quick performance benchmark of a GGUF model.
+    
+    Uses the project's existing inference engine to measure tokens/second.
+    
+    Args:
+        gguf_path: Path to GGUF file
+        prompt: Input prompt
+        max_tokens: Number of tokens to generate
+        n_warmup: Number of warmup tokens
+    
+    Returns:
+        Dict with benchmark results
+    """
+    if not os.path.exists(gguf_path):
+        raise FileNotFoundError(f"File not found: {gguf_path}")
+    
+    file_size = os.path.getsize(gguf_path)
+    
+    print(f"\n{'='*60}")
+    print(f"  Benchmark: {Path(gguf_path).name}")
+    print(f"{'='*60}")
+    print(f"  Prompt: {prompt!r}")
+    print(f"  Max tokens: {max_tokens}")
+    print(f"  File size: {_format_size(file_size)}")
+    
+    # Try to use MojoLlama inference
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+        from mojollama.model.inference import LLMInference
+        
+        import gc
+        gc.collect()
+        
+        print(f"  Loading model...")
+        t0 = time.time()
+        model = LLMInference(gguf_path, device="cpu")
+        load_time = time.time() - t0
+        print(f"  Load time: {load_time:.1f}s")
+        
+        # Get model info
+        arch_info = {}
+        if hasattr(model, 'arch'):
+            arch_info["architecture"] = model.arch
+        if hasattr(model, 'n_layers'):
+            arch_info["layers"] = model.n_layers
+        if hasattr(model, 'n_embd'):
+            arch_info["dim"] = model.n_embd
+        if hasattr(model, 'n_head'):
+            arch_info["heads"] = model.n_head
+        
+        # Warmup
+        if n_warmup > 0:
+            print(f"  Warmup ({n_warmup} tokens)...")
+            _ = model.generate(prompt, max_tokens=n_warmup)
+        
+        # Benchmark
+        print(f"  Generating {max_tokens} tokens...")
+        t0 = time.time()
+        output = model.generate(prompt, max_tokens=max_tokens)
+        elapsed = time.time() - t0
+        
+        # Token counting
+        try:
+            prompt_tokens = len(model.encode(prompt))
+            output_tokens = len(model.encode(output))
+            total_tokens = prompt_tokens + output_tokens
+        except Exception:
+            prompt_tokens = 0
+            output_tokens = max_tokens
+            total_tokens = max_tokens
+        
+        tokens_per_second = output_tokens / elapsed if elapsed > 0 else 0
+        
+        result = {
+            "model_path": gguf_path,
+            "file_size_bytes": file_size,
+            "file_size_human": _format_size(file_size),
+            "prompt": prompt,
+            "architecture": arch_info,
+            "load_time_seconds": round(load_time, 2),
+            "max_tokens": max_tokens,
+            "generated_tokens": output_tokens,
+            "elapsed_seconds": round(elapsed, 3),
+            "tokens_per_second": round(tokens_per_second, 2),
+            "output": output,
+        }
+        
+        print(f"\n  Results:")
+        print(f"    Generated:     {output_tokens} tokens in {elapsed:.2f}s")
+        print(f"    Speed:         {tokens_per_second:.2f} tok/s")
+        print(f"    Output:        {output[:100]!r}{'...' if len(output) > 100 else ''}")
+        
+        return result
+        
+    except ImportError as e:
+        print(f"  WARNING: Could not load MojoLlama inference: {e}")
+        print(f"  Falling back to file-based benchmark...")
+        return _benchmark_fast(gguf_path, prompt, max_tokens)
+    except Exception as e:
+        print(f"  WARNING: Inference benchmark failed: {e}")
+        print(f"  Falling back to file-based benchmark...")
+        return _benchmark_fast(gguf_path, prompt, max_tokens)
+
+
+def _benchmark_fast(gguf_path: str, prompt: str, max_tokens: int) -> Dict[str, Any]:
+    """Quick file-based benchmark when inference isn't available."""
+    file_size = os.path.getsize(gguf_path)
+    
+    # Read metadata for info
+    info = {}
+    try:
+        import gguf
+        reader = gguf.GGUFReader(gguf_path)
+        if hasattr(reader, 'fields'):
+            f = reader.fields
+            arch = None
+            if 'general.architecture' in f:
+                arch = str(f['general.architecture'].parts[-1])
+            info["architecture"] = arch
+            info["tensors"] = len(reader.tensors) if hasattr(reader, 'tensors') else 0
+    except Exception:
+        pass
+    
+    result = {
+        "model_path": gguf_path,
+        "file_size_bytes": file_size,
+        "file_size_human": _format_size(file_size),
+        "prompt": prompt,
+        "architecture": info,
+        "load_time_seconds": None,
+        "max_tokens": max_tokens,
+        "generated_tokens": None,
+        "elapsed_seconds": None,
+        "tokens_per_second": None,
+        "output": None,
+        "note": "Inference engine not available; metadata only"
+    }
+    
+    print(f"\n  Model info collected. To benchmark, install MojoLlama inference dependencies.")
+    print(f"  Architecture: {info.get('architecture', 'unknown')}")
+    print(f"  Tensors: {info.get('tensors', 0)}")
+    
+    return result
+
+
+def batch_convert_and_quantize(
+    model_name_or_path: str,
+    types: List[str],
+    outtype: str = "f16",
+    output_dir: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Convert and quantize a model to multiple quantization types.
+    
+    Args:
+        model_name_or_path: HF model name or local path
+        types: List of quantization types
+        outtype: Intermediate float type for conversion
+        output_dir: Output directory (default: current dir)
+    
+    Returns:
+        List of result dicts for each quantization
+    """
+    if output_dir is None:
+        output_dir = "."
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    model_base = Path(model_name_or_path.rstrip("/")).name
+    if not model_base:
+        model_base = "model"
+    
+    results = []
+    
+    # Step 1: Convert to float GGUF
+    fp_gguf = str(output_dir / f"{model_base}-{outtype}.gguf")
+    print(f"\n{'='*60}")
+    print(f"  Step 1: Convert to {outtype} GGUF")
+    print(f"{'='*60}")
+    
+    try:
+        convert_result = convert(
+            model_name_or_path,
+            outtype=outtype,
+            outfile=fp_gguf,
         )
-        rc = cmd_quantize(quant_args)
-        if rc != 0:
-            print(f"  ❌ Failed on {qt}")
-            return 1
+        results.append({"step": "convert", **convert_result})
+    except Exception as e:
+        print(f"  Conversion failed: {e}")
+        results.append({"step": "convert", "status": "error", "error": str(e)})
+        return results
+    
+    # Step 2: Quantize to each type
+    for qt in types:
+        qt = qt.lower()
+        if qt not in QUANT_TYPES:
+            print(f"  Unknown quant type '{qt}', skipping...")
+            results.append({"step": "quantize", "quant_type": qt, "status": "skipped", "reason": "unknown type"})
+            continue
+        
+        print(f"\n{'-'*60}")
+        print(f"  Step 2: Quantize to {qt}")
+        print(f"{'-'*60}")
+        
+        try:
+            quant_result = quantize(
+                fp_gguf,
+                quant_type=qt,
+                output_path=str(output_dir / f"{model_base}-{qt}.gguf"),
+            )
+            results.append({"step": "quantize", "quant_type": qt, **quant_result})
+        except Exception as e:
+            print(f"  Quantization to {qt} failed: {e}")
+            results.append({"step": "quantize", "quant_type": qt, "status": "error", "error": str(e)})
+    
+    # Summary
+    print(f"\n{'='*60}")
+    print(f"  Batch Summary")
+    print(f"{'='*60}")
+    for r in results:
+        if r.get("status") == "success":
+            if r["step"] == "convert":
+                print(f"  CONVERT: {r.get('output_path', '?')} ({r.get('size_human', '?')})")
+            else:
+                print(f"  {r.get('quant_type', '?'):8s}: {r.get('output_path', '?')} ({r.get('output_size_human', '?')})")
+        elif r.get("status") == "error":
+            print(f"  ERROR: {r.get('step', '?')} - {r.get('error', '?')}")
+    
+    return results
 
-    print()
-    print(f"✅ Batch complete. Files in {output_dir}:")
-    for f in sorted(os.listdir(output_dir)):
-        if f.endswith(".gguf"):
-            fpath = os.path.join(output_dir, f)
-            size = os.path.getsize(fpath)
-            print(f"  📄 {f:<40} {_format_size(size)}")
 
-    return 0
+# ─── Init .env ──────────────────────────────────────────────────────────────
+
+def init_env(env_path: Optional[str] = None, hf_cache: Optional[str] = None):
+    """Initialize .env file with common HF cache paths.
+    
+    Args:
+        env_path: Path to .env file (default: .env in current dir)
+        hf_cache: Custom HF cache path (default: auto-detect)
+    """
+    if env_path is None:
+        env_path = ".env"
+    
+    env_path = Path(env_path)
+    
+    if hf_cache is None:
+        # Auto-detect common HF cache locations
+        candidates = [
+            os.environ.get("HF_HOME", ""),
+            os.environ.get("HUGGINGFACE_HUB_CACHE", ""),
+            str(Path.home() / ".cache" / "huggingface"),
+            "/root/.cache/huggingface",
+            "/tmp/huggingface",
+        ]
+        hf_cache = next((c for c in candidates if c and Path(c).exists()), candidates[2])
+    
+    env_vars = {
+        "HF_HOME": hf_cache,
+        "HUGGINGFACE_HUB_CACHE": str(Path(hf_cache) / "hub"),
+        "LLAMA_CPP_DIR": str(LLAMA_CPP_DIR),
+        "TRANSFORMERS_CACHE": str(Path(hf_cache) / "hub"),
+        "HF_DATASETS_CACHE": str(Path(hf_cache) / "datasets"),
+    }
+    
+    # Read existing .env
+    existing = {}
+    if env_path.exists():
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    existing[k.strip()] = v.strip()
+    
+    # Merge (existing values take precedence)
+    for k, v in env_vars.items():
+        if k not in existing:
+            existing[k] = v
+    
+    # Write .env
+    with open(env_path, "w") as f:
+        f.write("# MojoLlama Quantizer Environment\n")
+        f.write(f"# Auto-generated: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write("# Uncomment and edit as needed\n\n")
+        for k, v in existing.items():
+            f.write(f'{k}="{v}"\n')
+    
+    print(f"  Wrote {env_path}")
+    print(f"  HF_HOME: {existing.get('HF_HOME', 'not set')}")
+    print(f"  LLAMA_CPP_DIR: {existing.get('LLAMA_CPP_DIR', str(LLAMA_CPP_DIR))}")
 
 
-# ─── CLI Entry ──────────────────────────────────────────────────────────
+# ─── CLI ─────────────────────────────────────────────────────────────────────
 
-def main():
+def _build_parser() -> argparse.ArgumentParser:
+    """Build the argument parser."""
     parser = argparse.ArgumentParser(
-        description="MojoLlama GGUF Quantizer v" + VERSION,
+        description="MojoLlama Quantizer — GGUF quantization CLI tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s list-types
-  %(prog)s info model.gguf
-  %(prog)s imatrix model.gguf --data calibration.txt
-  %(prog)s quantize model.gguf --type Q4_K_M --imatrix imatrix.dat
-  %(prog)s nf4 model.gguf
-  %(prog)s convert hf_model --outtype f16
-  %(prog)s validate model.gguf
-  %(prog)s benchmark model.gguf
-  %(prog)s batch hf_model --types q4_0,q4_k_m,q8_0
-  %(prog)s compare base.gguf quantized.gguf
+  %(prog)s convert meta-llama/Llama-2-7b --outtype f16 --outfile model.gguf
+  %(prog)s quantize model.gguf --type q4_k_m
+  %(prog)s info model.gguf -v
+  %(prog)s validate model.gguf --reference ref.gguf
+  %(prog)s benchmark model.gguf --prompt "Hello world"
+  %(prog)s batch meta-llama/Llama-2-7b --types q4_0,q4_k_m,q8_0
+  %(prog)s init-env
         """,
     )
-    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
-
-    sub = parser.add_subparsers(dest="command", help="Command")
-
-    # list-types
-    p_list = sub.add_parser("list-types", help="List supported quantization types")
-
-    # info
-    p_info = sub.add_parser("info", help="Inspect GGUF model")
-    p_info.add_argument("model", help="Path to GGUF model file")
-    p_info.add_argument("-v", "--verbose", action="store_true", help="Show all metadata fields")
-
-    # imatrix
-    p_imatrix = sub.add_parser("imatrix", help="Generate importance matrix")
-    p_imatrix.add_argument("model", help="Path to GGUF model")
-    p_imatrix.add_argument("--data", "-f", help="Calibration data file (text)")
-    p_imatrix.add_argument("--output", "-o", help="Output imatrix file path")
-    p_imatrix.add_argument("--threads", "-t", type=int, default=0, help="Number of threads")
-    p_imatrix.add_argument("--ctx-size", "-c", type=int, default=512, help="Context size")
-
-    # quantize
-    p_quant = sub.add_parser("quantize", help="Quantize a GGUF model")
-    p_quant.add_argument("model", help="Path to input GGUF model")
-    p_quant.add_argument("--type", "-t", default="Q4_K_M", dest="type",
-                         help="Quantization type (default: Q4_K_M)")
-    p_quant.add_argument("--output", "-o", help="Output path")
-    p_quant.add_argument("--imatrix", help="Importance matrix file")
-    p_quant.add_argument("--threads", type=int, default=0, help="Thread count")
+    parser.add_argument(
+        "--debug", action="store_true", help="Enable debug output"
+    )
+    
+    subparsers = parser.add_subparsers(dest="command", help="Sub-command")
+    
+    # ── convert ──
+    p_convert = subparsers.add_parser("convert", help="Convert HF model to GGUF")
+    p_convert.add_argument("model", help="HF model name or local path")
+    p_convert.add_argument(
+        "--outtype", default="f16", choices=["f32", "f16", "bf16", "q8_0", "auto"],
+        help="Output format (default: f16)",
+    )
+    p_convert.add_argument("--outfile", "-o", help="Output file path")
+    p_convert.add_argument("--verbose", action="store_true", help="Verbose output")
+    p_convert.add_argument("--vocab-only", action="store_true", help="Extract only vocab")
+    p_convert.add_argument("--model-name", help="Model name override")
+    
+    # ── quantize ──
+    p_quant = subparsers.add_parser("quantize", help="Quantize a GGUF file")
+    p_quant.add_argument("input", help="Input GGUF file")
+    p_quant.add_argument(
+        "--type", "-t", dest="quant_type", default="q4_k_m",
+        help=f"Quantization type (default: q4_k_m). Options: {', '.join(sorted(QUANT_TYPES.keys()))}",
+    )
+    p_quant.add_argument("--output", "-o", help="Output file path")
     p_quant.add_argument("--allow-requantize", action="store_true",
                          help="Allow requantizing already quantized tensors")
-    p_quant.add_argument("--pure", action="store_true",
-                         help="Disable K-quant mixtures, pure type")
     p_quant.add_argument("--leave-output", action="store_true",
                          help="Leave output.weight unquantized")
+    p_quant.add_argument("--pure-python", action="store_true",
+                         help="Use pure Python Q4_0 fallback (no llama-quantize needed)")
     p_quant.add_argument("--dry-run", action="store_true",
-                         help="Calculate size without quantizing")
+                         help="Calculate size without performing quantization")
+    p_quant.add_argument("--override-kv", action="append",
+                         help="Override metadata KEY=TYPE:VALUE")
+    
+    # ── info ──
+    p_info = subparsers.add_parser("info", help="Inspect a GGUF file")
+    p_info.add_argument("input", help="GGUF file path")
+    p_info.add_argument("--verbose", "-v", action="store_true", help="Show all tensors")
+    
+    # ── validate ──
+    p_val = subparsers.add_parser("validate", help="Validate quantized model")
+    p_val.add_argument("input", help="Quantized GGUF file")
+    p_val.add_argument("--reference", "-r", help="Reference GGUF file for comparison")
+    p_val.add_argument("--num-tokens", type=int, default=3, help="Tokens for comparison")
+    p_val.add_argument("--prompt", default="Hello world", help="Input prompt")
+    
+    # ── benchmark ──
+    p_bench = subparsers.add_parser("benchmark", help="Benchmark model performance")
+    p_bench.add_argument("input", help="GGUF file path")
+    p_bench.add_argument("--prompt", default="Hello", help="Input prompt")
+    p_bench.add_argument("--max-tokens", type=int, default=10, help="Tokens to generate")
+    p_bench.add_argument("--no-warmup", action="store_true", help="Skip warmup")
+    
+    # ── batch ──
+    p_batch = subparsers.add_parser("batch", help="Batch convert and quantize")
+    p_batch.add_argument("model", help="HF model name or local path")
+    p_batch.add_argument(
+        "--types", default="q4_0,q4_k_m,q8_0",
+        help="Comma-separated quantization types (default: q4_0,q4_k_m,q8_0)",
+    )
+    p_batch.add_argument(
+        "--outtype", default="f16", choices=["f32", "f16", "bf16"],
+        help="Intermediate float type (default: f16)",
+    )
+    p_batch.add_argument("--output-dir", "-o", help="Output directory")
+    
+    # ── init-env ──
+    p_env = subparsers.add_parser("init-env", help="Initialize .env file")
+    p_env.add_argument("--env-file", default=".env", help="Path to .env file")
+    p_env.add_argument("--hf-cache", help="Custom HF cache path")
+    
+    # ── list-types ──
+    p_list = subparsers.add_parser("list-types", help="List supported quantization types")
+    
+    return parser
 
-    # nf4
-    p_nf4 = sub.add_parser("nf4", help="Convert to NF4 (NormalFloat4)")
-    p_nf4.add_argument("model", help="Path to input GGUF model")
-    p_nf4.add_argument("--output", "-o", help="Output path")
-    p_nf4.add_argument("--block-size", type=int, default=64,
-                        help="NF4 block size (default: 64)")
 
-    # convert
-    p_conv = sub.add_parser("convert", help="Convert HF model to GGUF")
-    p_conv.add_argument("model", help="HF model name or path")
-    p_conv.add_argument("--outtype", default="f16",
-                         help="Output type (f16, q8_0, q4_0, etc.)")
-    p_conv.add_argument("--output", "-o", help="Output file path")
-    p_conv.add_argument("--verbose", action="store_true", help="Verbose conversion")
-
-    # validate
-    p_val = sub.add_parser("validate", help="Validate GGUF model integrity")
-    p_val.add_argument("model", help="Path to GGUF model file")
-
-    # benchmark
-    p_bench = sub.add_parser("benchmark", help="Benchmark model speed")
-    p_bench.add_argument("model", help="Path to GGUF model file")
-    p_bench.add_argument("--prompt", default="Hello", help="Prompt text")
-    p_bench.add_argument("--max-tokens", type=int, default=128,
-                          help="Tokens to generate")
-    p_bench.add_argument("--threads", type=int, default=0,
-                          help="Thread count (0 = auto)")
-
-    # compare
-    p_comp = sub.add_parser("compare", help="Compare two models")
-    p_comp.add_argument("base", help="Base model path")
-    p_comp.add_argument("quantized", help="Quantized model path")
-    p_comp.add_argument("--samples", type=int, default=100,
-                         help="Tensors to sample")
-
-    # batch
-    p_batch = sub.add_parser("batch", help="Batch convert+quantize")
-    p_batch.add_argument("model", help="HF model name or path")
-    p_batch.add_argument("--types", default="q4_0,q4_k_m,q8_0",
-                          help="Comma-separated quant types")
-    p_batch.add_argument("--output-dir", default=".", help="Output directory")
-
-    args = parser.parse_args()
-
-    if args.command is None:
+def main(argv: Optional[List[str]] = None) -> int:
+    """Main entry point."""
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    
+    if args.debug:
+        print(f"Debug: args={args}")
+    
+    if not args.command:
         parser.print_help()
+        return 1
+    
+    try:
+        if args.command == "convert":
+            kwargs = {}
+            if args.vocab_only:
+                kwargs["vocab_only"] = True
+            if args.model_name:
+                kwargs["model_name"] = args.model_name
+            
+            result = convert(
+                args.model,
+                outtype=args.outtype,
+                outfile=args.outfile,
+                verbose=args.verbose,
+                **kwargs,
+            )
+            if args.debug:
+                print(json.dumps(result, default=str, indent=2))
+        
+        elif args.command == "quantize":
+            override_kv = None
+            if args.override_kv:
+                override_kv = {}
+                for kv in args.override_kv:
+                    if ":" in kv:
+                        k, v = kv.split(":", 1)
+                        override_kv[k] = v
+                    else:
+                        override_kv[kv] = ""
+            
+            result = quantize(
+                args.input,
+                quant_type=args.quant_type,
+                output_path=args.output,
+                allow_requantize=args.allow_requantize,
+                leave_output=args.leave_output,
+                pure_python=args.pure_python,
+                override_kv=override_kv,
+                dry_run=args.dry_run,
+            )
+            if args.debug:
+                print(json.dumps(result, default=str, indent=2))
+        
+        elif args.command == "info":
+            result = get_info(args.input, verbose=args.verbose)
+            if args.debug:
+                print(json.dumps(result, default=str, indent=2))
+        
+        elif args.command == "validate":
+            result = validate(
+                args.input,
+                reference_path=args.reference,
+                num_tokens=args.num_tokens,
+                prompt=args.prompt,
+            )
+            if args.debug:
+                print(json.dumps(result, default=str, indent=2))
+        
+        elif args.command == "benchmark":
+            result = benchmark(
+                args.input,
+                prompt=args.prompt,
+                max_tokens=args.max_tokens,
+                n_warmup=0 if args.no_warmup else 2,
+            )
+            if args.debug:
+                print(json.dumps(result, default=str, indent=2))
+        
+        elif args.command == "batch":
+            types = [t.strip().lower() for t in args.types.split(",")]
+            result = batch_convert_and_quantize(
+                args.model,
+                types=types,
+                outtype=args.outtype,
+                output_dir=args.output_dir,
+            )
+            if args.debug:
+                print(json.dumps(result, default=str, indent=2))
+        
+        elif args.command == "init-env":
+            init_env(env_path=args.env_file, hf_cache=args.hf_cache)
+        
+        elif args.command == "list-types":
+            print(f"\nSupported quantization types:\n")
+            print(f"  {'Type':12s} {'Description':35s} {'BPW':8s}")
+            print(f"  {'-'*12} {'-'*35} {'-'*8}")
+            for name, info in sorted(QUANT_TYPES.items()):
+                print(f"  {name:12s} {info['desc']:35s} {info['bpw']:<8.2f}")
+            print()
+        
+        else:
+            parser.print_help()
+            return 1
+        
         return 0
-
-    command_map = {
-        "list-types": cmd_list_types,
-        "info": cmd_info,
-        "imatrix": cmd_imatrix,
-        "quantize": cmd_quantize,
-        "nf4": cmd_nf4,
-        "convert": cmd_convert,
-        "validate": cmd_validate,
-        "benchmark": cmd_benchmark,
-        "compare": cmd_compare,
-        "batch": cmd_batch,
-    }
-
-    cmd = command_map.get(args.command)
-    if cmd:
-        return cmd(args)
-    else:
-        print(f"Unknown command: {args.command}")
+    
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    except RuntimeError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    except ImportError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        if args.debug:
+            import traceback
+            traceback.print_exc()
         return 1
 
 

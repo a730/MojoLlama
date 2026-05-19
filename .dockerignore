@@ -1,0 +1,78 @@
+# =============================================================================
+#  MojoLlama .dockerignore
+#  Excluded from the Docker build context for faster builds and smaller images
+# =============================================================================
+
+# Version control
+.git
+.gitignore
+.gitattributes
+.gitmodules
+
+# Large model / weight files — should be mounted at runtime, not baked in
+*.gguf
+*.bin
+*.safetensors
+*.pth
+*.pt
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+*.mojopkg
+
+# Node / frontend build artifacts (not used directly, but if present)
+node_modules
+bower_components
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.so
+
+# Virtual environments
+env/
+.venv/
+venv/
+.venv/
+
+# Mojo cache
+.magic/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Secrets / config
+.env
+*.env.local
+opencode.json
+*.key
+*.pem
+
+# Temp / working files
+*.log
+*.tmp
+model.bin
+test_model.gguf
+
+# Coding context (agent-only, not for image)
+.coding-context
+.coding-memory
+
+# Hermes agent cache
+.hermes/

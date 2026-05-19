@@ -199,3 +199,49 @@ jobs:
         branches: dev
 
     retryCondition: never
+
+  # ────────────────────────────────────────────────────────────────────────
+  # Docker image build — runs on main branch pushes
+  # ────────────────────────────────────────────────────────────────────────
+  - name: Build Docker Image
+    steps:
+      - type: CheckoutStep
+        name: checkout
+        cloneCredential:
+          type: DefaultCredential
+        withLfs: false
+        withSubmodules: false
+        cloneDepth: 1
+        condition: SUCCESSFUL
+        optional: false
+
+      - type: CommandStep
+        name: build mojollama Docker image
+        condition: SUCCESSFUL
+        optional: false
+        runInContainer: true
+        image: docker:27
+        interpreter:
+          type: DefaultInterpreter
+          commands: |
+
+            echo "=== Build Docker Image ==="
+            docker build \
+              --file Dockerfile \
+              --tag mojollama:latest \
+              --tag mojollama:$(date -u +%Y%m%d-%H%M%S) \
+              .
+
+            echo ""
+            echo "=== Image Info ==="
+            docker images mojollama
+
+            echo ""
+            echo "=== Verify Image (syntax check) ==="
+            docker run --rm mojollama:latest --help 2>&1 || true
+
+    triggers:
+      - type: BranchUpdateTrigger
+        branches: main
+
+    retryCondition: never
