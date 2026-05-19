@@ -1144,10 +1144,90 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
       </div>
 
     </div>
-  </div>
-</div>
+        </div>
+      </div>
 
-<!-- ═══════════ EXPERIMENTS ═══════════ -->
+      <!-- ═══════════ HUB ═══════════ -->
+      <div class="panel" id="panel-hub">
+        <div class="row mb-8 gap-16">
+          <div style="flex:1">
+            <div class="card">
+              <div class="card-header">
+                <h3><span class="icon">🤗</span> HuggingFace Hub</h3>
+                <span class="badge badge-new">New</span>
+              </div>
+              <div class="row mb-12">
+                <div class="col-2">
+                  <label>HF Token</label>
+                  <input type="password" id="hubToken" placeholder="hf_xxxxxxxxxxxxxx">
+                </div>
+                <div class="col-auto">
+                  <label>&nbsp;</label>
+                  <button class="btn btn-primary" onclick="hubLogin()" id="hubLoginBtn">🔑 Login</button>
+                </div>
+                <div class="col-auto">
+                  <label>&nbsp;</label>
+                  <button class="btn btn-dim btn-sm" onclick="hubWhoami()" id="hubStatusBtn">👤 Status</button>
+                </div>
+              </div>
+              <div id="hubStatus" class="text-dim" style="font-size:12px;margin-top:-4px;margin-bottom:12px">Not logged in.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="row mb-8 gap-16">
+          <div class="col-2">
+            <div class="card">
+              <div class="card-header"><h3><span class="icon">⬆️</span> Push Model</h3></div>
+              <label>Model (GGUF)</label>
+              <select id="hubModelPath">
+                <option value="">Select model...</option>
+              </select>
+              <label>HF Repo ID</label>
+              <input type="text" id="hubRepoId" placeholder="username/model-name">
+              <div class="row">
+                <div><label>Quant Type</label><input type="text" id="hubQuant" placeholder="Q4_K_M"></div>
+                <div><label>Params</label><input type="text" id="hubParams" placeholder="1.24B"></div>
+              </div>
+              <label>Description (optional)</label>
+              <input type="text" id="hubDescription" placeholder="Short model description">
+              <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
+                <label style="margin:0;display:inline-flex;align-items:center;gap:4px;text-transform:none;font-size:13px;color:var(--text)">
+                  <input type="checkbox" id="hubPrivate" style="width:auto;margin:0"> Private repo
+                </label>
+                <button class="btn btn-primary" onclick="hubPush()" id="hubPushBtn" style="margin-left:auto">⬆️ Push to Hub</button>
+              </div>
+            </div>
+          </div>
+          <div style="flex:1">
+            <div class="card">
+              <div class="card-header"><h3><span class="icon">⬆️</span> Push Adapter</h3></div>
+              <label>LoRA Adapter (GGUF)</label>
+              <input type="text" id="hubAdapterPath" placeholder="path/to/lora-adapter.gguf">
+              <label>Base Model Name</label>
+              <input type="text" id="hubBaseModel" placeholder="username/base-model">
+              <label>HF Repo ID</label>
+              <input type="text" id="hubAdapterRepo" placeholder="username/adapter-name">
+              <div class="row">
+                <div><label>LoRA Rank</label><input type="number" id="hubAdapterRank" placeholder="16"></div>
+                <div><label>LoRA Alpha</label><input type="number" id="hubAdapterAlpha" placeholder="32"></div>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
+                <label style="margin:0;display:inline-flex;align-items:center;gap:4px;text-transform:none;font-size:13px;color:var(--text)">
+                  <input type="checkbox" id="hubAdapterPrivate" style="width:auto;margin:0"> Private repo
+                </label>
+                <button class="btn btn-primary" onclick="hubPushAdapter()" id="hubPushAdapterBtn" style="margin-left:auto">⬆️ Push Adapter</button>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-header"><h3><span class="icon">📜</span> Push Log</h3></div>
+              <div class="log" id="hubLog" style="max-height:180px;font-size:11px">Ready. Select a model and target repo to upload.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════════ EXPERIMENTS ═══════════ -->
     <div class="panel" id="panel-experiments">
       <div class="row mb-8 gap-16">
         <div style="flex:1">

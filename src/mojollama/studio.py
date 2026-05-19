@@ -25,6 +25,12 @@ import numpy as np
 
 # Auto-tuner for server optimization
 from mojollama.autotune import autotune, save_config, print_config, load_config
+from mojollama.dataset import (
+    load_dataset, StreamingDataset, get_dataset_info, find_datasets,
+    convert_dataset, compute_stats, split_dataset, write_jsonl,
+    AutoLabeler, compute_confidence, ALL_FORMATS, FORMAT_DESCRIPTIONS,
+    detect_format,
+)
 
 STUDIO_VERSION = "0.1.0"
 BASE_DIR = Path(__file__).parent.parent.parent.resolve()
@@ -46,48 +52,87 @@ def print_banner():
 
 # ─── Train ─────────────────────────────────────────────────────────────
 
+TRAINING_METHODS = {
+    "lora":    "Low-Rank Adaptation (standard, via llama-finetune)",
+    "qlora":   "Quantized LoRA (NF4 base + LoRA adapters)",
+    "dora":    "Weight-Decomposed Low-Rank Adaptation",
+    "galore":  "Gradient Low-Rank Projection (memory-efficient full FT)",
+    "dpo":     "Direct Preference Optimization (preference pairs)",
+    "orpo":    "Odds Ratio Preference Optimization",
+    "kto":     "Kahneman-Tversky Optimization (unpaired preferences)",
+    "simpo":   "Simple Preference Optimization",
+    "grpo":    "Group Relative Policy Optimization (RL fine-tuning)",
+}
+
 def cmd_train(args):
-    """Fine-tune a model using llama.cpp finetune."""
+    """Fine-tune a model using one of the supported training methods."""
+    from mojollama.trainer import MojoLlamaTrainer, emit_metric
+    
+    if args.list_methods:
+        print_banner()
+        print("[Train] Available training methods:\n")
+        for name, desc in TRAINING_METHODS.items():
+            print(f"  {name:8s} — {desc}")
+        return
+    
     print_banner()
-    print("[Train] Fine-tuning pipeline")
-    print()
     
-    if not os.path.exists(FINETUNE_BIN):
-        print("Building llama.cpp training tools...")
-        subprocess.run(
-            ["cmake", "--build", f"{LLAMA_CPP}/build", "--target", "llama-finetune"],
-            cwd=f"{LLAMA_CPP}/build", check=True
-        )
-    
+    if args.method and args.method not in TRAINING_METHODS:
+        print(f"❌ Unknown method: {args.method}")
+        print("Available methods: lora, qlora, dora, galore, dpo, orpo, kto, simpo, grpo")
+        return
+
     model = args.model or input("Model path (GGUF): ").strip()
-    data = args.data or input("Training data (JSONL): ").strip()
-    lora_out = args.lora_out or "lora-adapter.gguf"
-    lora_rank = args.lora_rank or 16
-    lora_alpha = args.lora_alpha or 32
-    lr = args.lr or "1e-4"
-    steps = args.steps or 100
-    batch = args.batch or 4
-    
-    print(f"\nModel: {model}")
-    print(f"Data: {data}")
-    print(f"LoRA rank: {lora_rank}, alpha: {lora_alpha}")
-    print(f"LR: {lr}, steps: {steps}, batch size: {batch}")
-    print(f"Output adapter: {lora_out}")
+    data = args.data or input("Training data path: ").strip()
+    method = args.method or "lora"
+    lora_out = args.lora_out or "adapter.gguf"
     
     if not os.path.exists(data):
         print(f"\n❌ Training data not found: {data}")
         print("Create one with: mojollama-studio dataset create")
         return
     
-    cmd = [
-        FINETUNE_BIN, "--model", model, "--train-data", data,
-        "--lora-rank", str(lora_rank), "--lora-alpha", str(lora_alpha),
-        "--learning-rate", lr, "--steps", str(steps),
-        "--batch-size", str(batch), "--lora-out", lora_out
-    ]
-    print(f"\nRunning: {' '.join(cmd)}\n")
-    subprocess.run(cmd)
-    print(f"\n✅ LoRA adapter saved to: {lora_out}")
+    # Build kwargs for method-specific params
+    kwargs = {}
+    if method == "dpo":
+        kwargs["dpo_beta"] = args.dpo_beta
+        kwargs["dpo_lr"] = args.lr
+    elif method == "orpo":
+        kwargs["orpo_lambda"] = args.orpo_lambda
+        kwargs["orpo_lr"] = args.lr
+    elif method == "simpo":
+        kwargs["simpo_gamma"] = args.simpo_gamma
+        kwargs["simpo_lr"] = args.lr
+    elif method == "grpo":
+        kwargs["grpo_group_size"] = args.grpo_group_size
+        kwargs["grpo_clip"] = args.grpo_clip
+        kwargs["grpo_lr"] = args.lr
+    elif method == "galore":
+        kwargs["galore_lr"] = args.lr
+        kwargs["galore_rank"] = args.galore_rank
+    
+    trainer = MojoLlamaTrainer(
+        model_path=model,
+        data_path=data,
+        method=method,
+        lora_rank=args.lora_rank,
+        lora_alpha=args.lora_alpha,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        epochs=args.epochs,
+        batch_size=args.batch,
+        max_seq_length=args.max_seq_length,
+        output_path=lora_out,
+        save_steps=args.save_steps,
+        seed=args.seed,
+        warmup_steps=args.warmup_steps,
+        dataset_format=args.dataset_format or "auto",
+        max_samples=args.max_samples,
+        template=args.template or "alpaca",
+        **kwargs,
+    )
+    
+    trainer.train()
 
 
 # ─── Export ────────────────────────────────────────────────────────────
@@ -203,9 +248,14 @@ def cmd_export(args):
 # ─── Merge ──────────────────────────────────────────────────────────────
 
 def cmd_merge(args):
-    """Merge LoRA adapter into base GGUF model."""
+    """Merge LoRA/QLoRA adapter into base GGUF model.
+    
+    Supports both standard LoRA and QLoRA (NF4) adapters.
+    Uses Python-based merge from gguf library for full control,
+    or falls back to llama-export-lora if available.
+    """
     print_banner()
-    print("[Merge] LoRA adapter merge")
+    print("[Merge] LoRA/QLoRA adapter merge")
     print()
 
     from gguf import GGUFReader, GGUFWriter, GGMLQuantizationType, GGUFValueType, dequantize, quantize, Keys
@@ -213,12 +263,14 @@ def cmd_merge(args):
     base_path = args.base
     lora_path = args.lora
     output_path = args.output
-    out_quant = args.type
+    out_quant = args.type or "q4_0"
+    verbose = args.verbose
 
     # Read base model
     print(f"Reading base model: {base_path}")
     base_reader = GGUFReader(base_path)
     print(f"  {len(base_reader.tensors)} tensors")
+    print(f"  Base type: {GGMLQuantizationType(base_reader.tensors[0].tensor_type).name if hasattr(base_reader.tensors[0], 'tensor_type') else '?'}")
 
     # Read LoRA adapter
     print(f"Reading LoRA adapter: {lora_path}")
@@ -387,162 +439,443 @@ def cmd_merge(args):
 # ─── Dataset ───────────────────────────────────────────────────────────
 
 def cmd_dataset(args):
-    """Create, view, and manage training datasets."""
+    """Create, view, convert, compute stats, stream, and auto-label datasets."""
     print_banner()
     print("[Dataset] Training data management")
     print()
-    
-    if args.action == "create":
-        output = args.output or "dataset.jsonl"
-        print(f"Creating dataset: {output}")
-        print("Enter prompts one per line. Empty line to finish.\n")
-        
-        samples = []
-        try:
-            while True:
-                inp = input("Prompt: ").strip()
-                if not inp:
-                    break
-                # Use model for completion
-                completion = input("Completion: ").strip()
-                if not completion:
-                    # Use model to generate completion (placeholder)
-                    completion = "(pending)"
-                samples.append({"prompt": inp, "completion": completion})
-                print(f"  → Sample {len(samples)} saved\n")
-        except (EOFError, KeyboardInterrupt):
-            print()
-        
-        if samples:
-            with open(output, "w") as f:
-                for s in samples:
-                    f.write(json.dumps(s) + "\n")
-            print(f"\n✅ Saved {len(samples)} samples to {output}")
-        else:
-            print("\n⚠️  No samples saved")
-    
-    elif args.action == "view":
-        path = args.dataset or args.input or input("Dataset path: ").strip()
-        if not os.path.exists(path):
-            print(f"❌ File not found: {path}")
-            return
-        samples = []
-        with open(path) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    samples.append(json.loads(line))
-        print(f"Dataset: {path}")
-        print(f"Samples: {len(samples)}")
-        print()
-        for i, s in enumerate(samples[:5]):
-            print(f"[{i+1}] Prompt: {s.get('prompt','')[:60]}...")
-            print(f"    Completion: {s.get('completion','')[:60]}...")
-            print()
-    
-    elif args.action == "convert":
-        src = args.input or input("Source format (csv/jsonl/alpaca): ").strip()
-        dst = args.output or "converted.jsonl"
-        fmt = args.format or "alpaca"
-        print(f"Converting {src} → {dst} (format: {fmt})")
-        print("Supported formats: alpaca, sharegpt, csv, json")
-        print("Coming soon: automated format detection and conversion")
 
-    elif args.action == "auto-label":
-        model = args.model or input("Model path (GGUF): ").strip()
-        input_file = args.input or input("Prompts file (JSONL with 'prompt' field): ").strip()
-        output = args.output or input_file.replace(".jsonl", "-labeled.jsonl")
-        port = args.port or 8090
+    actions = {
+        "create": _cmd_dataset_create,
+        "view": _cmd_dataset_view,
+        "convert": _cmd_dataset_convert,
+        "info": _cmd_dataset_info,
+        "stats": _cmd_dataset_stats,
+        "stream": _cmd_dataset_stream,
+        "list": _cmd_dataset_list,
+        "split": _cmd_dataset_split,
+        "auto-label": _cmd_dataset_autolabel,
+    }
 
-        if not os.path.exists(model):
-            print(f"❌ Model not found: {model}")
-            return
-        if not os.path.exists(input_file):
-            print(f"❌ Prompts file not found: {input_file}")
-            return
-
-        print(f"Model: {model}")
-        print(f"Input: {input_file}")
-        print(f"Output: {output}")
-        print()
-
-        # Start llama.cpp server in background
-        print(f"Starting llama.cpp server on port {port}...")
-        proc = subprocess.Popen(
-            [SERVER_BIN, "-m", model, "-c", "4096",
-             "-t", "64", "-tb", "32", "-b", "4096", "-ub", "4096",
-             "-np", "8", "--mlock", "--cont-batching",
-             "--port", str(port), "--host", "127.0.0.1", "--no-webui"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-
-        # Wait for server to be ready
-        print("Waiting for server...", end=" ", flush=True)
-        ready = False
-        for _ in range(30):
-            time.sleep(1)
-            try:
-                urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2)
-                ready = True
-                break
-            except Exception:
-                print(".", end="", flush=True)
-        print()
-
-        if not ready:
-            print("\n❌ Server failed to start")
-            proc.kill()
-            return
-
-        print(f"\n✅ Server ready at http://127.0.0.1:{port}")
-
-        # Read prompts
-        samples = []
-        with open(input_file) as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    samples.append(json.loads(line))
-
-        print(f"Generating completions for {len(samples)} prompts...")
-        for i, s in enumerate(samples):
-            prompt = s.get("prompt", "")
-            if not prompt:
-                continue
-            print(f"  [{i+1}/{len(samples)}] {prompt[:60]}...", end=" ", flush=True)
-
-            data = json.dumps({
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": args.max_tokens or 256,
-                "temperature": args.temperature or 0.7,
-            }).encode()
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/v1/chat/completions",
-                data=data, headers={"Content-Type": "application/json"}
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=120) as resp:
-                    result = json.loads(resp.read())
-                s["completion"] = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-                print("✓")
-            except Exception as e:
-                print(f"✗ ({e})")
-                s["completion"] = ""
-
-        # Save
-        with open(output, "w") as f:
-            for s in samples:
-                f.write(json.dumps(s) + "\n")
-
-        proc.kill()
-        print(f"\n✅ Saved {len(samples)} labeled samples to {output}")
-
+    if args.action in actions:
+        actions[args.action](args)
     else:
         print("Dataset commands:")
         print("  create     — Create a new dataset interactively")
-        print("  view       — View a dataset")
-        print("  convert    — Convert between formats")
-        print("  auto-label — Auto-generate completions using a model")
+        print("  view       — View sample entries from a dataset")
+        print("  convert    — Convert between dataset formats")
+        print("  info       — Show dataset metadata and format detection")
+        print("  stats      — Compute comprehensive dataset statistics")
+        print("  stream     — Stream a large dataset (memory-efficient)")
+        print("  list       — List available datasets in the workspace")
+        print("  split      — Split dataset into train/val/test")
+        print("  auto-label — Auto-generate completions with confidence scoring")
+
+
+def _cmd_dataset_create(args):
+    """Create a new dataset interactively with format selection."""
+    output = args.output or "dataset.jsonl"
+    fmt = args.format or "alpaca"
+
+    print(f"Creating {fmt} dataset: {output}")
+    print("Format details:")
+    print(f"  {FORMAT_DESCRIPTIONS.get(fmt, fmt)}")
+    print()
+
+    entries = []
+    print("Enter samples. Empty prompt to finish.\n")
+    try:
+        while True:
+            if fmt == "alpaca":
+                instruction = input("Instruction: ").strip()
+                if not instruction:
+                    break
+                input_text = input("Input (optional): ").strip()
+                output_text = input("Output: ").strip()
+                from mojollama.dataset import DatasetEntry, write_jsonl
+                entries.append(DatasetEntry(
+                    source_format=fmt,
+                    instruction=instruction,
+                    input_text=input_text,
+                    output=output_text,
+                ))
+            elif fmt == "sharegpt":
+                convs = []
+                while True:
+                    role = input("  Role (human/gpt, empty to finish): ").strip()
+                    if not role:
+                        break
+                    val = input("  Message: ").strip()
+                    if val:
+                        convs.append({"from": role, "value": val})
+                if not convs:
+                    break
+                from mojollama.dataset import DatasetEntry
+                entries.append(DatasetEntry(
+                    source_format=fmt,
+                    conversations=convs,
+                ))
+            elif fmt == "openai":
+                msgs = []
+                while True:
+                    role = input("  Role (system/user/assistant, empty to finish): ").strip()
+                    if not role:
+                        break
+                    content = input("  Content: ").strip()
+                    if content:
+                        msgs.append({"role": role, "content": content})
+                if not msgs:
+                    break
+                from mojollama.dataset import DatasetEntry
+                entries.append(DatasetEntry(
+                    source_format=fmt,
+                    messages=msgs,
+                ))
+            else:
+                prompt = input("Prompt: ").strip()
+                if not prompt:
+                    break
+                completion = input("Completion: ").strip()
+                from mojollama.dataset import DatasetEntry
+                entries.append(DatasetEntry(
+                    source_format="jsonl",
+                    prompt=prompt,
+                    completion=completion or "(pending)",
+                ))
+
+            print(f"  → Sample {len(entries)} saved\n")
+    except (EOFError, KeyboardInterrupt):
+        print()
+
+    if entries:
+        from mojollama.dataset import write_jsonl
+        write_jsonl(entries, output, format=fmt)
+        print(f"\n✅ Saved {len(entries)} samples to {output}")
+    else:
+        print("\n⚠️  No samples saved")
+
+
+def _cmd_dataset_view(args):
+    """View samples from a dataset."""
+    path = args.dataset or args.input or input("Dataset path: ").strip()
+    count = args.count or 10
+    if not os.path.exists(path):
+        print(f"❌ File not found: {path}")
+        return
+
+    from mojollama.dataset import get_dataset_info, get_reader
+    info = get_dataset_info(path)
+    print(f"Dataset: {path}")
+    print(f"Format:   {info.get('format', 'unknown')}")
+    print(f"Samples:  {info.get('line_count', '?')}")
+    print(f"Size:     {info.get('size_display', '?')}")
+    print()
+
+    reader = get_reader(path, format=info.get("format"))
+    entries = reader.read()[:count]
+
+    for i, entry in enumerate(entries):
+        print(f"[{i+1}] ", end="")
+        if entry.instruction:
+            print(f"Instruction: {entry.instruction[:80]}...")
+        elif entry.prompt:
+            print(f"Prompt: {entry.prompt[:80]}...")
+        if entry.messages:
+            roles = set(m.get("role", "") for m in entry.messages)
+            print(f"    Messages: {len(entry.messages)} turns ({', '.join(roles)})")
+        if entry.conversations:
+            print(f"    Conversations: {len(entry.conversations)} turns")
+        if entry.chosen and entry.rejected:
+            print(f"    Chosen: {len(entry.chosen)} / Rejected: {len(entry.rejected)} turns")
+        if entry.output:
+            print(f"    Output: {entry.output[:80]}...")
+        elif entry.completion:
+            print(f"    Completion: {entry.completion[:80]}...")
+        print()
+
+
+def _cmd_dataset_convert(args):
+    """Convert between dataset formats."""
+    src = args.input or input("Source file: ").strip()
+    dst = args.output or "converted.jsonl"
+    fmt = args.format or "openai"
+
+    if not os.path.exists(src):
+        print(f"❌ File not found: {src}")
+        return
+
+    if fmt not in ALL_FORMATS:
+        print(f"❌ Unknown format: {fmt}")
+        print(f"Supported: {', '.join(ALL_FORMATS)}")
+        return
+
+    result = convert_dataset(src, dst, target_format=fmt)
+    print(f"✅ Conversion complete:")
+    print(f"  Input:  {result['input_path']} ({result['input_format']})")
+    print(f"  Output: {result['output_path']} ({result['output_format']})")
+    print(f"  Samples: {result['samples']}")
+
+
+def _cmd_dataset_info(args):
+    """Show comprehensive dataset info with format detection."""
+    path = args.dataset or args.input or input("Dataset path: ").strip()
+    if not os.path.exists(path):
+        print(f"❌ File not found: {path}")
+        return
+
+    info = get_dataset_info(path)
+    print(f"File:       {info['name']}")
+    print(f"Path:       {info['path']}")
+    print(f"Size:       {info['size_display']}")
+    print(f"Format:     {info['format']}")
+    print(f"Lines:      {info.get('line_count', 0)}")
+    print()
+
+    # Show sample preview
+    samples = info.get("samples_preview", [])
+    if samples:
+        print("Sample data:")
+        for i, s in enumerate(samples[:3]):
+            print(f"  [{i+1}] {json.dumps(s, ensure_ascii=False)[:200]}")
+            print()
+
+
+def _cmd_dataset_stats(args):
+    """Compute comprehensive dataset statistics."""
+    path = args.dataset or args.input or input("Dataset path: ").strip()
+    if not os.path.exists(path):
+        print(f"❌ File not found: {path}")
+        return
+
+    print(f"Computing stats for: {path}")
+    print()
+
+    from mojollama.dataset import get_reader
+
+    fmt = detect_format(path)
+    print(f"Format: {FORMAT_DESCRIPTIONS.get(fmt, fmt)}")
+    print()
+
+    # Read all entries (may take a moment for large datasets)
+    reader = get_reader(path, format=fmt, max_samples=args.max_samples)
+    entries = reader.read()
+    stats = compute_stats(entries)
+
+    print(f"Total samples:      {stats.total_samples}")
+    print(f"Estimated tokens:   {stats.estimated_tokens:,}")
+    print(f"Vocabulary size:    {stats.vocab_size:,}")
+    print()
+    print("Length distribution (chars):")
+    print(f"  Mean:   {stats.avg_length:.1f}")
+    print(f"  Median: {stats.median_length:.1f}")
+    print(f"  Std:    {stats.std_length:.1f}")
+    print(f"  Min:    {stats.min_length}")
+    print(f"  Max:    {stats.max_length}")
+    print()
+    print("Prompt length (chars):")
+    print(f"  Mean:   {stats.to_dict()['prompt_length']['mean']}")
+    print(f"  Median: {stats.to_dict()['prompt_length']['median']}")
+    print()
+    print("Completion length (chars):")
+    print(f"  Mean:   {stats.to_dict()['completion_length']['mean']}")
+    print(f"  Median: {stats.to_dict()['completion_length']['median']}")
+    print()
+
+    if stats.format_distribution:
+        print("Format distribution:")
+        for fmt_name, count in stats.format_distribution.items():
+            print(f"  {fmt_name}: {count}")
+        print()
+
+    # Show histogram
+    hist = stats.length_distribution(bins=8)
+    if hist.get("counts"):
+        edges = hist["bins"]
+        counts = hist["counts"]
+        max_count = max(counts)
+        print("Length histogram:")
+        for i, (start, end) in enumerate(zip(edges[:-1], edges[1:])):
+            bar = "█" * int((counts[i] / max_count) * 30) if max_count > 0 else ""
+            print(f"  {int(start):>6}–{int(end):<6} │ {bar} {counts[i]}")
+
+
+def _cmd_dataset_stream(args):
+    """Stream a large dataset (memory-efficient preview)."""
+    path = args.dataset or args.input or input("Dataset path: ").strip()
+    count = args.count or 20
+    if not os.path.exists(path):
+        print(f"❌ File not found: {path}")
+        return
+
+    from mojollama.dataset import StreamingDataset
+    ds = StreamingDataset(path)
+    total = ds.count_lines()
+    print(f"Streaming {path}")
+    print(f"Total lines: {total:,}")
+    print(f"Previewing {min(count, total)} entries...")
+    print()
+
+    streamed = 0
+    for i, entry in enumerate(ds.stream_entries()):
+        if i >= count:
+            break
+        streamed += 1
+        # Show a compact preview
+        text = entry.get_text()[:100]
+        print(f"  [{i+1}] {text}...")
+        # Show format hints
+        hints = []
+        if entry.messages:
+            hints.append(f"{len(entry.messages)} messages")
+        if entry.conversations:
+            hints.append(f"{len(entry.conversations)} convs")
+        if entry.chosen or entry.rejected:
+            hints.append(f"preference")
+        if hints:
+            print(f"       ({', '.join(hints)})")
+        print()
+
+    print(f"Previewed {streamed} entries (of {total:,} total)")
+    if total > count:
+        print(f"Use --count N to show more entries")
+
+
+def _cmd_dataset_list(args):
+    """List available datasets."""
+    directory = args.directory or os.getcwd()
+    datasets = find_datasets(directory)
+
+    if not datasets:
+        print("No datasets found.")
+        print(f"Looked in: {directory}")
+        print("Supported: .jsonl, .jsonl.gz, .json, .json.gz")
+        return
+
+    print(f"Found {len(datasets)} datasets in {directory}:")
+    print()
+    print(f"  {'Name':<30} {'Format':<14} {'Size':<10}")
+    print(f"  {'─'*30} {'─'*14} {'─'*10}")
+    for ds in datasets:
+        print(f"  {ds['name']:<30} {ds['format_description']:<14} {ds['size_display']:<10}")
+
+
+def _cmd_dataset_split(args):
+    """Split dataset into train/val/test sets."""
+    path = args.dataset or args.input or input("Dataset path: ").strip()
+    if not os.path.exists(path):
+        print(f"❌ File not found: {path}")
+        return
+
+    train_pct = args.train_ratio or 0.8
+    val_pct = args.val_ratio or 0.1
+    test_pct = args.test_ratio or 0.1
+    out_prefix = args.output_prefix or os.path.splitext(path)[0]
+    shuffle = not args.no_shuffle
+
+    from mojollama.dataset import get_reader
+    fmt = detect_format(path)
+    reader = get_reader(path, format=fmt)
+    entries = reader.read()
+    total = len(entries)
+
+    splits = split_dataset(entries, train_ratio=train_pct, val_ratio=val_pct,
+                            test_ratio=test_pct, shuffle=shuffle)
+    print(f"Splitting {total} entries:")
+    print(f"  Train: {len(splits['train'])} ({train_pct*100:.0f}%)")
+    print(f"  Val:   {len(splits['val'])} ({val_pct*100:.0f}%)")
+    print(f"  Test:  {len(splits['test'])} ({test_pct*100:.0f}%)")
+    print()
+
+    for split_name, split_entries in splits.items():
+        if not split_entries:
+            continue
+        out_path = f"{out_prefix}-{split_name}.jsonl"
+        write_jsonl(split_entries, out_path, format=fmt)
+        print(f"  ✅ {split_name}: {len(split_entries)} → {out_path}")
+
+
+def _cmd_dataset_autolabel(args):
+    """Auto-generate completions with confidence scoring."""
+    input_file = args.input or input("Input dataset (JSONL): ").strip()
+    output = args.output or input_file.replace(".jsonl", "-labeled.jsonl")
+    api_base = args.api_base or "http://127.0.0.1:8080"
+    model = args.model or ""
+    max_tokens = args.max_tokens or 256
+    temperature = args.temperature or 0.7
+    batch_size = args.batch_size or 1
+    threshold = args.confidence_threshold or 0.0
+
+    if not os.path.exists(input_file):
+        print(f"❌ File not found: {input_file}")
+        return
+
+    from mojollama.dataset import AutoLabeler, get_reader, compute_stats
+
+    # Determine format
+    fmt = detect_format(input_file)
+    print(f"Input format: {FORMAT_DESCRIPTIONS.get(fmt, fmt)}")
+    print(f"Model API: {api_base}")
+    print(f"Max tokens: {max_tokens}, Temperature: {temperature}")
+    print(f"Batch size: {batch_size}")
+    print()
+
+    # Read entries
+    reader = get_reader(input_file, format=fmt)
+    entries = reader.read()
+    total = len(entries)
+    print(f"Loaded {total} entries")
+    print()
+
+    # Auto-label
+    labeler = AutoLabeler(
+        api_base=api_base,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+
+    def _progress(done, total):
+        print(f"  Progress: {done}/{total} ({done/total*100:.0f}%)", end="\r", flush=True)
+
+    print("Auto-labeling...")
+    labeled = labeler.label_batch(entries, batch_size=batch_size, callback=_progress)
+    print("\n")
+
+    # Compute confidence scores
+    from mojollama.dataset import compute_confidence
+    for entry in labeled:
+        entry.metadata["confidence"] = compute_confidence(entry)
+
+    # Filter by confidence threshold
+    high_conf = [e for e in labeled if e.metadata.get("confidence", 0) >= threshold]
+    low_conf = [e for e in labeled if e.metadata.get("confidence", 0) < threshold]
+
+    print(f"Results:")
+    print(f"  Total entries:     {len(labeled)}")
+    print(f"  High confidence:   {len(high_conf)} (≥{threshold:.2f})")
+    print(f"  Low confidence:    {len(low_conf)} (<{threshold:.2f})")
+    print()
+
+    avg_conf = (
+        sum(e.metadata.get("confidence", 0) for e in labeled) / max(len(labeled), 1)
+    )
+    print(f"  Average confidence: {avg_conf:.3f}")
+    print()
+
+    # Stats on the labeled data
+    stats = compute_stats(labeled)
+    print(f"  Estimated tokens: {stats.estimated_tokens:,}")
+    print()
+
+    # Save all
+    from mojollama.dataset import write_jsonl
+    write_jsonl(labeled, output, format="openai")
+    print(f"✅ Saved {len(labeled)} labeled entries to {output}")
+
+    # Save high-confidence subset
+    if len(high_conf) != len(labeled):
+        hc_out = output.replace(".jsonl", "-highconf.jsonl")
+        write_jsonl(high_conf, hc_out, format="openai")
+        print(f"✅ High-confidence subset ({len(high_conf)}) → {hc_out}")
 
 
 # ─── Chat ──────────────────────────────────────────────────────────────
@@ -725,10 +1058,88 @@ def cmd_benchmark(args):
         print(f"  ─────────────────────────────")
         print(f"  Response preview:    {content[:100]}...")
     except Exception as e:
-        print(f"\n❌ Benchmark failed: {e}")
+        print(f"\\n❌ Benchmark failed: {e}")
 
     proc.kill()
-    print(f"\n✅ Benchmark complete")
+    print(f"\\n✅ Benchmark complete")
+
+
+# ─── Evaluate ─────────────────────────────────────────────────────────
+
+def cmd_evaluate(args):
+    """Run benchmark evaluations (MMLU, GSM8K, CEval, etc.)."""
+    print_banner()
+    print("║     Evaluation Framework                      ║")
+    print()
+
+    if args.action == "download":
+        return cmd_evaluate_download(args)
+
+    if args.action == "list":
+        from mojollama.eval.orchestrator import list_benchmarks
+        print("Available benchmarks:")
+        for b in list_benchmarks():
+            print(f"  {b['id']:15s} — {b['description']}")
+        print()
+        print("Cached datasets:")
+        from mojollama.eval.dataset import list_available_datasets
+        cached = list_available_datasets()
+        if cached:
+            for name, info in cached.items():
+                size_mb = info.get("size", 0) / 1024**2
+                subjects = info.get("subjects", 0)
+                extra = f" ({subjects} subjects)" if subjects else ""
+                print(f"  \u2705 {name:15s} {size_mb:.1f} MB{extra}")
+        else:
+            print("  (none cached \u2014 run `evaluate download` first)")
+        return
+
+    # Ensure we have a backend running
+    llama_port = args.port or 8081
+    backend_url = f"http://127.0.0.1:{llama_port}"
+
+    from mojollama.eval.base import check_backend_alive
+    if not check_backend_alive(backend_url):
+        print(f"\u274c Backend at {backend_url} is not responding.")
+        print(f"   Start a server first: mojollama-studio serve --model model.gguf")
+        return
+
+    # Determine which benchmarks to run
+    benchmarks_to_run = []
+    if args.benchmarks:
+        benchmarks_to_run = [b.lower() for b in args.benchmarks]
+    elif args.all:
+        from mojollama.eval.orchestrator import BENCHMARKS
+        benchmarks_to_run = list(BENCHMARKS.keys())
+    else:
+        print("Specify --benchmarks or --all. Use `evaluate list` to see available benchmarks.")
+        return
+
+    from mojollama.eval.orchestrator import run_benchmarks, format_results
+
+    results = run_benchmarks(benchmarks_to_run, backend_url,
+                             args.model or "unknown",
+                             max_samples=args.max_samples or 0)
+
+    print()
+    print(format_results(results))
+
+    if args.output:
+        import json
+        with open(args.output, "w") as f:
+            json.dump(results, f, indent=2, default=str)
+        print(f"\\n\u2705 Results saved to {args.output}")
+
+
+def cmd_evaluate_download(args):
+    """Download evaluation datasets."""
+    from mojollama.eval.orchestrator import download_all_datasets
+    results = download_all_datasets()
+    ok_count = sum(1 for v in results.values() if v)
+    total = len(results)
+    print(f"\\n{'─'*40}")
+    print(f"  {ok_count}/{total} datasets downloaded successfully")
+    return results
 
 
 # ─── Auto-tune ─────────────────────────────────────────────────────────
@@ -836,6 +1247,227 @@ def cmd_info(args):
     print("  info      This info")
 
 
+# ─── Quantizer Wrappers ────────────────────────────────────────────────
+
+def cmd_quantize_wrapper(args):
+    """Quantize a GGUF model (wraps quantizer.py)."""
+    from mojollama.quantizer import main as quantizer_main
+    import sys
+    sys.argv = ["quantizer.py", "quantize", args.model,
+                "--type", args.type,
+                "--output", args.output or "",
+                "--threads", str(args.threads)]
+    if args.imatrix:
+        sys.argv += ["--imatrix", args.imatrix]
+    if args.allow_requantize:
+        sys.argv.append("--allow-requantize")
+    if args.pure:
+        sys.argv.append("--pure")
+    if args.leave_output:
+        sys.argv.append("--leave-output")
+    if args.dry_run:
+        sys.argv.append("--dry-run")
+    # Remove empty args
+    sys.argv = [a for a in sys.argv if a]
+    return quantizer_main()
+
+
+def cmd_imatrix_wrapper(args):
+    """Generate importance matrix (wraps quantizer.py)."""
+    from mojollama.quantizer import main as quantizer_main
+    import sys
+    sys.argv = ["quantizer.py", "imatrix", args.model,
+                "--output", args.output or "",
+                "--threads", str(args.threads),
+                "--ctx-size", str(args.ctx_size)]
+    if args.data:
+        sys.argv += ["--data", args.data]
+    sys.argv = [a for a in sys.argv if a]
+    print("Generating importance matrix for quantization...")
+    return quantizer_main()
+
+
+def cmd_nf4_wrapper(args):
+    """Convert to NF4 (wraps quantizer.py)."""
+    from mojollama.quantizer import main as quantizer_main
+    import sys
+    sys.argv = ["quantizer.py", "nf4", args.model,
+                "--output", args.output or "",
+                "--block-size", str(args.block_size)]
+    sys.argv = [a for a in sys.argv if a]
+    return quantizer_main()
+
+
+def cmd_quant_types(args):
+    """List supported quantization types."""
+    from mojollama.quantizer import main as quantizer_main
+    import sys
+    sys.argv = ["quantizer.py", "list-types"]
+    return quantizer_main()
+
+
+# ─── Hub commands (from exporter) ───────────────────────────────────
+
+def cmd_hub_login(args):
+    """Login to HuggingFace Hub."""
+    from mojollama.exporter import hub_login
+    print_banner()
+    print("║     HuggingFace Hub — Login                  ║")
+    print()
+    hub_login(token=args.token or "")
+
+
+def cmd_hub_whoami(args):
+    """Show HuggingFace user info."""
+    from mojollama.exporter import hub_whoami
+    user = hub_whoami()
+    if user:
+        print(f"User: {user.get('name', 'unknown')}")
+        print(f"Email: {user.get('email', 'unknown')}")
+    else:
+        print("❌ Not logged in to HuggingFace Hub")
+
+
+def cmd_hub_push(args):
+    """Push model to HuggingFace Hub."""
+    from mojollama.exporter import hub_push_model
+    print_banner()
+    print("║     HuggingFace Hub — Push Model             ║")
+    print()
+    model_path = args.model or input("Model path: ").strip()
+    repo_id = args.repo or input("HF repo ID (e.g. username/model): ").strip()
+    if not os.path.exists(model_path):
+        print(f"❌ Model not found: {model_path}")
+        return
+    metadata = {"studio_version": STUDIO_VERSION}
+    if args.quant: metadata["quantization"] = args.quant
+    if args.params: metadata["parameters"] = args.params
+    if args.description: metadata["description"] = args.description
+    result = hub_push_model(
+        model_path=model_path, repo_id=repo_id,
+        private=args.private,
+        commit_message=args.message or f"Upload via MojoLlama Studio",
+        metadata=metadata,
+    )
+    if result:
+        print(f"\n✅ Model available at: {result}")
+
+
+def cmd_hub_push_adapter(args):
+    """Push LoRA adapter to HuggingFace Hub."""
+    from mojollama.exporter import hub_push_adapter
+    print_banner()
+    print("║  HuggingFace Hub — Push Adapter              ║")
+    print()
+    adapter_path = args.adapter or input("Adapter path: ").strip()
+    base_model = args.base_model or input("Base model name: ").strip()
+    repo_id = args.repo or input("HF repo ID: ").strip()
+    if not os.path.exists(adapter_path):
+        print(f"❌ Adapter not found: {adapter_path}")
+        return
+    metadata = {"base_model": base_model}
+    if args.rank: metadata["lora_rank"] = args.rank
+    if args.alpha: metadata["lora_alpha"] = args.alpha
+    result = hub_push_adapter(
+        adapter_path=adapter_path, base_model=base_model,
+        repo_id=repo_id, private=args.private, metadata=metadata,
+    )
+    if result:
+        print(f"\n✅ Adapter available at: {result}")
+
+
+# ─── Export format commands ────────────────────────────────────────
+
+def cmd_export_safetensors(args):
+    """Convert GGUF model to safetensors format."""
+    from mojollama.exporter import gguf_to_safetensors
+    print_banner()
+    print("[Export] GGUF → Safetensors")
+    print()
+    gguf_path = args.model or input("GGUF model path: ").strip()
+    output_dir = args.output or gguf_path.replace(".gguf", "-safetensors")
+    result = gguf_to_safetensors(
+        gguf_path=gguf_path, output_dir=output_dir,
+        dtype=args.dtype or "float16", shard_size=args.shard_size or "2GB",
+    )
+    if result:
+        print(f"\n✅ Saved to: {result}")
+
+
+def cmd_export_onnx(args):
+    """Convert GGUF model to ONNX format."""
+    from mojollama.exporter import gguf_to_onnx
+    print_banner()
+    print("[Export] GGUF → ONNX")
+    print()
+    gguf_path = args.model or input("GGUF model path: ").strip()
+    output_path = args.output or gguf_path.replace(".gguf", ".onnx")
+    result = gguf_to_onnx(
+        gguf_path=gguf_path, output_path=output_path,
+        opset=args.opset or 17, max_seq_len=args.max_seq_len or 2048,
+    )
+    if result:
+        print(f"\n✅ Saved to: {result}")
+
+
+# ─── Checkpoint commands ───────────────────────────────────────────
+
+def cmd_checkpoint_save(args):
+    """Save a training checkpoint."""
+    from mojollama.exporter import TrainingCheckpoint
+    print_banner()
+    print("[Checkpoint] Save")
+    print()
+    ckpt = TrainingCheckpoint(args.checkpoint_dir or "checkpoints")
+    result = ckpt.save(
+        step=args.step or 0, epoch=args.epoch or 0, loss=args.loss or 0.0,
+        model_path=args.model or None,
+    )
+    if result:
+        print(f"\n✅ Checkpoint saved to: {result}")
+
+
+def cmd_checkpoint_load(args):
+    """Load and display training checkpoint info."""
+    from mojollama.exporter import TrainingCheckpoint
+    print_banner()
+    print("[Checkpoint] Load")
+    print()
+    ckpt = TrainingCheckpoint(args.checkpoint_dir or "checkpoints")
+    data = ckpt.load()
+    if data is None:
+        print("❌ No checkpoint found")
+        return
+    print(f"  Step: {data.get('step', '?')}")
+    print(f"  Epoch: {data.get('epoch', '?')}")
+    print(f"  Loss: {data.get('loss', '?')}")
+    print(f"  Best Loss: {data.get('best_loss', '?')}")
+    if data.get("config"):
+        print(f"  Config:")
+        for k, v in data["config"].items():
+            print(f"    {k}: {v}")
+
+
+def cmd_checkpoint_list(args):
+    """List all training checkpoints."""
+    from mojollama.exporter import TrainingCheckpoint
+    print_banner()
+    print("[Checkpoint] List")
+    print()
+    checkpoints = TrainingCheckpoint.list_checkpoints(args.checkpoint_dir or ".")
+    if not checkpoints:
+        print("No checkpoints found")
+        return
+    print(f"Found {len(checkpoints)} checkpoint(s):")
+    print()
+    for ckpt in checkpoints:
+        name = ckpt.get("name", "?")
+        loss = ckpt.get("loss", "?")
+        step = ckpt.get("step", "?")
+        status = "✅" if "error" not in ckpt else "❌"
+        print(f"  {status} {name} — step {step}, loss {loss}")
+
+
 # ─── Main ──────────────────────────────────────────────────────────────
 
 def main():
@@ -845,15 +1477,43 @@ def main():
     sub = parser.add_subparsers(dest="command", help="Command")
     
     # train
-    p_train = sub.add_parser("train", help="Fine-tune a model")
+    p_train = sub.add_parser("train", help="Fine-tune a model (LoRA, QLoRA, DoRA, GaLore, DPO, GRPO, etc.)")
     p_train.add_argument("--model", help="Model path (GGUF)")
-    p_train.add_argument("--data", help="Training data (JSONL)")
-    p_train.add_argument("--lora-out", default="lora-adapter.gguf")
+    p_train.add_argument("--data", help="Training data (JSONL, JSON, or text)")
+    p_train.add_argument("--method", choices=list(TRAINING_METHODS.keys()),
+                        default="lora", help="Training method (default: lora)")
+    p_train.add_argument("--lora-out", default="adapter.gguf")
     p_train.add_argument("--lora-rank", type=int, default=16)
     p_train.add_argument("--lora-alpha", type=int, default=32)
-    p_train.add_argument("--lr", default="1e-4")
-    p_train.add_argument("--steps", type=int, default=100)
+    p_train.add_argument("--lr", type=float, default=1e-4)
+    p_train.add_argument("--weight-decay", type=float, default=0.0)
+    p_train.add_argument("--epochs", type=int, default=2)
     p_train.add_argument("--batch", type=int, default=4)
+    p_train.add_argument("--max-seq-length", type=int, default=512,
+                        help="Maximum sequence length")
+    p_train.add_argument("--save-steps", type=int, default=0,
+                        help="Save checkpoint every N steps")
+    p_train.add_argument("--seed", type=int, default=42)
+    p_train.add_argument("--warmup-steps", type=int, default=0)
+    p_train.add_argument("--dataset-format", default="auto",
+                        choices=["auto", "alpaca", "sharegpt", "jsonl", "text"])
+    p_train.add_argument("--max-samples", type=int, default=0,
+                        help="Max samples to use (0 = all)")
+    p_train.add_argument("--template", default="alpaca",
+                        choices=["alpaca", "sharegpt", "preference", "text"])
+    # Method-specific options
+    p_train.add_argument("--dpo-beta", type=float, default=0.1, help="DPO KL penalty")
+    p_train.add_argument("--orpo-lambda", type=float, default=0.1, help="ORPO lambda")
+    p_train.add_argument("--simpo-gamma", type=float, default=0.5, help="SimPO reward margin")
+    p_train.add_argument("--grpo-group-size", type=int, default=8, help="GRPO group size")
+    p_train.add_argument("--grpo-clip", type=float, default=0.2, help="GRPO clip epsilon")
+    p_train.add_argument("--galore-rank", type=int, default=128,
+                        help="GaLore projection rank")
+    p_train.add_argument("--list-methods", action="store_true",
+                        help="List available training methods")
+    p_train.add_argument("--resume-from", help="Resume from checkpoint directory")
+    p_train.add_argument("--checkpoint-dir", default="checkpoints", help="Directory for saving checkpoints")
+    p_train.add_argument("--save-every", type=int, default=10, help="Save checkpoint every N steps")
     
     # export
     p_export = sub.add_parser("export", help="Convert HF model to GGUF")
@@ -871,19 +1531,69 @@ def main():
     p_merge.add_argument("--lora", required=True, help="LoRA adapter (GGUF)")
     p_merge.add_argument("--output", default="merged.gguf", help="Output path")
     p_merge.add_argument("--type", default="q4_0", help="Output quantization type")
+    p_merge.add_argument("--verbose", action="store_true", help="Verbose output")
     
     # dataset
     p_data = sub.add_parser("dataset", help="Manage datasets")
-    p_data.add_argument("action", choices=["create", "view", "convert", "auto-label"],
-                        help="Dataset action")
+    p_data.add_argument("action", choices=[
+        "create", "view", "convert", "info", "stats",
+        "stream", "list", "split", "auto-label",
+    ], help="Dataset action")
     p_data.add_argument("--output", help="Output file")
     p_data.add_argument("--dataset", help="Dataset path")
-    p_data.add_argument("--input", help="Input file for conversion or auto-label")
-    p_data.add_argument("--format", help="Dataset format")
-    p_data.add_argument("--model", help="Model path for auto-label")
-    p_data.add_argument("--port", type=int, default=8090, help="Server port for auto-label")
+    p_data.add_argument("--input", help="Input file")
+    p_data.add_argument("--format", help="Dataset format (alpaca/sharegpt/openai/preference/jsonl)")
+    p_data.add_argument("--model", help="Model name for auto-label")
+    p_data.add_argument("--port", type=int, default=8080, help="Server port for auto-label API")
+    p_data.add_argument("--api-base", help="API base URL for auto-label (default: http://127.0.0.1:8080)")
     p_data.add_argument("--max-tokens", type=int, default=256, help="Max tokens for auto-label")
     p_data.add_argument("--temperature", type=float, default=0.7, help="Temperature for auto-label")
+    p_data.add_argument("--count", type=int, default=10, help="Number of samples to show (view/stream)")
+    p_data.add_argument("--max-samples", type=int, help="Max samples to read for stats")
+    p_data.add_argument("--batch-size", type=int, default=1, help="Batch size for auto-label")
+    p_data.add_argument("--confidence-threshold", type=float, default=0.0,
+                        help="Min confidence threshold for auto-label")
+    p_data.add_argument("--directory", help="Directory to scan for list")
+    p_data.add_argument("--train-ratio", type=float, default=0.8, help="Train split ratio")
+    p_data.add_argument("--val-ratio", type=float, default=0.1, help="Validation split ratio")
+    p_data.add_argument("--test-ratio", type=float, default=0.1, help="Test split ratio")
+    p_data.add_argument("--output-prefix", help="Output prefix for split files")
+    p_data.add_argument("--no-shuffle", action="store_true", help="Disable shuffle for split")
+
+    # quantize (wrapper around quantizer.py)
+    p_quant = sub.add_parser("quantize", help="Quantize a GGUF model to a different type (all K/IQ quants, imatrix, NF4)")
+    p_quant.add_argument("model", help="Path to input GGUF model")
+    p_quant.add_argument("--type", "-t", default="Q4_K_M", dest="type",
+                         help="Quantization type (default: Q4_K_M)")
+    p_quant.add_argument("--output", "-o", help="Output path")
+    p_quant.add_argument("--imatrix", help="Importance matrix file for guided quantization")
+    p_quant.add_argument("--threads", type=int, default=0, help="Thread count (0 = auto)")
+    p_quant.add_argument("--allow-requantize", action="store_true",
+                         help="Allow requantizing already quantized tensors")
+    p_quant.add_argument("--pure", action="store_true",
+                         help="Disable K-quant mixtures, pure type")
+    p_quant.add_argument("--leave-output", action="store_true",
+                         help="Leave output.weight unquantized")
+    p_quant.add_argument("--dry-run", action="store_true",
+                         help="Calculate size without quantizing")
+
+    # imatrix
+    p_imatrix = sub.add_parser("imatrix", help="Generate importance matrix for better quantization")
+    p_imatrix.add_argument("model", help="Path to GGUF model")
+    p_imatrix.add_argument("--data", "-f", help="Calibration data file (text)")
+    p_imatrix.add_argument("--output", "-o", help="Output imatrix file path")
+    p_imatrix.add_argument("--threads", "-t", type=int, default=0, help="Number of threads")
+    p_imatrix.add_argument("--ctx-size", "-c", type=int, default=512, help="Context size")
+
+    # nf4
+    p_nf4 = sub.add_parser("nf4", help="Convert to NF4 (NormalFloat4) for QLoRA")
+    p_nf4.add_argument("model", help="Path to input GGUF model")
+    p_nf4.add_argument("--output", "-o", help="Output path")
+    p_nf4.add_argument("--block-size", type=int, default=64,
+                        help="NF4 block size (default: 64)")
+
+    # quant-types
+    sub.add_parser("quant-types", help="List all supported quantization types")
     
     # chat
     p_chat = sub.add_parser("chat", help="Interactive chat")
@@ -901,6 +1611,21 @@ def main():
     p_bench.add_argument("--port", type=int, default=8092, help="Server port")
     p_bench.add_argument("--prompt", default="The meaning of life is", help="Test prompt")
     p_bench.add_argument("--n-predict", type=int, default=128, help="Tokens to generate")
+
+    # evaluate
+    p_eval = sub.add_parser("evaluate", help="Run benchmark evaluations (MMLU, GSM8K, CEval, etc.)")
+    p_eval.add_argument("action", nargs="?", choices=["download", "list"], default=None,
+                        help="'download' to fetch datasets, 'list' to show available")
+    p_eval.add_argument("--benchmarks", "-b", nargs="+",
+                        help="Benchmarks to run: mmlu gsm8k ceval hellaswag arc bbh humaneval")
+    p_eval.add_argument("--all", "-a", action="store_true",
+                        help="Run all available benchmarks")
+    p_eval.add_argument("--model", "-m", help="Model name (for display)")
+    p_eval.add_argument("--max-samples", type=int, default=0,
+                        help="Max samples per category (0 = all)")
+    p_eval.add_argument("--port", type=int, default=8081,
+                        help="llama.cpp backend port")
+    p_eval.add_argument("--output", "-o", help="Save results to JSON file")
     
     # autotune
     p_tune = sub.add_parser("autotune", help="Auto-tune server settings for this hardware")
@@ -911,6 +1636,56 @@ def main():
     
     # info
     sub.add_parser("info", help="System info")
+    
+    # ── Hub commands ─────────────────────────────────────────────
+    p_hub_login = sub.add_parser("hub-login", help="Login to HuggingFace Hub")
+    p_hub_login.add_argument("--token", help="HF API token")
+    
+    sub.add_parser("hub-whoami", help="Show HuggingFace user info")
+    
+    p_hub_push = sub.add_parser("hub-push", help="Push model to HuggingFace Hub")
+    p_hub_push.add_argument("--model", "-m", help="Model path")
+    p_hub_push.add_argument("--repo", help="HF repo ID")
+    p_hub_push.add_argument("--message", help="Commit message")
+    p_hub_push.add_argument("--private", action="store_true", help="Create private repo")
+    p_hub_push.add_argument("--quant", help="Quantization type (metadata)")
+    p_hub_push.add_argument("--params", help="Parameter count (metadata)")
+    p_hub_push.add_argument("--description", help="Model description")
+    
+    p_hub_adapter = sub.add_parser("hub-push-adapter", help="Push LoRA adapter to HF Hub")
+    p_hub_adapter.add_argument("--adapter", help="Adapter GGUF path")
+    p_hub_adapter.add_argument("--base-model", help="Base model name")
+    p_hub_adapter.add_argument("--repo", help="HF repo ID")
+    p_hub_adapter.add_argument("--private", action="store_true")
+    p_hub_adapter.add_argument("--rank", type=int, help="LoRA rank")
+    p_hub_adapter.add_argument("--alpha", type=float, help="LoRA alpha")
+    
+    # ── Export format commands ────────────────────────────────────
+    p_st = sub.add_parser("export-safetensors", help="Convert GGUF to safetensors")
+    p_st.add_argument("--model", "-m", help="GGUF model path")
+    p_st.add_argument("--output", "-o", help="Output directory")
+    p_st.add_argument("--dtype", default="float16", choices=["float16", "float32", "bfloat16"])
+    p_st.add_argument("--shard-size", default="2GB", help="Shard size (1GB, 2GB, 5GB, NO)")
+    
+    p_onnx = sub.add_parser("export-onnx", help="Convert GGUF to ONNX")
+    p_onnx.add_argument("--model", "-m", help="GGUF model path")
+    p_onnx.add_argument("--output", "-o", help="Output path")
+    p_onnx.add_argument("--opset", type=int, default=17, help="ONNX opset")
+    p_onnx.add_argument("--max-seq-len", type=int, default=2048)
+    
+    # ── Checkpoint commands ──────────────────────────────────────
+    p_ckpt_save = sub.add_parser("checkpoint-save", help="Save training checkpoint")
+    p_ckpt_save.add_argument("--checkpoint-dir", default="checkpoints")
+    p_ckpt_save.add_argument("--model", help="Model file path")
+    p_ckpt_save.add_argument("--step", type=int, default=0)
+    p_ckpt_save.add_argument("--epoch", type=int, default=0)
+    p_ckpt_save.add_argument("--loss", type=float, default=0.0)
+    
+    p_ckpt_load = sub.add_parser("checkpoint-load", help="Load training checkpoint")
+    p_ckpt_load.add_argument("--checkpoint-dir", default="checkpoints")
+    
+    p_ckpt_list = sub.add_parser("checkpoint-list", help="List training checkpoints")
+    p_ckpt_list.add_argument("--checkpoint-dir", default=".", help="Base directory")
     
     args = parser.parse_args()
     
@@ -925,11 +1700,25 @@ def main():
         print("  export    Convert HuggingFace model to GGUF")
         print("  dataset   Create, view, auto-label, and manage training datasets")
         print("  merge     Merge LoRA adapter into base GGUF model")
+        print("  quantize  Quantize GGUF to different type (K/IQ quants, imatrix)")
+        print("  imatrix   Generate importance matrix for guided quantization")
+        print("  nf4       Convert to NF4 (NormalFloat4) for QLoRA")
+        print("  quant-types  List supported quantization types")
         print("  chat      Interactive chat with a model")
         print("  serve     Start the full MojoLlama API server")
         print("  benchmark Benchmark model inference speed")
+        print("  evaluate  Run benchmark evaluations (MMLU, GSM8K, CEval)")
         print("  autotune  Auto-tune server settings for this hardware")
         print("  info      Show system info")
+        print("  hub-login          Login to HuggingFace Hub")
+        print("  hub-whoami         Show HuggingFace user info")
+        print("  hub-push           Push model to HuggingFace Hub")
+        print("  hub-push-adapter   Push LoRA adapter to HF Hub")
+        print("  export-safetensors Convert GGUF to safetensors")
+        print("  export-onnx        Convert GGUF to ONNX")
+        print("  checkpoint-save    Save training checkpoint")
+        print("  checkpoint-load    Load training checkpoint")
+        print("  checkpoint-list    List training checkpoints")
         return
     
     commands = {
@@ -937,11 +1726,25 @@ def main():
         "export": cmd_export,
         "dataset": cmd_dataset,
         "merge": cmd_merge,
+        "quantize": cmd_quantize_wrapper,
+        "imatrix": cmd_imatrix_wrapper,
+        "nf4": cmd_nf4_wrapper,
+        "quant-types": cmd_quant_types,
         "chat": cmd_chat,
         "serve": cmd_serve,
         "benchmark": cmd_benchmark,
+        "evaluate": cmd_evaluate,
         "autotune": cmd_autotune,
         "info": cmd_info,
+        "hub-login": cmd_hub_login,
+        "hub-whoami": cmd_hub_whoami,
+        "hub-push": cmd_hub_push,
+        "hub-push-adapter": cmd_hub_push_adapter,
+        "export-safetensors": cmd_export_safetensors,
+        "export-onnx": cmd_export_onnx,
+        "checkpoint-save": cmd_checkpoint_save,
+        "checkpoint-load": cmd_checkpoint_load,
+        "checkpoint-list": cmd_checkpoint_list,
     }
     commands[args.command](args)
 
