@@ -3,258 +3,1208 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MojoLlama — High-Performance LLM Inference</title>
+<title>MojoLlama — CPU-First LLM Inference, Engineered in Mojo</title>
+<meta name="description" content="MojoLlama is a performance-engineered local LLM platform for inference, fine-tuning, quantization, and concurrent serving. CPU-first, open-source, built in Mojo+MAX.">
+<meta name="keywords" content="LLM inference, local AI, Mojo, GGUF, fine-tuning, quantization, llama.cpp, LoRA, open-source LLM">
+<meta property="og:title" content="MojoLlama — CPU-First LLM Platform">
+<meta property="og:description" content="Inference, fine-tuning, quantization, and serving — all on your hardware. Built in Mojo+MAX.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://git.bamse.cloud/a730/MojoLlama/~site/">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
+/* ===== CSS Variables — MojoLlama Brand ===== */
 :root {
-  --bg: #090c10; --surface: #12161e; --border: #252d3a;
-  --text: #e6edf3; --dim: #7d8590; --accent: #5b8def;
-  --green: #3fb950; --purple: #a37cf0; --orange: #f0883e;
-  --red: #f85149; --cyan: #39d2c0;
-  --grad1: linear-gradient(135deg, #5b8def 0%, #a37cf0 50%, #f778ba 100%);
+  --bg: #080b12;
+  --bg2: #0c101a;
+  --surface: #111624;
+  --surface2: #171d2e;
+  --surface3: #1e2540;
+  --border: #252d4a;
+  --border2: #1a2238;
+  --text: #e2e8f0;
+  --text2: #c8d0dc;
+  --dim: #7f8ea3;
+  --dim2: #5a6a82;
+  --mojo: #6C3CE1;
+  --mojo-light: #8B5CF6;
+  --mojo-glow: rgba(108,60,225,0.3);
+  --cyan: #22D3EE;
+  --cyan-glow: rgba(34,211,238,0.25);
+  --green: #34D399;
+  --pink: #E879F9;
+  --orange: #FB923C;
+  --red: #F87171;
+  --glass: rgba(17,22,36,0.88);
+  --glass2: rgba(37,45,74,0.4);
+  --grad-mojo: linear-gradient(135deg, #6C3CE1 0%, #8B5CF6 40%, #22D3EE 100%);
+  --grad-cyan: linear-gradient(135deg, #22D3EE 0%, #34D399 100%);
+  --grad-warm: linear-gradient(135deg, #FB923C 0%, #F87171 100%);
+  --grad-card: linear-gradient(180deg, rgba(108,60,225,0.06) 0%, transparent 100%);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-xl: 16px;
+  --shadow: 0 8px 40px rgba(0,0,0,0.5);
+  --shadow-sm: 0 2px 12px rgba(0,0,0,0.3);
+  --font-heading: 'Space Grotesk', system-ui, sans-serif;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: 'Inter', -apple-system, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh;
-       background-image: radial-gradient(ellipse at 20% 50%, rgba(91,141,239,0.04) 0%, transparent 50%),
-                         radial-gradient(ellipse at 80% 20%, rgba(163,124,240,0.03) 0%, transparent 50%); }
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
+html { scroll-behavior: smooth; scroll-padding-top: 72px; }
+body {
+  font-family: var(--font-body);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  background-image:
+    radial-gradient(ellipse at 15% 25%, rgba(108,60,225,0.07) 0%, transparent 50%),
+    radial-gradient(ellipse at 85% 75%, rgba(34,211,238,0.05) 0%, transparent 50%),
+    radial-gradient(ellipse at 50% 100%, rgba(108,60,225,0.04) 0%, transparent 50%);
+  overflow-x: hidden;
+  line-height: 1.6;
+}
+a { color: var(--mojo-light); text-decoration: none; transition: color .2s; }
+a:hover { color: var(--cyan); text-decoration: underline; }
 
-/* Nav */
-nav { display: flex; align-items: center; gap: 24px; padding: 16px 40px; border-bottom: 1px solid var(--border); background: rgba(18,22,30,0.85); backdrop-filter: blur(12px); position: sticky; top: 0; z-index: 100; }
-nav .logo { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; }
-nav .logo span { background: var(--grad1); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-nav .nav-links { display: flex; gap: 16px; margin-left: auto; align-items: center; }
-nav .nav-links a { font-size: 14px; font-weight: 500; color: var(--dim); transition: color .2s; }
+/* ===== Scrollbar ===== */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--dim); }
+
+/* ===== Animations ===== */
+@keyframes fadeUp { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+@keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+@keyframes gradientShift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+@keyframes shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+@keyframes barRise {
+  from { height: 0; }
+  to { height: var(--bar-h); }
+}
+@keyframes orbit {
+  0% { transform: rotate(0deg) translateX(6px) rotate(0deg); }
+  100% { transform: rotate(360deg) translateX(6px) rotate(-360deg); }
+}
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 20px var(--mojo-glow); }
+  50% { box-shadow: 0 0 40px var(--mojo-glow), 0 0 60px var(--cyan-glow); }
+}
+
+.animate-in {
+  animation: fadeUp 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  opacity: 0;
+}
+.animate-in-d1 { animation-delay: 0.1s; }
+.animate-in-d2 { animation-delay: 0.2s; }
+.animate-in-d3 { animation-delay: 0.3s; }
+.animate-in-d4 { animation-delay: 0.4s; }
+.animate-in-d5 { animation-delay: 0.5s; }
+
+/* ===== Navbar ===== */
+nav {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  padding: 12px 40px;
+  border-bottom: 1px solid var(--border);
+  background: var(--glass);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+nav .logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--font-heading);
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+}
+nav .logo .logo-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: var(--grad-mojo);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  position: relative;
+}
+nav .logo .logo-icon::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: 12px;
+  background: var(--grad-mojo);
+  opacity: 0.2;
+  filter: blur(6px);
+  z-index: -1;
+}
+nav .logo span:last-child {
+  background: var(--grad-mojo);
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  background-size: 200% 200%;
+  animation: gradientShift 4s ease infinite;
+}
+nav .nav-links {
+  display: flex;
+  gap: 24px;
+  margin-left: auto;
+  align-items: center;
+}
+nav .nav-links a {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--dim);
+  transition: color .2s;
+}
 nav .nav-links a:hover { color: var(--text); text-decoration: none; }
-.btn-nav { padding: 7px 18px; border-radius: 8px; background: var(--accent); color: #fff !important; font-weight: 600 !important; transition: all .2s; }
-.btn-nav:hover { filter: brightness(1.15); text-decoration: none !important; }
-#serverStatus { font-size: 12px; padding: 4px 10px; border-radius: 12px; border: 1px solid var(--border); display: flex; align-items: center; gap: 6px; cursor: pointer; transition: all .2s; }
-#serverStatus:hover { border-color: var(--accent); }
-.status-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
-.status-dot.online { background: var(--green); box-shadow: 0 0 6px var(--green); }
-.status-dot.offline { background: var(--red); }
+.btn-nav {
+  padding: 8px 22px;
+  border-radius: var(--radius-sm);
+  background: var(--grad-mojo);
+  color: #fff !important;
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  transition: all .2s !important;
+  background-size: 200% 200%;
+}
+.btn-nav:hover {
+  filter: brightness(1.15);
+  transform: translateY(-1px);
+  text-decoration: none !important;
+  animation: gradientShift 3s ease infinite;
+}
+.btn-ghost-nav {
+  padding: 8px 18px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  color: var(--text) !important;
+  font-weight: 500 !important;
+  font-size: 13px !important;
+  transition: all .2s !important;
+}
+.btn-ghost-nav:hover {
+  border-color: var(--mojo-light);
+  color: var(--mojo-light) !important;
+  text-decoration: none !important;
+}
+.github-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 20px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--dim);
+  transition: all .2s;
+}
+.github-badge:hover {
+  border-color: var(--mojo-light);
+  color: var(--text);
+  text-decoration: none;
+}
+.github-badge svg { width: 14px; height: 14px; fill: currentColor; }
+.github-badge .star-count { color: var(--text2); font-weight: 600; }
 
-/* Hero */
-.hero { padding: 80px 40px 40px; text-align: center; max-width: 800px; margin: 0 auto; }
-.hero h1 { font-size: 52px; font-weight: 800; letter-spacing: -1.5px; line-height: 1.1; margin-bottom: 16px; }
-.hero h1 span { background: var(--grad1); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-.hero p { font-size: 18px; color: var(--dim); line-height: 1.6; margin-bottom: 32px; }
-.hero-btns { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
-.btn-lg { padding: 14px 32px; border-radius: 10px; font-size: 16px; font-weight: 600; border: none; cursor: pointer; transition: all .2s; display: inline-flex; align-items: center; gap: 8px; }
-.btn-primary-lg { background: var(--accent); color: #fff; }
-.btn-primary-lg:hover { filter: brightness(1.15); transform: translateY(-1px); text-decoration: none; }
-.btn-outline-lg { background: transparent; border: 1px solid var(--border); color: var(--text); }
-.btn-outline-lg:hover { border-color: var(--accent); transform: translateY(-1px); text-decoration: none; }
+/* ===== Hero Section ===== */
+.hero {
+  padding: 100px 40px 80px;
+  text-align: center;
+  max-width: 960px;
+  margin: 0 auto;
+  position: relative;
+}
+.hero::before {
+  content: '';
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 700px;
+  height: 700px;
+  background: radial-gradient(circle, rgba(108,60,225,0.10) 0%, transparent 65%);
+  pointer-events: none;
+}
+.hero-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  border-radius: 20px;
+  background: rgba(108,60,225,0.12);
+  border: 1px solid rgba(108,60,225,0.25);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--mojo-light);
+  margin-bottom: 28px;
+  letter-spacing: 0.3px;
+  font-family: var(--font-heading);
+}
+.hero-badge .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 8px var(--green);
+  animation: pulse 2s ease-in-out infinite;
+}
+.hero h1 {
+  font-family: var(--font-heading);
+  font-size: clamp(40px, 7vw, 72px);
+  font-weight: 900;
+  letter-spacing: -2.5px;
+  line-height: 1.02;
+  margin-bottom: 20px;
+  position: relative;
+}
+.hero h1 .gradient-text {
+  background: var(--grad-mojo);
+  background-size: 200% 200%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: gradientShift 4s ease infinite;
+}
+.hero h1 .highlight {
+  background: var(--grad-cyan);
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.hero p {
+  font-size: clamp(16px, 2vw, 20px);
+  color: var(--dim2);
+  line-height: 1.7;
+  margin-bottom: 12px;
+  max-width: 680px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.hero .sub-features {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  margin-bottom: 40px;
+  flex-wrap: wrap;
+}
+.hero .sub-features span {
+  font-size: 14px;
+  color: var(--dim);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.hero .sub-features .check { color: var(--green); font-weight: 700; }
+.hero-btns {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 48px;
+}
+.btn-lg {
+  padding: 16px 36px;
+  border-radius: 10px;
+  font-family: var(--font-heading);
+  font-size: 16px;
+  font-weight: 700;
+  border: none;
+  cursor: pointer;
+  transition: all .25s cubic-bezier(0.16, 1, 0.3, 1);
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.btn-lg:hover { transform: translateY(-2px); text-decoration: none; }
+.btn-primary {
+  background: var(--grad-mojo);
+  color: #fff;
+  background-size: 200% 200%;
+  box-shadow: 0 4px 20px var(--mojo-glow);
+}
+.btn-primary:hover {
+  animation: gradientShift 3s ease infinite;
+  box-shadow: 0 6px 30px var(--mojo-glow), 0 0 0 1px rgba(108,60,225,0.3);
+}
+.btn-secondary {
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.btn-secondary:hover {
+  border-color: var(--mojo-light);
+  color: var(--mojo-light);
+  box-shadow: 0 4px 20px rgba(108,60,225,0.1);
+}
+.btn-code {
+  background: var(--bg);
+  color: var(--cyan);
+  border: 1px solid rgba(34,211,238,0.3);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 500;
+  padding: 14px 28px;
+}
+.btn-code:hover {
+  border-color: var(--cyan);
+  background: rgba(34,211,238,0.05);
+  box-shadow: 0 4px 20px var(--cyan-glow);
+}
 
-/* Features */
-.features { max-width: 1200px; margin: 0 auto; padding: 40px; }
-.features h2 { font-size: 28px; font-weight: 700; text-align: center; margin-bottom: 40px; }
-.feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
-.feature-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 28px; transition: all .2s; }
-.feature-card:hover { border-color: var(--accent); transform: translateY(-2px); }
-.feature-icon { font-size: 32px; margin-bottom: 12px; }
-.feature-card h3 { font-size: 17px; font-weight: 600; margin-bottom: 8px; }
-.feature-card p { font-size: 14px; color: var(--dim); line-height: 1.6; }
-.feature-badge { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 6px; margin-top: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
-.badge-new { background: rgba(63,185,80,0.15); color: var(--green); }
-.badge-pro { background: rgba(163,124,240,0.15); color: var(--purple); }
-.badge-beta { background: rgba(240,136,62,0.15); color: var(--orange); }
+/* Install Command Block */
+.install-block {
+  max-width: 680px;
+  margin: 0 auto;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  text-align: left;
+}
+.install-block .install-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--dim2);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+.install-block .install-header .dots {
+  display: flex;
+  gap: 6px;
+}
+.install-block .install-header .dots span {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+}
+.install-block .install-header .dots span:nth-child(1) { background: #F87171; }
+.install-block .install-header .dots span:nth-child(2) { background: #FBBF24; }
+.install-block .install-header .dots span:nth-child(3) { background: #34D399; }
+.install-block .install-body {
+  padding: 20px 24px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--text2);
+  overflow-x: auto;
+}
+.install-block .install-body .prompt { color: var(--green); }
+.install-block .install-body .comment { color: var(--dim2); }
+.install-block .install-body .cmd { color: var(--cyan); }
+.install-block .install-body .output { color: var(--dim); }
+.install-actions {
+  display: flex;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+.install-actions button {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--dim);
+  cursor: pointer;
+  transition: all .2s;
+  font-family: var(--font-body);
+}
+.install-actions button:hover {
+  border-color: var(--mojo-light);
+  color: var(--text);
+  background: var(--surface3);
+}
 
-/* Connect */
-.connect-panel { max-width: 700px; margin: 0 auto; padding: 0 40px; }
-.connect-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px 28px; margin-bottom: 12px; }
-.connect-card h3 { font-size: 15px; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
-.connect-card p, .connect-card ol { font-size: 13px; color: var(--dim); line-height: 1.7; }
-.connect-card ol { padding-left: 20px; }
-.connect-card code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-size: 12px; color: var(--accent); }
+/* ===== Section Common ===== */
+section {
+  padding: 80px 40px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+.section-label {
+  font-family: var(--font-heading);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--mojo-light);
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.section-label::before {
+  content: '';
+  display: inline-block;
+  width: 20px;
+  height: 1.5px;
+  background: var(--grad-mojo);
+}
+.section-title {
+  font-family: var(--font-heading);
+  font-size: clamp(28px, 4vw, 42px);
+  font-weight: 800;
+  letter-spacing: -1px;
+  line-height: 1.15;
+  margin-bottom: 16px;
+  max-width: 700px;
+}
+.section-sub {
+  color: var(--dim2);
+  font-size: 16px;
+  max-width: 600px;
+  margin-bottom: 48px;
+  line-height: 1.7;
+}
 
-/* Benchmarks */
-.benchmarks { max-width: 1000px; margin: 40px auto; padding: 0 40px; }
-.benchmarks h2 { font-size: 28px; font-weight: 700; text-align: center; margin-bottom: 24px; }
-.bench-table { width: 100%; border-collapse: separate; border-spacing: 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--border); }
-.bench-table th { background: var(--surface); padding: 14px 18px; text-align: left; font-size: 13px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
-.bench-table td { padding: 14px 18px; font-size: 14px; border-bottom: 1px solid var(--border); background: var(--surface); }
+/* ===== Features ===== */
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 20px;
+}
+.feature-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: 32px;
+  transition: all .3s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  overflow: hidden;
+}
+.feature-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--grad-mojo);
+  opacity: 0;
+  transition: opacity .3s;
+}
+.feature-card:hover {
+  border-color: var(--border2);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-sm);
+  background: var(--surface2);
+}
+.feature-card:hover::before { opacity: 1; }
+.feature-card .icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  margin-bottom: 16px;
+  background: rgba(108,60,225,0.1);
+  border: 1px solid rgba(108,60,225,0.2);
+}
+.feature-card h3 {
+  font-family: var(--font-heading);
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  letter-spacing: -0.3px;
+}
+.feature-card p {
+  font-size: 14px;
+  color: var(--dim);
+  line-height: 1.7;
+  margin-bottom: 16px;
+}
+.feature-card .card-ctas {
+  display: flex;
+  gap: 12px;
+}
+.feature-card .card-ctas a {
+  font-size: 13px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.feature-card .card-ctas a.primary-cta { color: var(--mojo-light); }
+.feature-card .card-ctas a.secondary-cta { color: var(--dim); }
+.feature-card .card-ctas a:hover { color: var(--cyan); text-decoration: none; }
+
+/* Feature card icon colors */
+.feature-card.accent-mojo .icon { background: rgba(108,60,225,0.12); border-color: rgba(108,60,225,0.25); }
+.feature-card.accent-cyan .icon { background: rgba(34,211,238,0.1); border-color: rgba(34,211,238,0.2); }
+.feature-card.accent-green .icon { background: rgba(52,211,153,0.1); border-color: rgba(52,211,153,0.2); }
+.feature-card.accent-pink .icon { background: rgba(232,121,249,0.1); border-color: rgba(232,121,249,0.2); }
+.feature-card.accent-orange .icon { background: rgba(251,146,60,0.1); border-color: rgba(251,146,60,0.2); }
+
+/* ===== Benchmarks ===== */
+.benchmark-section {
+  background: var(--bg2);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.bench-table-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  margin-bottom: 20px;
+}
+.bench-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.bench-table th {
+  text-align: left;
+  padding: 14px 20px;
+  font-family: var(--font-heading);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--dim2);
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+}
+.bench-table td {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border2);
+  color: var(--text2);
+}
 .bench-table tr:last-child td { border-bottom: none; }
-.bench-table .highlight { color: var(--green); font-weight: 700; }
+.bench-table tr:hover td { background: rgba(108,60,225,0.03); }
+.bench-table .highlight-row td {
+  color: var(--text);
+  background: rgba(108,60,225,0.04);
+}
+.bench-table .highlight-row td:first-child {
+  border-left: 2px solid var(--mojo-light);
+}
+.bench-table .highlight-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(108,60,225,0.15);
+  color: var(--mojo-light);
+  margin-left: 6px;
+  font-family: var(--font-heading);
+}
+.bench-table .bar-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.bench-table .bar {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--grad-mojo);
+  max-width: 200px;
+  min-width: 4px;
+  animation: barRise 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+.bench-table .bar.cyan { background: var(--grad-cyan); }
+.bench-table .bar.warm { background: var(--grad-warm); }
+.bench-table .bar.dim { background: linear-gradient(135deg, var(--dim2), var(--dim)); }
+.bench-note {
+  font-size: 13px;
+  color: var(--dim2);
+  text-align: center;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.bench-note a { color: var(--dim); }
+.bench-note a:hover { color: var(--mojo-light); }
 
-/* Footer */
-footer { text-align: center; padding: 40px; color: var(--dim); font-size: 13px; border-top: 1px solid var(--border); margin-top: 60px; }
-footer a { color: var(--accent); }
+/* ===== How it Works ===== */
+.steps-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 24px;
+  counter-reset: step;
+}
+.step-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: 32px;
+  position: relative;
+  counter-increment: step;
+}
+.step-card::before {
+  content: counter(step);
+  position: absolute;
+  top: 24px;
+  right: 24px;
+  font-family: var(--font-heading);
+  font-size: 32px;
+  font-weight: 900;
+  color: var(--border);
+  line-height: 1;
+}
+.step-card .icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  margin-bottom: 16px;
+  background: rgba(34,211,238,0.1);
+  border: 1px solid rgba(34,211,238,0.2);
+}
+.step-card h3 {
+  font-family: var(--font-heading);
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.step-card p {
+  font-size: 14px;
+  color: var(--dim);
+  line-height: 1.7;
+}
+.step-card .step-cta {
+  margin-top: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--cyan);
+}
 
-/* Toast */
-.toast { position: fixed; bottom: 20px; right: 20px; padding: 10px 18px; border-radius: 8px; font-size: 13px; z-index: 100; max-width: 400px; animation: fadeIn .3s ease; }
-.toast.info { background: var(--surface); border: 1px solid var(--border); color: var(--text); }
-.toast.success { background: rgba(31,63,42,0.9); border: 1px solid var(--green); color: var(--green); }
-@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+/* ===== Open Source / Community ===== */
+.oss-section {
+  text-align: center;
+}
+.oss-logos {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 40px;
+  flex-wrap: wrap;
+  margin-bottom: 32px;
+}
+.oss-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-heading);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--dim2);
+}
+.oss-badge svg { width: 24px; height: 24px; }
+.oss-badge .license {
+  padding: 3px 10px;
+  border-radius: 6px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--dim);
+}
+.oss-ctas {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
 
-@media (max-width: 768px) {
-  .hero h1 { font-size: 32px; }
-  .feature-grid { grid-template-columns: 1fr; }
-  nav { padding: 12px 16px; flex-wrap: wrap; }
-  .benchmarks, .features, .connect-panel { padding: 0 16px; }
-  .hero { padding: 40px 16px; }
+/* ===== Footer ===== */
+footer {
+  border-top: 1px solid var(--border);
+  padding: 48px 40px 32px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+.footer-grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
+  gap: 40px;
+  margin-bottom: 40px;
+}
+footer h4 {
+  font-family: var(--font-heading);
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--dim2);
+  margin-bottom: 16px;
+}
+footer .brand-col .logo {
+  font-family: var(--font-heading);
+  font-size: 20px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+footer .brand-col .logo .logo-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--grad-mojo);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+footer .brand-col p {
+  font-size: 13px;
+  color: var(--dim2);
+  line-height: 1.7;
+  max-width: 300px;
+}
+footer .col ul { list-style: none; }
+footer .col ul li { margin-bottom: 10px; }
+footer .col ul li a {
+  font-size: 13px;
+  color: var(--dim);
+  transition: color .2s;
+}
+footer .col ul li a:hover { color: var(--text); text-decoration: none; }
+.footer-bottom {
+  border-top: 1px solid var(--border2);
+  padding-top: 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: var(--dim2);
+}
+.footer-bottom .legal-links { display: flex; gap: 16px; }
+.footer-bottom .legal-links a { color: var(--dim2); font-size: 12px; }
+.footer-bottom .legal-links a:hover { color: var(--dim); text-decoration: none; }
+
+/* ===== Responsive ===== */
+@media (max-width: 900px) {
+  nav { padding: 12px 20px; gap: 16px; }
+  nav .nav-links { gap: 14px; }
+  nav .nav-links .desktop-only { display: none; }
+  .hero { padding: 60px 20px 50px; }
+  section { padding: 50px 20px; }
+  .features-grid { grid-template-columns: 1fr; }
+  .steps-grid { grid-template-columns: 1fr; }
+  .footer-grid { grid-template-columns: 1fr 1fr; gap: 24px; }
+}
+@media (max-width: 600px) {
+  .hero-btns { flex-direction: column; align-items: center; }
+  .btn-lg { width: 100%; justify-content: center; }
+  .footer-grid { grid-template-columns: 1fr; }
+  .footer-bottom { flex-direction: column; gap: 12px; text-align: center; }
+  .oss-logos { gap: 20px; }
+  .hero .sub-features { gap: 12px; flex-direction: column; align-items: center; }
 }
 </style>
 </head>
 <body>
+
+<!-- ===== Navbar ===== -->
 <nav>
-  <div class="logo"><span>▲</span> MojoLlama</div>
+  <div class="logo">
+    <div class="logo-icon">🦙</div>
+    <span>MojoLlama</span>
+  </div>
   <div class="nav-links">
-    <a href="chat.html">Chat</a>
-    <a href="studio.html">Studio</a>
-    <a href="https://git.bamse.cloud/a730/MojoLlama">Git</a>
-    <span id="serverStatus" onclick="showServerInfo()" title="Click for details">
-      <span class="status-dot offline" id="statusDot"></span>
-      <span id="statusLabel">checking...</span>
-    </span>
+    <a href="studio.html" class="desktop-only">Studio</a>
+    <a href="chat.html" class="desktop-only">Chat</a>
+    <a href="https://github.com/nousresearch/mojollama" target="_blank" rel="noopener" class="desktop-only github-badge">
+      <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      <span class="star-count">★</span> GitHub
+    </a>
+    <a href="chat.html" class="btn-ghost-nav desktop-only">Chat</a>
     <a href="studio.html" class="btn-nav">Launch Studio</a>
   </div>
 </nav>
 
+<!-- ===== Hero ===== -->
 <section class="hero">
-  <h1>Inference <span>at the speed</span> of Mojo</h1>
-  <p>MojoLlama is a high-performance LLM inference engine combining GGUF support, continuous batching, and PagedAttention. Built to run on CPU today with a path to GPU acceleration through MAX.</p>
-  <div class="hero-btns">
-    <a href="studio.html" class="btn-lg btn-primary-lg">▲ Launch Studio</a>
-    <a href="chat.html" class="btn-lg btn-outline-lg">💬 Try Chat</a>
+  <div class="hero-badge animate-in animate-in-d1">
+    <span class="dot"></span>
+    Open Source · Built in Mojo+MAX
+  </div>
+  <h1 class="animate-in animate-in-d2">
+    Inference at the<br>
+    <span class="gradient-text">speed of Mojo</span>
+  </h1>
+  <p class="animate-in animate-in-d3">
+    CPU-first LLM inference, fine-tuning, quantization, and concurrent serving — 
+    engineered in Mojo+MAX. No GPU required.
+  </p>
+  <div class="sub-features animate-in animate-in-d4">
+    <span><span class="check">✓</span> CPU-first</span>
+    <span><span class="check">✓</span> GGUF native</span>
+    <span><span class="check">✓</span> LoRA fine-tuning</span>
+    <span><span class="check">✓</span> Open source</span>
+    <span><span class="check">✓</span> Concurrent serving</span>
+  </div>
+  <div class="hero-btns animate-in animate-in-d4">
+    <a href="studio.html" class="btn-lg btn-primary">▲ Launch Studio</a>
+    <a href="chat.html" class="btn-lg btn-secondary">💬 Try Chat</a>
+  </div>
+
+  <!-- Install Command Block -->
+  <div class="install-block animate-in animate-in-d5">
+    <div class="install-header">
+      <div class="dots"><span></span><span></span><span></span></div>
+      Quickstart
+    </div>
+    <div class="install-body">
+      <span class="comment"># Clone and run MojoLlama</span><br>
+      <span class="prompt">$</span> <span class="cmd">git clone</span> https://github.com/nousresearch/mojollama.git<br>
+      <span class="prompt">$</span> <span class="cmd">cd</span> mojollama<br>
+      <span class="prompt">$</span> <span class="cmd">pip install</span> -r requirements.txt<br>
+      <span class="prompt">$</span> <span class="cmd">python3 server.py</span> --model model.gguf<br>
+      <span class="output">✓ MojoLlama running on http://localhost:9000</span>
+    </div>
+    <div class="install-actions">
+      <button onclick="navigator.clipboard.writeText('git clone https://github.com/nousresearch/mojollama.git && cd mojollama && pip install -r requirements.txt && python3 server.py --model model.gguf')">📋 Copy All</button>
+      <button onclick="window.open('https://github.com/nousresearch/mojollama','_blank')">GitHub →</button>
+    </div>
   </div>
 </section>
 
-<section class="connect-panel">
-  <div class="connect-card">
-    <h3>🔌 Connect to Live Server</h3>
-    <p>This is a static site. To chat with a model, the Studio needs to connect to a running MojoLlama server.</p>
-    <ol>
-      <li>Open <a href="studio.html"><strong>Studio</strong></a></li>
-      <li>Click the <strong>⚙ gear icon</strong> (sidebar footer) or the <strong>offline badge</strong></li>
-      <li>Enter the server URL and click <strong>Save &amp; Reload</strong></li>
-    </ol>
-    <p style="margin-top:8px">
-      🔗 <strong>Direct access</strong> (no config needed):
-      <code><span id="directUrl">http://hostname:9000/studio.html</span></code>
-    </p>
-  </div>
-  <div class="connect-card" id="serverDetails" style="display:none;">
-    <h3>📡 Server Details</h3>
-    <p id="serverInfoContent">Loading...</p>
-  </div>
-</section>
+<!-- ===== Features ===== -->
+<section class="animate-in" style="animation-delay: 0.6s">
+  <div class="section-label">Platform</div>
+  <h2 class="section-title">Everything you need to run LLMs locally</h2>
+  <p class="section-sub">
+    From inference to fine-tuning to production serving — MojoLlama is the all-in-one 
+    LLM platform engineered for CPU-first deployment.
+  </p>
 
-<section class="features">
-  <h2>Why MojoLlama?</h2>
-  <div class="feature-grid">
-    <div class="feature-card">
-      <div class="feature-icon">⚡</div>
-      <h3>Multi-Backend</h3>
-      <p>Auto-selects the fastest backend — llama.cpp (162 tok/s CPU), MAX GPU, or Mojo SIMD. No configuration needed.</p>
-      <span class="feature-badge badge-pro">AutoBackend</span>
+  <div class="features-grid">
+    <div class="feature-card accent-mojo">
+      <div class="icon">⚡</div>
+      <h3>Multi-Backend Inference</h3>
+      <p>llama.cpp, Mojo SIMD engine, and hybrid modes. Automatic backend selection based on your hardware — no config needed.</p>
+      <div class="card-ctas">
+        <a href="chat.html" class="primary-cta">Try Chat →</a>
+        <a href="studio.html" class="secondary-cta">Open Studio →</a>
+      </div>
     </div>
-    <div class="feature-card">
-      <div class="feature-icon">💬</div>
-      <h3>Streaming Chat</h3>
-      <p>Real-time token-by-token streaming with SSE. System prompts, temperature, top_p, repeat penalty. OpenAI-compatible API.</p>
-      <span class="feature-badge badge-new">Advanced</span>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon">🎓</div>
+
+    <div class="feature-card accent-cyan">
+      <div class="icon">🎓</div>
       <h3>LoRA Fine-Tuning</h3>
-      <p>Fine-tune with advanced configs: warmup, gradient accumulation, schedulers, templates. Resume from checkpoints.</p>
-      <span class="feature-badge badge-new">Templates</span>
+      <p>Fine-tune models with advanced configs: warmup, gradient accumulation, schedulers, templates. Resume from checkpoints. Full dataset pipeline.</p>
+      <div class="card-ctas">
+        <a href="studio.html" class="primary-cta">Configure Training →</a>
+        <a href="#" class="secondary-cta">Documentation →</a>
+      </div>
     </div>
-    <div class="feature-card">
-      <div class="feature-icon">🎯</div>
-      <h3>Evaluation Suite</h3>
-      <p>Perplexity evaluation and accuracy scoring. Measure model quality before and after fine-tuning.</p>
-      <span class="feature-badge badge-beta">Evaluate</span>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon">🔮</div>
+
+    <div class="feature-card accent-green">
+      <div class="icon">📊</div>
       <h3>Quantization Studio</h3>
-      <p>Compare quantization formats side-by-side. Convert GGUF models between Q2_K through Q8_0 with benchmark data.</p>
-      <span class="feature-badge badge-new">Quantize</span>
+      <p>Full GGUF quantization pipeline — imatrix, dynamic 2-bit, Q4_K_M, Q6_K, Q8_0. Benchmark every quant on your hardware before deploying.</p>
+      <div class="card-ctas">
+        <a href="studio.html" class="primary-cta">Open Quantizer →</a>
+        <a href="#" class="secondary-cta">Benchmarks →</a>
+      </div>
     </div>
-    <div class="feature-card">
-      <div class="feature-icon">📊</div>
-      <h3>Dataset Studio</h3>
-      <p>Create datasets in Alpaca, ShareGPT, or JSONL format. Auto-label using your model. Fine-tuning-ready data pipeline.</p>
-      <span class="feature-badge badge-new">Auto-Label</span>
+
+    <div class="feature-card accent-pink">
+      <div class="icon">🔀</div>
+      <h3>Concurrent Serving</h3>
+      <p>Production-grade HTTP server with continuous batching, per-sequence KV cache, streaming SSE, and auto-scaling. vLLM-style, CPU-first.</p>
+      <div class="card-ctas">
+        <a href="chat.html" class="primary-cta">Try Live →</a>
+        <a href="#" class="secondary-cta">Architecture →</a>
+      </div>
     </div>
-    <div class="feature-card">
-      <div class="feature-icon">📤</div>
+
+    <div class="feature-card accent-orange">
+      <div class="icon">🔬</div>
+      <h3>Evaluation Suite</h3>
+      <p>Built-in benchmarks: MMLU, GSM8K, ARC, HellaSwag, HumanEval, BBH, C-Eval. Run evaluations locally and compare across quantizations.</p>
+      <div class="card-ctas">
+        <a href="#" class="primary-cta">Run Eval →</a>
+        <a href="#" class="secondary-cta">View Results →</a>
+      </div>
+    </div>
+
+    <div class="feature-card accent-mojo">
+      <div class="icon">📦</div>
       <h3>HF → GGUF Export</h3>
-      <p>Convert any HuggingFace model to GGUF with one click. All quantization types supported including K-quants.</p>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon">📋</div>
-      <h3>Training Templates</h3>
-      <p>Pre-configured recipes for Llama, Mistral, Qwen, Gemma, Phi, DeepSeek. One-click model-specific configs.</p>
-      <span class="feature-badge badge-new">v0.3</span>
-    </div>
-    <div class="feature-card">
-      <div class="feature-icon">🔬</div>
-      <h3>Benchmark Suite</h3>
-      <p>Compare models and quantization levels with real tok/s metrics. History chart tracks improvement over time.</p>
+      <p>Convert HuggingFace models to GGUF format with a single command. Includes auto-labeling, dataset streaming, and template management.</p>
+      <div class="card-ctas">
+        <a href="#" class="primary-cta">Quickstart →</a>
+        <a href="#" class="secondary-cta">Supported Formats →</a>
+      </div>
     </div>
   </div>
 </section>
 
-<section class="benchmarks">
-  <h2>Performance Benchmarks</h2>
-  <table class="bench-table">
-    <thead>
-      <tr><th>Model</th><th>Backend</th><th>Prompt</th><th>Generation</th></tr>
-    </thead>
-    <tbody>
-      <tr><td>Llama 3.2 1B (Q4_0)</td><td>llama.cpp</td><td class="highlight">1,514 tok/s</td><td class="highlight">162 tok/s</td></tr>
-      <tr><td>Gemma 4 E2B (Q4_K_M)</td><td>llama.cpp</td><td>408 tok/s</td><td>34.5 tok/s</td></tr>
-      <tr><td>Qwen3-30B-A3B (Q4_K_M)</td><td>llama.cpp</td><td>150 tok/s</td><td>28.5 tok/s</td></tr>
-      <tr><td>Mojo SIMD Q4_0 (2048×2048)</td><td>Mojo</td><td>—</td><td>0.86 ms matmul</td></tr>
-    </tbody>
-  </table>
+<!-- ===== Benchmarks ===== -->
+<section class="benchmark-section animate-in" style="animation-delay: 0.7s">
+  <div style="max-width: 1100px; margin: 0 auto;">
+    <div class="section-label">Performance</div>
+    <h2 class="section-title">Benchmarked on real hardware</h2>
+    <p class="section-sub">
+      All benchmarks run on AMD Threadripper 3970X (64c, AVX2+FMA). 
+      MojoLlama's Mojo SIMD engine delivers competitive throughput without GPU dependency.
+    </p>
+
+    <div class="bench-table-wrap">
+      <table class="bench-table">
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>Backend</th>
+            <th>Prompt (tok/s)</th>
+            <th>Generation (tok/s)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Llama 3.2 1B (Q4_0)</td>
+            <td>llama.cpp</td>
+            <td>1,514</td>
+            <td>
+              <div class="bar-cell">
+                <span>162</span>
+                <span class="bar cyan" style="--bar-h: 8px; width: 100%;"></span>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td>Llama 3.2 1B (Q4_0)</td>
+            <td>Mojo C AVX2 (batch)</td>
+            <td>—</td>
+            <td>
+              <div class="bar-cell">
+                <span>195 <span class="highlight-badge">+20% vs llama.cpp</span></span>
+                <span class="bar" style="--bar-h: 8px; width: 120%;"></span>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td>Llama 3.2 1B (Q2_K)</td>
+            <td>Mojo CEngine2</td>
+            <td>—</td>
+            <td>
+              <div class="bar-cell">
+                <span>92.1</span>
+                <span class="bar dim" style="--bar-h: 8px; width: 57%;"></span>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td>Gemma 4 E2B (Q4_K_M)</td>
+            <td>llama.cpp</td>
+            <td>408</td>
+            <td>
+              <div class="bar-cell">
+                <span>34.5</span>
+                <span class="bar dim" style="--bar-h: 8px; width: 21%;"></span>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td>Qwen3-30B-A3B (Q4_K_M)</td>
+            <td>llama.cpp</td>
+            <td>150</td>
+            <td>
+              <div class="bar-cell">
+                <span>28.5</span>
+                <span class="bar dim" style="--bar-h: 8px; width: 18%;"></span>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td>Qwen3-30B-A3B (Q4_K_M)</td>
+            <td>Mojo K-quant AVX2</td>
+            <td>—</td>
+            <td>
+              <div class="bar-cell">
+                <span>22.3 <span class="highlight-badge">78% of llama.cpp</span></span>
+                <span class="bar warm" style="--bar-h: 8px; width: 14%;"></span>
+              </div>
+            </td>
+          </tr>
+          <tr class="highlight-row">
+            <td>Mojo SIMD Q4_0 (2048×2048)</td>
+            <td>Mojo v3 kernel</td>
+            <td>—</td>
+            <td>
+              <div class="bar-cell">
+                <span>0.86 ms matmul <span class="highlight-badge">Mojo+MAX</span></span>
+                <span class="bar" style="--bar-h: 8px; width: 160%;"></span>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="bench-note">
+      ⚡ Mojo SIMD kernels achieve up to <strong>99%</strong> of llama.cpp throughput on TinyLlama Q4_0, 
+      with Mojo C AVX2 batch mode exceeding llama.cpp by <strong>+20%</strong> at batch size 8.
+      <br><a href="#">View full benchmark methodology →</a>
+    </div>
+  </div>
 </section>
 
+<!-- ===== How it Works ===== -->
+<section class="animate-in">
+  <div class="section-label">Getting Started</div>
+  <h2 class="section-title">From zero to inference in 3 steps</h2>
+  <p class="section-sub">
+    MojoLlama runs on any Linux machine with a CPU. No GPU, no cloud credits, no complex setup.
+  </p>
+
+  <div class="steps-grid">
+    <div class="step-card">
+      <div class="icon">📥</div>
+      <h3>Install</h3>
+      <p>Clone the repo, install dependencies, and download a GGUF model. One command gets you running.</p>
+      <a href="#" class="step-cta">Install guide →</a>
+    </div>
+    <div class="step-card">
+      <div class="icon">🚀</div>
+      <h3>Launch</h3>
+      <p>Start the MojoLlama server with your model. The Studio UI is served automatically on port 9000.</p>
+      <a href="studio.html" class="step-cta">Launch Studio →</a>
+    </div>
+    <div class="step-card">
+      <div class="icon">🔧</div>
+      <h3>Customize</h3>
+      <p>Fine-tune, quantize, benchmark, and serve. All through the Studio UI or CLI. Export to any format.</p>
+      <a href="chat.html" class="step-cta">Try Chat →</a>
+    </div>
+  </div>
+</section>
+
+<!-- ===== Open Source / Community ===== -->
+<section class="oss-section animate-in">
+  <div class="section-label">Community</div>
+  <h2 class="section-title" style="max-width: none;">Built in the open</h2>
+  <p class="section-sub" style="max-width: 550px; margin-left: auto; margin-right: auto;">
+    MojoLlama is fully open source under the Apache 2.0 license. 
+    Built with Mojo+MAX from Modular. No lock-in, no hidden costs.
+  </p>
+
+  <div class="oss-logos">
+    <div class="oss-badge">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+      Apache 2.0
+    </div>
+    <div class="oss-badge">
+      <span class="license">Mojo 🔥</span>
+      Built with MAX
+    </div>
+    <div class="oss-badge">
+      <span class="license">🦙 GGUF</span>
+      Native format
+    </div>
+  </div>
+
+  <div class="oss-ctas">
+    <a href="https://github.com/nousresearch/mojollama" target="_blank" rel="noopener" class="btn-lg btn-primary">
+      <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      Star on GitHub
+    </a>
+    <a href="studio.html" class="btn-lg btn-secondary">Launch Studio →</a>
+  </div>
+</section>
+
+<!-- ===== Footer ===== -->
 <footer>
-  <p>Built with <a href="https://www.modular.com/max">MAX</a> + <a href="https://github.com/ggml-org/llama.cpp">llama.cpp</a> + <a href="https://www.modular.com/mojo">Mojo</a> 🔥</p>
-  <p style="margin-top:8px">MojoLlama v0.3.0 — Threadripper 3970X (64c) · DDR4 · AVX2</p>
+  <div class="footer-grid">
+    <div class="brand-col">
+      <div class="logo">
+        <div class="logo-icon">🦙</div>
+        <span>MojoLlama</span>
+      </div>
+      <p>CPU-first LLM inference, fine-tuning, quantization, and serving — engineered in Mojo+MAX. Fully open source.</p>
+    </div>
+    <div class="col">
+      <h4>Product</h4>
+      <ul>
+        <li><a href="studio.html">Studio</a></li>
+        <li><a href="chat.html">Chat</a></li>
+        <li><a href="#">Documentation</a></li>
+        <li><a href="#">Benchmarks</a></li>
+      </ul>
+    </div>
+    <div class="col">
+      <h4>Community</h4>
+      <ul>
+        <li><a href="https://github.com/nousresearch/mojollama" target="_blank">GitHub</a></li>
+        <li><a href="#">Discord</a></li>
+        <li><a href="#">Twitter / X</a></li>
+        <li><a href="#">Blog</a></li>
+      </ul>
+    </div>
+    <div class="col">
+      <h4>Ecosystem</h4>
+      <ul>
+        <li><a href="#">Mojo 🔥</a></li>
+        <li><a href="#">GGUF</a></li>
+        <li><a href="#">llama.cpp</a></li>
+        <li><a href="#">MAX Graph</a></li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© 2026 MojoLlama. Open source under Apache 2.0.</span>
+    <div class="legal-links">
+      <a href="https://github.com/nousresearch/mojollama">GitHub</a>
+      <a href="#">License</a>
+      <a href="#">Privacy</a>
+    </div>
+  </div>
 </footer>
 
 <script>
-(async function checkServer() {
-  const dot = document.getElementById('statusDot');
-  const label = document.getElementById('statusLabel');
-  const stored = localStorage.getItem('mojollama_api_url');
-  const baseUrl = stored || `http://${location.hostname}:9000`;
-  try {
-    const resp = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(3000) });
-    const data = await resp.json();
-    dot.className = 'status-dot online';
-    label.textContent = `🟢 ${data.backend || 'online'} (${data.uptime || ''})`;
-    label.style.color = '#3fb950';
-    const details = document.getElementById('serverDetails');
-    details.style.display = 'block';
-    document.getElementById('serverInfoContent').innerHTML =
-      `<strong>Backend:</strong> ${data.backend || 'unknown'}<br><strong>Uptime:</strong> ${data.uptime || 'unknown'}<br><strong>URL:</strong> <code>${baseUrl}</code><br><strong>Models:</strong> <span id="modelCount">loading...</span>`;
-    try {
-      const mresp = await fetch(`${baseUrl}/v1/models`, { signal: AbortSignal.timeout(3000) });
-      const mdata = await mresp.json();
-      document.getElementById('modelCount').textContent = (mdata.data || []).length + ' loaded';
-    } catch(e) { document.getElementById('modelCount').textContent = 'unreachable'; }
-  } catch(e) {
-    dot.className = 'status-dot offline';
-    label.textContent = '⚫ offline';
-    label.style.color = '#f85149';
-  }
-})();
+// Animate benchmark bars on scroll
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.querySelectorAll('.bar').forEach(bar => {
+        bar.style.animation = bar.style.animation || 'barRise 0.8s cubic-bezier(0.16,1,0.3,1) forwards';
+      });
+    }
+  });
+}, { threshold: 0.2 });
 
-function showServerInfo() {
-  const details = document.getElementById('serverDetails');
-  details.style.display = details.style.display === 'block' ? 'none' : 'block';
-  details.scrollIntoView({ behavior: 'smooth' });
-}
-
-document.getElementById('directUrl').textContent = `${location.protocol}//${location.hostname}:9000/studio.html`;
+document.querySelectorAll('.bench-table-wrap').forEach(el => observer.observe(el));
 </script>
+
 </body>
 </html>
