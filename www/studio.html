@@ -6,26 +6,28 @@
 <title>MojoLlama Studio</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700;800;900&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #090c10; --surface: #12161e; --surface2: #181d27; --border: #252d3a;
-  --text: #e6edf3; --dim: #7d8590; --accent: #5b8def;
-  --accent2: #a37cf0; --green: #3fb950; --yellow: #d29922; --red: #f85149;
-  --orange: #f0883e; --cyan: #39d2c0; --pink: #f778ba;
-  --glass: rgba(18,22,30,0.85); --glass2: rgba(37,45,58,0.5);
-  --grad1: linear-gradient(135deg, #5b8def 0%, #a37cf0 50%, #f778ba 100%);
-  --grad2: linear-gradient(135deg, #3fb950 0%, #39d2c0 100%);
-  --grad3: linear-gradient(135deg, #f0883e 0%, #f85149 100%);
+  --bg: #080b12; --surface: #111624; --surface2: #171d2e; --border: #252d4a;
+  --text: #e2e8f0; --dim: #7f8ea3; --accent: #6C3CE1;
+  --accent2: #8B5CF6; --green: #34D399; --yellow: #d29922; --red: #F87171;
+  --orange: #FB923C; --cyan: #22D3EE; --pink: #E879F9;
+  --glass: rgba(17,22,36,0.88); --glass2: rgba(37,45,74,0.4);
+  --grad1: linear-gradient(135deg, #6C3CE1 0%, #8B5CF6 40%, #22D3EE 100%);
+  --grad2: linear-gradient(135deg, #22D3EE 0%, #34D399 100%);
+  --grad3: linear-gradient(135deg, #FB923C 0%, #F87171 100%);
   --radius: 12px; --radius-sm: 8px;
-  --shadow: 0 8px 32px rgba(0,0,0,0.3);
-  --shadow-sm: 0 2px 8px rgba(0,0,0,0.2);
+  --shadow: 0 8px 40px rgba(0,0,0,0.5);
+  --shadow-sm: 0 2px 12px rgba(0,0,0,0.3);
+  --font-heading: 'Space Grotesk', system-ui, sans-serif;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+body { font-family: var(--font-body);
        background: var(--bg); color: var(--text); min-height: 100vh;
-       background-image: radial-gradient(ellipse at 20% 50%, rgba(91,141,239,0.04) 0%, transparent 50%),
-                         radial-gradient(ellipse at 80% 20%, rgba(163,124,240,0.03) 0%, transparent 50%); }
+       background-image: radial-gradient(ellipse at 20% 50%, rgba(108,60,225,0.05) 0%, transparent 50%),
+                         radial-gradient(ellipse at 80% 20%, rgba(34,211,238,0.04) 0%, transparent 50%); }
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
@@ -39,7 +41,9 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
            display: flex; flex-direction: column; flex-shrink: 0;
            backdrop-filter: blur(12px); }
 .sidebar-header { padding: 20px 16px 16px; border-bottom: 1px solid var(--border); }
+.sidebar-header a { color: inherit; text-decoration: none; }
 .sidebar-header h1 { font-size: 18px; font-weight: 800; letter-spacing: -0.5px;
+                     font-family: var(--font-heading);
                      background: var(--grad1); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
 .sidebar-header .ver { font-size: 11px; color: var(--dim); margin-top: 2px; }
 .sidebar-nav { flex: 1; padding: 12px 8px; overflow-y: auto; }
@@ -74,7 +78,7 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
 .topbar { display: flex; align-items: center; gap: 12px; padding: 12px 24px;
           border-bottom: 1px solid var(--border); background: var(--glass);
           backdrop-filter: blur(12px); flex-shrink: 0; }
-.topbar-title { font-size: 16px; font-weight: 700; }
+.topbar-title { font-size: 16px; font-weight: 700; font-family: var(--font-heading); }
 .topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 
 .content { flex: 1; overflow-y: auto; padding: 20px 24px; }
@@ -319,7 +323,7 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
   <!-- Sidebar Navigation -->
   <div class="sidebar">
     <div class="sidebar-header">
-      <h1>MojoLlama</h1>
+      <a href="index.html"><h1>🦙 MojoLlama</h1></a>
       <div class="ver">Studio v0.3.0</div>
     </div>
     <div class="sidebar-nav">
