@@ -483,6 +483,27 @@ typedef struct {
     int max_ctx;
     float *workspace;   /* pre-allocated temp buffer, replaces __builtin_alloca */
     int ws_size;        /* total float count in workspace */
+    /* Qwen3.6 hybrid SSM+attention support */
+    int rope_dim;
+    int full_attn_interval;
+    const uint8_t **wQKV;
+    const int *qkv_quant;
+    const uint8_t **wAttnG;
+    const int *attnG_quant;
+    const float **ssm_conv1d;
+    const float **ssm_a;
+    const float **ssm_dt_bias;
+    const float **ssm_alpha;
+    const float **ssm_beta;
+    const float **ssm_norm;
+    const uint8_t **wSsmOut;
+    const int *ssm_out_quant;
+    float *ssm_state;
+    const uint8_t **wSHexpG, **wSHexpU, **wSHexpD;
+    const int *shexp_g_quant, *shexp_u_quant, *shexp_d_quant;
+    const float **wShexpRouter;
+    const int *layer_types;
+    int n_layers_actual;
 } BC;
 
 void moe_ffn(const BC *c, int l, float *x, float *gate_buf, float *up_buf, float *ffn_buf, int B) {
@@ -575,8 +596,9 @@ static inline void batch_matmul(int qt, const uint8_t *W, const float *x, float 
     else               q4_0_batch_matmul(W, x, out, n_rows, nc, B);
 }
 
-void rope_init(float *cos_table, float *sin_table, int max_ctx, int hd) {
-    int hd2 = hd / 2;
+void rope_init(float *cos_table, float *sin_table, int max_ctx, int hd, int rope_dim) {
+    if (rope_dim <= 0) rope_dim = hd;
+    int hd2 = rope_dim / 2;
     for (int pos = 0; pos < max_ctx; pos++) {
         for (int j = 0; j < hd2; j++) {
             double theta = (double)pos / pow(10000.0, 2.0 * j / hd);
@@ -587,8 +609,9 @@ void rope_init(float *cos_table, float *sin_table, int max_ctx, int hd) {
 }
 
 static inline void rope_apply(float *buf, int nh, int hd, int pos,
-                               const float *cos_t, const float *sin_t) {
-    int hd2 = hd / 2;
+                               const float *cos_t, const float *sin_t, int rope_dim) {
+    if (rope_dim <= 0) rope_dim = hd;
+    int hd2 = rope_dim / 2;
     const float *cos_row = cos_t + (size_t)pos * hd2;
     const float *sin_row = sin_t + (size_t)pos * hd2;
     for (int h = 0; h < nh; h++) {
@@ -635,11 +658,77 @@ void emb_lookup(const uint8_t *emb, int token, float *out, int N, int quant) {
     }
 }
 
+void ssm_decode_step(
+    const float *x,           // input [B, N]
+    float *ssm_intermediate,  // output [B, inner] — gated SSM intermediate before ssm_out
+    const float *conv1d_w,    // [conv_kernel, 2*inner]  (8192)
+    const float *a_param,     // [groups]
+    const float *dt_bias,     // [groups]
+    const float *alpha,       // [N, dt_rank]
+    const float *beta,        // [N, dt_rank]
+    const float *ssm_norm_w,  // [state_size]
+    float *state,              // [groups, state_size] — MODIFIED in place
+    int B, int N, int inner, int groups, int state_size,
+    int conv_kernel, int dt_rank
+) {
+    for (int b = 0; b < B; b++) {
+        const float *xb = x + b * N;
+        float *interm = ssm_intermediate + b * inner;
+        
+        // 1. Conv1d (single tap — seq_len=1 for decode)
+        float conv_buf[8192]; // temp for expanded conv output (max 2*inner)
+        for (int i = 0; i < 2*inner; i++) {
+            conv_buf[i] = xb[i % N] * conv1d_w[i];  // first tap only
+        }
+        
+        // 2. Split into gate and ssm_input
+        float *gate_in = conv_buf;              // first half
+        float *ssm_in = conv_buf + inner;       // second half
+        
+        // 3. SSM step per group
+        for (int g = 0; g < groups; g++) {
+            float *sg = state + g * state_size;
+            
+            // Compute dt for this group
+            float dt = dt_bias[g];
+            for (int j = 0; j < dt_rank; j++) {
+                dt += alpha[g * dt_rank + j] * xb[j % N];
+            }
+            // softplus
+            dt = dt > 20.0f ? dt : logf(1.0f + expf(dt));
+            
+            // Discretize A
+            float a_disc = expf(a_param[g] * dt);
+            
+            // B projection: Bx = beta[g] * x * dt
+            float bx = 0;
+            for (int j = 0; j < dt_rank; j++) {
+                bx += beta[g * dt_rank + j] * xb[j % N];
+            }
+            bx *= dt;
+            
+            // State update: h = a_disc * h + bx (simplified — B is scalar per group)
+            for (int s = 0; s < state_size; s++) {
+                sg[s] = a_disc * sg[s] + (s == 0 ? bx : 0.0f);
+            }
+        }
+        
+        // 4. Apply SiLU to gate
+        for (int i = 0; i < inner; i++) {
+            float g = gate_in[i];
+            interm[i] = (g / (1.0f + expf(-g))) * ssm_in[i];
+        }
+    }
+}
+
 void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
     int N=c->N, NH=c->NH, NKH=c->NKH, HD=c->HD, FF=c->FF, L=c->L, nc=c->nc;
+    int inner = NH * HD; /* attention/SSM intermediate dimension (4096) */
     int S = N; if (NH*HD > S) S = NH*HD; if (FF > S) S = FF; if (NKH*HD > S) S = NKH*HD;
     int qk_fused = NH*HD + NKH*HD;  /* for fused QK output (if fusion enabled) */
     if (qk_fused > S) S = qk_fused;
+    /* For Qwen3.6 with attn_qkv producing 8192 dims or SSM with 2*inner */
+    if (S < 8192) S = 8192;
     
     float *x = ws, *xn = ws + B*S, *res = ws + 2*B*S;
     float *q = ws + 3*B*S, *k = ws + 4*B*S, *v = ws + 5*B*S;
@@ -653,8 +742,13 @@ void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
             memcpy(x + b*N, c->emb + (size_t)tokens[b] * N, N * sizeof(float));
     }
     
+    /* Qwen3.6 SSM parameters */
+    int ssm_groups = 32, ssm_state_size = 128, ssm_dt_rank = 32;
+    int ssm_conv_kernel = 4;
+    
     for (int l = 0; l < L; l++) {
         
+    /* ── Pre-RMS Norm (attn_norm) ── */
     for (int b = 0; b < B; b++) {
         float *xb = x + b*N;
         float *rb = res + b*N;
@@ -676,9 +770,66 @@ void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
         for(int j=0;j<N;j++) xb[j] = (xb[j] / rms_val) * c->wAN[l][j];
     }
         
-        /* Fused Q+K matmul when available (types match, weight built), else 3 separate */
-        int use_fused_qk = (c->wQK && c->wQK[l] != NULL);
-        if (use_fused_qk) {
+    /* ── Hybrid SSM/Attention Block ── */
+    int is_ssm = (c->layer_types && c->layer_types[l] == 1);
+    
+    if (is_ssm && c->ssm_conv1d) {
+        /* ═══ SSM path ═══ */
+        int groups = ssm_groups, state_size = ssm_state_size;
+        int dt_rank = ssm_dt_rank;
+        
+        /* Step 1: SSM decode step → produces inner-dim (4096) intermediate in 'att' */
+        ssm_decode_step(xn, att,
+            c->ssm_conv1d[l], c->ssm_a[l], c->ssm_dt_bias[l],
+            c->ssm_alpha[l], c->ssm_beta[l], c->ssm_norm[l],
+            c->ssm_state + (size_t)l * groups * state_size,
+            B, N, inner, groups, state_size, ssm_conv_kernel, dt_rank);
+        
+        /* Step 2: attn_gate(xn) → gate_4096 (maps N→inner) */
+        if (c->wAttnG) {
+            batch_matmul(c->attnG_quant[l], c->wAttnG[l], xn, gate, inner, N, B);  /* n_rows=inner=4096, nc=N=2048 */
+        } else {
+            memset(gate, 0, B * inner * sizeof(float));
+        }
+        
+        /* Step 3: element-wise gating: combined = gate * intermediate */
+        for (int b = 0; b < B; b++) {
+            float *gb = gate + b * inner;
+            float *ab = att + b * inner;
+            for (int i = 0; i < inner; i++) ab[i] = gb[i] * ab[i];
+        }
+        
+        /* Step 4: ssm_out projection (inner→N) via c->wSsmOut */
+        if (c->wSsmOut) {
+            /* wSsmOut[inner, N] Q8_0 — n_rows=N=2048, nc=inner=4096 */
+            batch_matmul(c->ssm_out_quant[l], c->wSsmOut[l], att, oproj, N, inner, B);
+        } else {
+            memset(oproj, 0, B * N * sizeof(float));
+        }
+        
+        /* Step 5: residual */
+        for (int b = 0; b < B; b++)
+            for (int i = 0; i < N; i++) x[b*N+i] = res[b*N+i] + oproj[b*N+i];
+            
+    } else {
+        /* ═══ Full Attention path ═══ */
+        /* Use attn_qkv fused weight when available, else separate Q/K/V */
+        if (c->wQKV && c->wQKV[l] != NULL) {
+            /* attn_qkv maps N→8192 (Q:4096, K:2048, V:2048) */
+            int n_qkv = 8192;
+            batch_matmul(c->qkv_quant[l], c->wQKV[l], xn, q, n_qkv, nc, B);
+            /* Split: first inner=4096 = Q, next N=2048 = K, next N=2048 = V */
+            for (int b = 0; b < B; b++) {
+                float *qb = q + (size_t)b * n_qkv;
+                /* Q is qb[0:inner] = already in q buffer */
+                /* Copy K (first NKH*HD=512 from K section) to k buffer */
+                memcpy(k + (size_t)b * NKH * HD,
+                       qb + inner, NKH * HD * sizeof(float));
+                /* Copy V (first NKH*HD from V section) to v buffer */
+                memcpy(v + (size_t)b * NKH * HD,
+                       qb + inner + N, NKH * HD * sizeof(float));
+            }
+        } else if (c->wQK && c->wQK[l] != NULL) {
             int nqk = c->nQ[l] + c->nK[l];
             batch_matmul(c->qk_quant[l], c->wQK[l], xn, q, nqk, nc, B);
             for (int b = 0; b < B; b++) {
@@ -694,22 +845,21 @@ void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
         }
         
         for (int b = 0; b < B; b++) {
-            float *qb = q + b*c->nQ[l], *kb = k + b*c->nK[l], *vb = v + b*c->nV[l];
+            float *qb = q + b*inner; /* Q starts at beginning, dimension = NH*HD */
+            float *kb = k + b*NKH*HD;
+            float *vb = v + b*NKH*HD;
             KVBlock *kv = c->kv_array[b];
             int pos = kv->seq_len[0];
-            rope_apply(qb, NH, HD, pos, c->cos_table, c->sin_table);
-            rope_apply(kb, NKH, HD, pos, c->cos_table, c->sin_table);
+            rope_apply(qb, NH, HD, pos, c->cos_table, c->sin_table, c->rope_dim);
+            rope_apply(kb, NKH, HD, pos, c->cos_table, c->sin_table, c->rope_dim);
             
             size_t base=(size_t)l*MAX_BLOCKS*BLOCK_SIZE*NKH*HD;
             int blk=pos/BLOCK_SIZE,off=pos%BLOCK_SIZE;
-            /* PagedAttention: use page table for KV cache */
             PageTable *pt = &kv->pt;
             int bid = (blk < MAX_BLOCKS) ? pt->table[blk] : -1;
             if(bid<0){bid=kv_alloc(kv);if(blk<MAX_BLOCKS)pt->table[blk]=bid;}
-            /* Write to both old arrays (backward compat) and page table */
             memcpy(kv->k+base+(size_t)bid*BLOCK_SIZE*NKH*HD+off*NKH*HD, kb, NKH*HD*sizeof(float));
             memcpy(kv->v+base+(size_t)bid*BLOCK_SIZE*NKH*HD+off*NKH*HD, vb, NKH*HD*sizeof(float));
-            /* Also write to page table flat array */
             {
                 size_t page_data = (size_t)pt->page_size * NKH * HD;
                 size_t layer_stride = (size_t)pt->n_pages * page_data;
@@ -733,7 +883,6 @@ void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
                 int sb=s/BLOCK_SIZE,so=s%BLOCK_SIZE;
                 int sbid = (sb < MAX_BLOCKS) ? pt->table[sb] : -1;
                 if(sbid<0) continue;
-                /* Read from page table flat array (primary) */
                 size_t page_data = (size_t)pt->page_size * NKH * HD;
                 size_t layer_stride = (size_t)pt->n_pages * page_data;
                 size_t k_base_pt = (size_t)l * layer_stride;
@@ -743,48 +892,74 @@ void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
                 memcpy(kct+s*NKH*HD, pt->pages+src_k, NKH*HD*sizeof(float));
                 memcpy(vct+s*NKH*HD, pt->pages+src_v, NKH*HD*sizeof(float));
             }
-            gqa(att+b*N, qb, kct, vct, sl, NH, NKH, HD);
+            gqa(att+b*inner, qb, kct, vct, sl, NH, NKH, HD);
         }
         
-        batch_matmul(c->o_quant[l], c->wO[l], att, oproj, c->nO[l], c->NH * c->HD, B);
-        for(int b=0;b<B;b++)for(int i=0;i<N;i++)x[b*N+i]=res[b*N+i]+oproj[b*N+i];
-        
-        for(int b=0;b<B;b++){
-            float *xb = x + b*N;
-            float *rb = res + b*N;
-            float ss = 0;
-            for(int i=0;i<=N-8;i+=8){
-                __m256 xv = _mm256_loadu_ps(xb+i);
-                xv = _mm256_min_ps(_mm256_max_ps(xv, _mm256_set1_ps(-1000.0f)), _mm256_set1_ps(1000.0f));
-                _mm256_storeu_ps(xb+i, xv);
-                _mm256_storeu_ps(rb+i, xv);
-                ss += hsum_ps(_mm256_mul_ps(xv, xv));
-            }
-            for(int i=N-(N%8);i<N;i++){
-                float v = xb[i];
-                if(v != v) v = 0; else if(v > 1000.0f) v = 1000.0f; else if(v < -1000.0f) v = -1000.0f;
-                xb[i] = v; rb[i] = v;
-                ss += v * v;
-            }
-            float rms_val = sqrtf(ss / N + c->eps);
-            for(int j=0;j<N;j++) xb[j] = (xb[j] / rms_val) * c->wFN[l][j];
-        }
-        
-        if (c->n_experts > 0 && c->n_experts_per_tok > 0) {
-            for(int b=0;b<B;b++){
-                float *gate_buf = gate; float *up_buf = silu; float *ffn_buf = ffn;
-                memset(ffn_buf, 0, N * sizeof(float));
-                moe_ffn(c, l, xn + b*N, gate_buf, up_buf, ffn_buf, 1);
-                for(int i=0;i<N;i++)x[b*N+i]=res[b*N+i]+ffn_buf[i];
-            }
+        /* ═══ attn_gate: map attention output (inner=4096) → N (2048) ═══ */
+        if (c->wAttnG && c->wAttnG[l] != NULL) {
+            batch_matmul(c->attnG_quant[l], c->wAttnG[l], att, oproj, N, inner, B);
         } else {
-            batch_matmul(c->g_quant[l], c->wG[l], xn, gate, c->nG[l], nc, B);
-            batch_matmul(c->u_quant[l], c->wU[l], xn, up, c->nU[l], nc, B);
-            for(int b=0;b<B;b++)
-                for(int i=0;i<FF;i++){float g=gate[b*FF+i];silu[b*FF+i]=(g/(1+expf(-g)))*up[b*FF+i];}
-            batch_matmul(c->d_quant[l], c->wD[l], silu, ffn, c->nD[l], FF, B);
-            for(int b=0;b<B;b++)for(int i=0;i<N;i++)x[b*N+i]=res[b*N+i]+ffn[b*N+i];
+            batch_matmul(c->o_quant[l], c->wO[l], att, oproj, c->nO[l], inner, B);
         }
+        for(int b=0;b<B;b++)for(int i=0;i<N;i++)x[b*N+i]=res[b*N+i]+oproj[b*N+i];
+    }
+    
+    /* ── Post-attention RMS Norm (ffn_norm / post_attention_norm) ── */
+    for(int b=0;b<B;b++){
+        float *xb = x + b*N;
+        float *rb = res + b*N;
+        float ss = 0;
+        for(int i=0;i<=N-8;i+=8){
+            __m256 xv = _mm256_loadu_ps(xb+i);
+            xv = _mm256_min_ps(_mm256_max_ps(xv, _mm256_set1_ps(-1000.0f)), _mm256_set1_ps(1000.0f));
+            _mm256_storeu_ps(xb+i, xv);
+            _mm256_storeu_ps(rb+i, xv);
+            ss += hsum_ps(_mm256_mul_ps(xv, xv));
+        }
+        for(int i=N-(N%8);i<N;i++){
+            float v = xb[i];
+            if(v != v) v = 0; else if(v > 1000.0f) v = 1000.0f; else if(v < -1000.0f) v = -1000.0f;
+            xb[i] = v; rb[i] = v;
+            ss += v * v;
+        }
+        float rms_val = sqrtf(ss / N + c->eps);
+        for(int j=0;j<N;j++) xb[j] = (xb[j] / rms_val) * c->wFN[l][j];
+    }
+    
+    /* ── MoE FFN + Shared Expert ── */
+    if (c->n_experts > 0 && c->n_experts_per_tok > 0) {
+        for(int b=0;b<B;b++){
+            float *gate_buf = gate; float *up_buf = silu; float *ffn_buf = ffn;
+            memset(ffn_buf, 0, N * sizeof(float));
+            moe_ffn(c, l, xn + b*N, gate_buf, up_buf, ffn_buf, 1);
+            
+            /* Shared expert — always active (Qwen3.6) */
+            if (c->wSHexpG && c->wSHexpG[l] != NULL) {
+                float *xb = xn + b*N;
+                /* Router score: dot product with wShexpRouter[l] (1D vector [N]) */
+                float shexp_score = 0;
+                for (int i = 0; i < N; i++) shexp_score += xb[i] * c->wShexpRouter[l][i];
+                if (shexp_score > 0) {
+                    int shexp_int = 512; /* shared expert FF dim */
+                    batch_matmul(c->shexp_g_quant[l], c->wSHexpG[l], xb, gate_buf, shexp_int, N, 1);
+                    batch_matmul(c->shexp_u_quant[l], c->wSHexpU[l], xb, up_buf, shexp_int, N, 1);
+                    for (int i = 0; i < shexp_int; i++)
+                        up_buf[i] = (up_buf[i] / (1.0f + expf(-up_buf[i]))) * gate_buf[i];
+                    batch_matmul(c->shexp_d_quant[l], c->wSHexpD[l], up_buf, gate_buf, N, shexp_int, 1);
+                    for (int i = 0; i < N; i++) ffn_buf[i] += shexp_score * gate_buf[i];
+                }
+            }
+            
+            for(int i=0;i<N;i++)x[b*N+i]=res[b*N+i]+ffn_buf[i];
+        }
+    } else if (c->wG && c->wG[l]) {
+        batch_matmul(c->g_quant[l], c->wG[l], xn, gate, c->nG[l], nc, B);
+        batch_matmul(c->u_quant[l], c->wU[l], xn, up, c->nU[l], nc, B);
+        for(int b=0;b<B;b++)
+            for(int i=0;i<FF;i++){float g=gate[b*FF+i];silu[b*FF+i]=(g/(1+expf(-g)))*up[b*FF+i];}
+        batch_matmul(c->d_quant[l], c->wD[l], silu, ffn, c->nD[l], FF, B);
+        for(int b=0;b<B;b++)for(int i=0;i<N;i++)x[b*N+i]=res[b*N+i]+ffn[b*N+i];
+    }
     }
     for(int b=0;b<B;b++) c->kv_array[b]->seq_len[0]++;
     for(int b=0;b<B;b++){

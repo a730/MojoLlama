@@ -14,12 +14,12 @@ import gguf
 from gguf.constants import GGMLQuantizationType as QT
 
 GGML_F32  = 0; GGML_F16 = 1; GGML_Q4_0 = 2; GGML_Q4_1 = 3
-GGML_Q8_0 = 8; GGML_Q4_K = 12; GGML_Q5_K = 13; GGML_Q6_K = 14
+GGML_Q8_0 = 8; GGML_Q4_K = 12; GGML_Q5_K = 13; GGML_Q6_K = 14; GGML_MXFP4 = 39
 
 QTYPE_NAMES = {0:"F32",1:"F16",2:"Q4_0",3:"Q4_1",12:"Q4_K",8:"Q8_0",13:"Q5_K",14:"Q6_K"}
-BLOCK_SIZES = {2:18, 3:20, 12:144, 13:176, 14:210, 8:34}
-BLOCK_VALS  = {2:32, 3:32, 12:256, 13:256, 14:256, 8:32}
-C_KERNEL_TYPES = {GGML_Q4_0, GGML_Q4_1, GGML_Q4_K, GGML_Q5_K, GGML_Q6_K, GGML_Q8_0}
+BLOCK_SIZES = {2:18, 3:20, 12:144, 13:176, 14:210, 8:34, 39:17}
+BLOCK_VALS  = {2:32, 3:32, 12:256, 13:256, 14:256, 8:32, 39:32}
+C_KERNEL_TYPES = {GGML_Q4_0, GGML_Q4_1, GGML_Q4_K, GGML_Q5_K, GGML_Q6_K, GGML_Q8_0, GGML_MXFP4}
 
 
 class MoEExpertPointers:
@@ -74,7 +74,17 @@ class LayerWeights:
                  'moe',
                  'attn_qk_raw', 'attn_qk_nr', 'attn_qk_nc', 'attn_qk_qt',
                  'attn_qk_use_c',
-                 '_attn_qk_raw_buf']
+                 '_attn_qk_raw_buf',
+                 # Qwen3.6 hybrid SSM+attention fields
+                 'attn_qkv_raw', 'attn_qkv_nr', 'attn_qkv_nc', 'attn_qkv_qt', 'attn_qkv_use_c',
+                 'attn_gate_raw', 'attn_gate_nr', 'attn_gate_nc', 'attn_gate_qt', 'attn_gate_use_c',
+                 'ssm_conv1d_ptr', 'ssm_a_ptr', 'ssm_dt_bias_ptr',
+                 'ssm_alpha_ptr', 'ssm_beta_ptr', 'ssm_norm_ptr',
+                 'ssm_out_raw', 'ssm_out_nr', 'ssm_out_nc', 'ssm_out_qt', 'ssm_out_use_c',
+                 'shexp_gate_raw', 'shexp_gate_nr', 'shexp_gate_nc', 'shexp_gate_qt', 'shexp_gate_use_c',
+                 'shexp_up_raw', 'shexp_up_nr', 'shexp_up_nc', 'shexp_up_qt', 'shexp_up_use_c',
+                 'shexp_down_raw', 'shexp_down_nr', 'shexp_down_nc', 'shexp_down_qt', 'shexp_down_use_c',
+                 'shexp_router_ptr', 'shexp_router_nr']
 
 
 class TurboEngineV7MoE:
@@ -121,7 +131,7 @@ class TurboEngineV7MoE:
                             return int(data[0])
                         return data
         arch = 'llama'
-        for prefix in ['gpt-oss', 'qwen3moe', 'qwen2moe', 'llama', 'mistral']:
+        for prefix in ['gpt-oss', 'qwen35moe', 'qwen3moe', 'qwen2moe', 'llama', 'mistral']:
             for key in fields:
                 if f'{prefix}.block_count' in key:
                     arch = prefix; break
@@ -143,6 +153,22 @@ class TurboEngineV7MoE:
         else:
             self.n_experts = int(self.n_experts); self.n_experts_per_tok = int(self.n_experts_per_tok)
         self.arch_prefix = arch
+        # Qwen3.6 hybrid SSM+attention fields
+        self.rope_dim = int(_get(f'{arch}.rope.dimension_count') or 0)
+        self.full_attn_interval = int(_get(f'{arch}.full_attention_interval') or 4)
+        self.n_layers_actual = self.n_layers
+        # SSM parameters
+        self.ssm_groups = 32
+        self.ssm_state_size = 128
+        self.ssm_dt_rank = 32
+        self.ssm_conv_kernel = 4
+        self.ssm_inner = self.n_head * self.head_dim  # 4096
+        # Layer types: 0=full attention, 1=SSM (Qwen3.6 hybrid)
+        if self.arch_prefix == 'qwen35moe':
+            self.layer_types = [0 if i % self.full_attn_interval == 0 else 1 for i in range(self.n_layers)]
+            print(f"  Qwen3.6 hybrid: {sum(1 for t in self.layer_types if t==0)} attn + {sum(1 for t in self.layer_types if t==1)} ssm layers, rope_dim={self.rope_dim}", flush=True)
+        else:
+            self.layer_types = None
 
     def _load_kernels(self):
         kernel_dir = os.path.dirname(os.path.abspath(__file__))
@@ -197,6 +223,20 @@ class TurboEngineV7MoE:
             so.q4_k_dequantize_row.restype = None
         else:
             self._kern = None
+
+        # Load cengine_batch_instr.so for batch_forward and ssm_decode_step
+        cengine_path = os.path.join(kernel_dir, 'cengine_batch_instr.so')
+        self._cengine = None
+        if os.path.exists(cengine_path):
+            ce = ctypes.CDLL(cengine_path)
+            # ssm_decode_step: void ssm_decode_step(x, ssm_intermediate, conv1d_w, a_param, dt_bias, alpha, beta, ssm_norm_w, state, B, N, inner, groups, state_size, conv_kernel, dt_rank)
+            ce.ssm_decode_step.argtypes = [
+                cf, cf, cf, cf, cf, cf, cf, cf, cf,
+                ci, ci, ci, ci, ci, ci, ci]
+            ce.ssm_decode_step.restype = None
+            # batch_forward: void batch_forward(BC*, tokens, B, ws)
+            # We'll define BC struct later
+            self._cengine = ce
 
         simd_path = os.path.join(kernel_dir, 'simd_ops.so')
         if os.path.exists(simd_path):
@@ -454,7 +494,90 @@ class TurboEngineV7MoE:
                 lw.k_norm_w = self.weights[f'{pfx}.attn_k_norm.weight']
             self._layers.append(lw)
 
-            # MoE pointers
+            # ── Qwen3.6 hybrid SSM+attention: load additional tensors ──
+            if self.arch_prefix == 'qwen35moe':
+                # attn_qkv.weight [2048, 8192] Q8_0
+                qkv_name = f'{pfx}.attn_qkv.weight'
+                qkv_info = self.weight_info.get(qkv_name)
+                if qkv_info is not None:
+                    lw.attn_qkv_raw = self.raw_weights[qkv_name].ctypes.data_as(cu)
+                    lw.attn_qkv_nr = ctypes.c_int(qkv_info[0])  # 8192
+                    lw.attn_qkv_nc = ctypes.c_int(qkv_info[1])  # 2048
+                    lw.attn_qkv_qt = ctypes.c_int(qkv_info[3])
+                    lw.attn_qkv_use_c = True
+                else:
+                    lw.attn_qkv_use_c = False
+                    lw.attn_qkv_raw = None
+
+                # attn_gate.weight [2048, 4096] Q8_0 — N→inner projection
+                gate_name = f'{pfx}.attn_gate.weight'
+                gate_info = self.weight_info.get(gate_name)
+                if gate_info is not None:
+                    lw.attn_gate_raw = self.raw_weights[gate_name].ctypes.data_as(cu)
+                    lw.attn_gate_nr = ctypes.c_int(gate_info[0])  # 4096 = inner
+                    lw.attn_gate_nc = ctypes.c_int(gate_info[1])  # 2048 = N
+                    lw.attn_gate_qt = ctypes.c_int(gate_info[3])
+                    lw.attn_gate_use_c = True
+                else:
+                    lw.attn_gate_use_c = False
+
+                # SSM F32 tensors (store pointers to numpy arrays)
+                for ssm_attr, ssm_wname in [
+                    ('ssm_conv1d_ptr', 'ssm_conv1d.weight'),
+                    ('ssm_a_ptr', 'ssm_a'),
+                    ('ssm_dt_bias_ptr', 'ssm_dt.bias'),
+                    ('ssm_alpha_ptr', 'ssm_alpha.weight'),
+                    ('ssm_beta_ptr', 'ssm_beta.weight'),
+                    ('ssm_norm_ptr', 'ssm_norm.weight'),
+                ]:
+                    name = f'{pfx}.{ssm_wname}'
+                    w = self.weights.get(name)
+                    if w is not None:
+                        setattr(lw, ssm_attr, w.ctypes.data_as(cf))
+                    else:
+                        setattr(lw, ssm_attr, None)
+
+                # ssm_out.weight [4096, 2048] Q8_0 — inner→N projection
+                ssm_out_name = f'{pfx}.ssm_out.weight'
+                ssm_out_info = self.weight_info.get(ssm_out_name)
+                if ssm_out_info is not None:
+                    lw.ssm_out_raw = self.raw_weights[ssm_out_name].ctypes.data_as(cu)
+                    lw.ssm_out_nr = ctypes.c_int(ssm_out_info[0])  # 2048 = N
+                    lw.ssm_out_nc = ctypes.c_int(ssm_out_info[1])  # 4096 = inner
+                    lw.ssm_out_qt = ctypes.c_int(ssm_out_info[3])
+                    lw.ssm_out_use_c = True
+                else:
+                    lw.ssm_out_use_c = False
+
+                # Shared expert weights
+                shexp_names = [
+                    ('shexp_gate', 'ffn_gate_shexp.weight', 512, 2048),
+                    ('shexp_up', 'ffn_up_shexp.weight', 512, 2048),
+                    ('shexp_down', 'ffn_down_shexp.weight', 2048, 512),
+                ]
+                for attr, wname, nr, nc_val in shexp_names:
+                    name = f'{pfx}.{wname}'
+                    info = self.weight_info.get(name)
+                    if info is not None:
+                        setattr(lw, f'{attr}_raw', self.raw_weights[name].ctypes.data_as(cu))
+                        setattr(lw, f'{attr}_nr', ctypes.c_int(info[0]))
+                        setattr(lw, f'{attr}_nc', ctypes.c_int(info[1]))
+                        setattr(lw, f'{attr}_qt', ctypes.c_int(info[3]))
+                        setattr(lw, f'{attr}_use_c', True)
+                    else:
+                        setattr(lw, f'{attr}_use_c', False)
+                        setattr(lw, f'{attr}_raw', None)
+
+                # Shared expert router (1D F32 vector [2048])
+                router_name = f'{pfx}.ffn_gate_inp_shexp.weight'
+                router_w = self.weights.get(router_name)
+                if router_w is not None:
+                    lw.shexp_router_ptr = router_w.ctypes.data_as(cf)
+                    lw.shexp_router_nr = ctypes.c_int(router_w.shape[0])  # 2048
+                else:
+                    lw.shexp_router_ptr = None
+
+            # ── MoE pointers ──
             if self.is_moe:
                 me = MoEExpertPointers()
                 me.n_experts = self.n_experts
@@ -535,9 +658,11 @@ class TurboEngineV7MoE:
         self._x_norm = np.zeros(N, dtype=np.float32)
         self._residual = np.zeros(N, dtype=np.float32)
         # Fused Q+K buffer: _q = _qk[:NK], _k = _qk[NK:] for fused QK matmul
-        self._qk = np.zeros(NK + NKH, dtype=np.float32)
+        # For Qwen3.6 with attn_qkv (8192 dims), allocate extra space
+        qkv_sz = max(NK + NKH, 8192) if hasattr(self, 'arch_prefix') and self.arch_prefix == 'qwen35moe' else NK + NKH
+        self._qk = np.zeros(qkv_sz, dtype=np.float32)
         self._q = self._qk[:NK]
-        self._k = self._qk[NK:]
+        self._k = self._qk[NK:NK+NKH]
         self._v = np.zeros(NKH, dtype=np.float32)
         self._att_out = np.zeros(NK, dtype=np.float32)
         self._o_proj = np.zeros(N, dtype=np.float32)
@@ -562,6 +687,20 @@ class TurboEngineV7MoE:
         self._moe_prealloc_q8 = np.zeros(n_blocks_x * 34, dtype=np.uint8)
 
         self._logits = np.zeros(self.vocab_size, dtype=np.float32)
+
+        # SSM state buffer for Qwen3.6 hybrid model
+        if self.arch_prefix == 'qwen35moe':
+            n_layers = self.n_layers
+            groups = self.ssm_groups
+            state_size = self.ssm_state_size
+            self._ssm_state = np.zeros((n_layers, groups, state_size), dtype=np.float32)
+            self._ssm_intermediate = np.zeros(self.ssm_inner, dtype=np.float32)
+            self._gate_4096 = np.zeros(self.ssm_inner, dtype=np.float32)
+            print(f"  SSM state: {n_layers}x{groups}x{state_size} = {n_layers*groups*state_size*4/1024/1024:.1f} MB", flush=True)
+        else:
+            self._ssm_state = None
+            self._ssm_intermediate = None
+            self._gate_4096 = None
 
         # ctypes pointers
         cf = ctypes.POINTER(ctypes.c_float)
@@ -596,20 +735,32 @@ class TurboEngineV7MoE:
     def reset(self):
         self.kv_len[:] = 0
         self.pos = 0
+        self.reset_state()
 
-    def _apply_rope_fast(self, x, pos, n_heads):
-        hd = self.head_dim; half = hd // 2
-        if pos not in self._rope_cos_table:
-            freq = self.rope_freq_base ** (np.arange(0, hd, 2, dtype=np.float32) / hd)
+    def reset_state(self):
+        """Reset SSM state to zeros (call between sequences)."""
+        if self._ssm_state is not None:
+            self._ssm_state.fill(0.0)
+
+    def _apply_rope_fast(self, x, pos, n_heads, rope_dim=None):
+        hd = self.head_dim
+        if rope_dim is None or rope_dim <= 0:
+            rope_dim = hd
+        half = rope_dim // 2
+        key = (pos, rope_dim)
+        if key not in self._rope_cos_table:
+            freq = self.rope_freq_base ** (np.arange(0, rope_dim, 2, dtype=np.float32) / rope_dim)
             angle = pos / freq
-            self._rope_cos_table[pos] = np.cos(angle).astype(np.float32)
-            self._rope_sin_table[pos] = np.sin(angle).astype(np.float32)
-        cos_a = self._rope_cos_table[pos]
-        sin_a = self._rope_sin_table[pos]
+            self._rope_cos_table[key] = np.cos(angle).astype(np.float32)
+            self._rope_sin_table[key] = np.sin(angle).astype(np.float32)
+        cos_a = self._rope_cos_table[key]
+        sin_a = self._rope_sin_table[key]
         x2d = x.reshape(n_heads, hd)
         out = x2d.copy()
-        out[:, :half] = x2d[:, :half] * cos_a - x2d[:, half:] * sin_a
-        out[:, half:] = x2d[:, half:] * cos_a + x2d[:, :half] * sin_a
+        # Only rotate first rope_dim dimensions
+        out[:, :half] = x2d[:, :half] * cos_a - x2d[:, half:rope_dim] * sin_a
+        out[:, half:rope_dim] = x2d[:, half:rope_dim] * cos_a + x2d[:, :half] * sin_a
+        # Dimensions beyond rope_dim are unchanged
         return out.reshape(-1)
 
     def forward(self, token_id):
@@ -633,106 +784,186 @@ class TurboEngineV7MoE:
         # Embedding lookup
         np.copyto(b_x, self.emb[token_id])
 
+        cf = ctypes.POINTER(ctypes.c_float)
+        cu = ctypes.POINTER(ctypes.c_uint8)
+        ci = ctypes.c_int
+        
+        # Qwen3.6 constants
+        ssm_inner = self.ssm_inner if hasattr(self, 'ssm_inner') else (NH * HD)
+
         for i in range(L):
             lw = self._layers[i]
+            is_ssm_layer = (self.layer_types is not None and self.layer_types[i] == 1)
 
             # Residual copy
             np.copyto(b_r, b_x)
 
             # RMS norm 1
             simd.rms_norm(p_xn, p_x,
-                          lw.attn_norm_w.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                          lw.attn_norm_w.ctypes.data_as(cf),
                           N, eps_f)
 
-            # QKV — batched (fused Q+K when available, else batch_qkv_omp or separate)
-            if hasattr(lw, 'attn_qk_use_c') and lw.attn_qk_use_c:
-                # Fused Q+K matmul into _qk buffer (q=first NK, k=next NKH)
+            if is_ssm_layer and self._cengine is not None and lw.ssm_conv1d_ptr is not None:
+                # ═══ SSM path ═══
+                ce = self._cengine
+                # Call ssm_decode_step (C function)
+                state_ptr = self._ssm_state[i].ctypes.data_as(cf)
+                interm_ptr = self._ssm_intermediate.ctypes.data_as(cf)
+                ce.ssm_decode_step(
+                    p_xn, interm_ptr,
+                    lw.ssm_conv1d_ptr, lw.ssm_a_ptr, lw.ssm_dt_bias_ptr,
+                    lw.ssm_alpha_ptr, lw.ssm_beta_ptr, lw.ssm_norm_ptr,
+                    state_ptr,
+                    ci(1), ci(N), ci(ssm_inner),
+                    ci(self.ssm_groups), ci(self.ssm_state_size),
+                    ci(self.ssm_conv_kernel), ci(self.ssm_dt_rank))
+                
+                # attn_gate: xn → gate_4096 (N→inner via quant_matmul)
                 kern.quant_matmul_omp(
-                    lw.attn_qk_raw, p_xn, p_qk,
-                    lw.attn_qk_nr, lw.attn_qk_nc, lw.attn_qk_qt)
-                # Separate V matmul
+                    lw.attn_gate_raw, p_xn, self._gate_4096.ctypes.data_as(cf),
+                    lw.attn_gate_nr, lw.attn_gate_nc, lw.attn_gate_qt)
+                
+                # Element-wise gating: combined = gate * intermediate
+                np.multiply(self._gate_4096, self._ssm_intermediate, out=self._gate_4096)
+                
+                # ssm_out projection (inner→N)
                 kern.quant_matmul_omp(
-                    lw.attn_v_raw, p_xn, p_v,
-                    lw.attn_v_nr, lw.attn_v_nc, lw.attn_v_qt)
-            elif lw.attn_q_use_c and lw.attn_k_use_c and lw.attn_v_use_c:
-                kern.batch_qkv_omp(
-                    lw.attn_q_raw, lw.attn_k_raw, lw.attn_v_raw,
-                    p_xn, p_q, p_k, p_v,
-                    lw.attn_q_nr, lw.attn_k_nr, lw.attn_v_nr,
-                    lw.attn_q_nc,
-                    lw.attn_q_qt, lw.attn_k_qt, lw.attn_v_qt)
-            else:
-                if lw.attn_q_use_c:
-                    kern.quant_matmul_omp(lw.attn_q_raw, p_xn, p_q, lw.attn_q_nr, lw.attn_q_nc, lw.attn_q_qt)
-                if lw.attn_k_use_c:
-                    kern.quant_matmul_omp(lw.attn_k_raw, p_xn, p_k, lw.attn_k_nr, lw.attn_k_nc, lw.attn_k_qt)
-                if lw.attn_v_use_c:
-                    kern.quant_matmul_omp(lw.attn_v_raw, p_xn, p_v, lw.attn_v_nr, lw.attn_v_nc, lw.attn_v_qt)
-
-            # Q/K norm (vectorized — no Python loops)
-            if lw.has_q_norm:
-                q_2d = b_q.reshape(NH, HD)
-                q_rms = np.sqrt(np.mean(q_2d * q_2d, axis=1, keepdims=True) + self.eps)
-                q_2d[:] = q_2d / q_rms * lw.q_norm_w.reshape(1, HD)
-            if lw.has_k_norm:
-                k_2d = b_k[:NKH].reshape(self.n_kv_head, HD)
-                k_rms = np.sqrt(np.mean(k_2d * k_2d, axis=1, keepdims=True) + self.eps)
-                k_2d[:] = k_2d / k_rms * lw.k_norm_w.reshape(1, HD)
-
-            # RoPE
-            b_q[:] = self._apply_rope_fast(b_q, self.pos, NH)
-            b_k[:] = self._apply_rope_fast(b_k, self.pos, self.n_kv_head)
-
-            # KV cache
-            self.kv_k[i, self.kv_len[i], :NKH] = b_k[:NKH]
-            self.kv_v[i, self.kv_len[i], :NKH] = b_v[:NKH]
-
-            # Attention — C GQA kernel (AVX2, OMP parallelized)
-            seq_len = self.kv_len[i] + 1
-            if self._gqa_attn is not None and seq_len <= 4096:
-                self._gqa_attn.gqa_attention_decode(
-                    b_q.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-                    self.kv_k[i].ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-                    self.kv_v[i].ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-                    b_att.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-                    ctypes.c_int(seq_len),
-                    ctypes.c_int(NH),
-                    ctypes.c_int(self.n_kv_head),
-                    ctypes.c_int(HD))
-            else:
-                # Fallback: numpy GQA
-                k_cache = self.kv_k[i, :seq_len].reshape(seq_len, self.n_kv_head, HD)
-                v_cache = self.kv_v[i, :seq_len].reshape(seq_len, self.n_kv_head, HD)
-                q_2d = b_q.reshape(NH, HD)
-                nk = self.n_kv_head; gqa = self._gqa_rep
-                q_g = q_2d.reshape(nk, gqa, HD)
-                k_T = k_cache.transpose(1, 0, 2)
-                scores = np.einsum('khd,ksd->khs', q_g, k_T) / np.sqrt(float(HD))
-                scores = scores.reshape(NH, seq_len)
-                scores -= np.max(scores, axis=1, keepdims=True)
-                np.exp(scores, out=scores)
-                scores /= np.sum(scores, axis=1, keepdims=True)
-                v_T = v_cache.transpose(1, 0, 2)
-                att = np.einsum('khs,ksd->khd', scores.reshape(nk, gqa, seq_len), v_T)
-                b_att[:] = att.reshape(-1)
-            self.kv_len[i] += 1
-
-            # O projection
-            if lw.attn_out_use_c:
-                kern.quant_matmul_omp(lw.attn_out_raw, p_att, p_oproj,
-                                       lw.attn_out_nr, lw.attn_out_nc, lw.attn_out_qt)
+                    lw.ssm_out_raw, self._gate_4096.ctypes.data_as(cf), p_oproj,
+                    lw.ssm_out_nr, lw.ssm_out_nc, lw.ssm_out_qt)
+                
+                # Residual
                 b_x[:N] = b_r[:N] + b_oproj[:N]
-            else:
-                b_x[:N] = b_r[:N] + (lw.attn_out_f32 @ b_att)[:N]
 
-            # FFN
+            else:
+                # ═══ Full Attention path ═══
+                
+                # QKV using attn_qkv (fused) if available, else separate Q/K/V
+                if hasattr(lw, 'attn_qkv_use_c') and lw.attn_qkv_use_c:
+                    # attn_qkv: N→8192 (Q:4096, K:2048, V:2048)
+                    qkv_buf = self._qk  # reuse _qk buffer for full QKV output (needs 8192 floats)
+                    # Ensure buffer is large enough — _qk was allocated as NK + NKH = 4096+512=4608
+                    # For 8192 we need larger buffer, so use a temp allocation
+                    if len(self._qk) < 8192:
+                        self._qk = np.zeros(8192, dtype=np.float32)
+                        self._p_qk = self._qk.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+                    p_qkv = self._p_qk
+                    kern.quant_matmul_omp(lw.attn_qkv_raw, p_xn, p_qkv, 
+                                           lw.attn_qkv_nr, lw.attn_qkv_nc, lw.attn_qkv_qt)
+                    # Split: first NH*HD = Q, next N = K, next N = V
+                    nq_vals = NH * HD  # 4096
+                    b_q[:] = self._qk[:nq_vals]
+                    b_k[:NKH] = self._qk[nq_vals:nq_vals + NKH]  # first NKH*HD from K section
+                    b_v[:NKH] = self._qk[nq_vals + N:nq_vals + N + NKH]  # first NKH*HD from V section
+                elif hasattr(lw, 'attn_qk_use_c') and lw.attn_qk_use_c:
+                    # Fused Q+K matmul into _qk buffer
+                    kern.quant_matmul_omp(
+                        lw.attn_qk_raw, p_xn, p_qk,
+                        lw.attn_qk_nr, lw.attn_qk_nc, lw.attn_qk_qt)
+                    # Separate V matmul
+                    kern.quant_matmul_omp(
+                        lw.attn_v_raw, p_xn, p_v,
+                        lw.attn_v_nr, lw.attn_v_nc, lw.attn_v_qt)
+                elif lw.attn_q_use_c and lw.attn_k_use_c and lw.attn_v_use_c:
+                    kern.batch_qkv_omp(
+                        lw.attn_q_raw, lw.attn_k_raw, lw.attn_v_raw,
+                        p_xn, p_q, p_k, p_v,
+                        lw.attn_q_nr, lw.attn_k_nr, lw.attn_v_nr,
+                        lw.attn_q_nc,
+                        lw.attn_q_qt, lw.attn_k_qt, lw.attn_v_qt)
+                else:
+                    if lw.attn_q_use_c:
+                        kern.quant_matmul_omp(lw.attn_q_raw, p_xn, p_q, lw.attn_q_nr, lw.attn_q_nc, lw.attn_q_qt)
+                    if lw.attn_k_use_c:
+                        kern.quant_matmul_omp(lw.attn_k_raw, p_xn, p_k, lw.attn_k_nr, lw.attn_k_nc, lw.attn_k_qt)
+                    if lw.attn_v_use_c:
+                        kern.quant_matmul_omp(lw.attn_v_raw, p_xn, p_v, lw.attn_v_nr, lw.attn_v_nc, lw.attn_v_qt)
+
+                # Q/K norm
+                if lw.has_q_norm:
+                    q_2d = b_q.reshape(NH, HD)
+                    q_rms = np.sqrt(np.mean(q_2d * q_2d, axis=1, keepdims=True) + self.eps)
+                    q_2d[:] = q_2d / q_rms * lw.q_norm_w.reshape(1, HD)
+                if lw.has_k_norm:
+                    k_2d = b_k[:NKH].reshape(self.n_kv_head, HD)
+                    k_rms = np.sqrt(np.mean(k_2d * k_2d, axis=1, keepdims=True) + self.eps)
+                    k_2d[:] = k_2d / k_rms * lw.k_norm_w.reshape(1, HD)
+
+                # RoPE with partial rotary (rope_dim)
+                rope_d = self.rope_dim if hasattr(self, 'rope_dim') and self.rope_dim > 0 else HD
+                b_q[:] = self._apply_rope_fast(b_q, self.pos, NH, rope_dim=rope_d)
+                b_k[:] = self._apply_rope_fast(b_k, self.pos, self.n_kv_head, rope_dim=rope_d)
+
+                # KV cache
+                self.kv_k[i, self.kv_len[i], :NKH] = b_k[:NKH]
+                self.kv_v[i, self.kv_len[i], :NKH] = b_v[:NKH]
+
+                # GQA Attention
+                seq_len = self.kv_len[i] + 1
+                if self._gqa_attn is not None and seq_len <= 4096:
+                    self._gqa_attn.gqa_attention_decode(
+                        b_q.ctypes.data_as(cf),
+                        self.kv_k[i].ctypes.data_as(cf),
+                        self.kv_v[i].ctypes.data_as(cf),
+                        b_att.ctypes.data_as(cf),
+                        ci(seq_len), ci(NH), ci(self.n_kv_head), ci(HD))
+                else:
+                    k_cache = self.kv_k[i, :seq_len].reshape(seq_len, self.n_kv_head, HD)
+                    v_cache = self.kv_v[i, :seq_len].reshape(seq_len, self.n_kv_head, HD)
+                    q_2d = b_q.reshape(NH, HD)
+                    nk = self.n_kv_head; gqa = self._gqa_rep
+                    q_g = q_2d.reshape(nk, gqa, HD)
+                    k_T = k_cache.transpose(1, 0, 2)
+                    scores = np.einsum('khd,ksd->khs', q_g, k_T) / np.sqrt(float(HD))
+                    scores = scores.reshape(NH, seq_len)
+                    scores -= np.max(scores, axis=1, keepdims=True)
+                    np.exp(scores, out=scores)
+                    scores /= np.sum(scores, axis=1, keepdims=True)
+                    v_T = v_cache.transpose(1, 0, 2)
+                    att = np.einsum('khs,ksd->khd', scores.reshape(nk, gqa, seq_len), v_T)
+                    b_att[:] = att.reshape(-1)
+                self.kv_len[i] += 1
+
+                # Output projection: attn_gate (if available) else standard O proj
+                if hasattr(lw, 'attn_gate_use_c') and lw.attn_gate_use_c:
+                    # Qwen3.6: attn_gate maps inner→N (produced by attn_qkv GQA)
+                    kern.quant_matmul_omp(
+                        lw.attn_gate_raw, p_att, p_oproj,
+                        lw.attn_gate_nr, lw.attn_gate_nc, lw.attn_gate_qt)
+                    b_x[:N] = b_r[:N] + b_oproj[:N]
+                else:
+                    if lw.attn_out_use_c:
+                        kern.quant_matmul_omp(lw.attn_out_raw, p_att, p_oproj,
+                                               lw.attn_out_nr, lw.attn_out_nc, lw.attn_out_qt)
+                        b_x[:N] = b_r[:N] + b_oproj[:N]
+                    else:
+                        b_x[:N] = b_r[:N] + (lw.attn_out_f32 @ b_att)[:N]
+
+            # ── FFN ──
             np.copyto(b_r, b_x)
             simd.rms_norm(p_xn, p_x,
-                          lw.ffn_norm_w.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                          lw.ffn_norm_w.ctypes.data_as(cf),
                           N, eps_f)
 
             if self.is_moe and self._moe_layers:
                 self._forward_moe(i, p_xn, b_ffn, b_r, N)
+                # b_x now = b_r + MoE_FFN_out
+                # Shared expert (Qwen3.6) — add on top
+                if (hasattr(lw, 'shexp_router_ptr') and lw.shexp_router_ptr is not None
+                    and hasattr(lw, 'shexp_gate_use_c') and lw.shexp_gate_use_c):
+                    # Router score: dot product with 1D vector
+                    shexp_score = float(np.dot(self._x_norm,
+                        np.ctypeslib.as_array(lw.shexp_router_ptr, shape=(N,))))
+                    if shexp_score > 0:
+                        shexp_int = lw.shexp_gate_nr.value  # 512
+                        kern.quant_matmul_omp(lw.shexp_gate_raw, p_xn, p_gate,
+                                               lw.shexp_gate_nr, lw.shexp_gate_nc, lw.shexp_gate_qt)
+                        kern.quant_matmul_omp(lw.shexp_up_raw, p_xn, p_up,
+                                               lw.shexp_up_nr, lw.shexp_up_nc, lw.shexp_up_qt)
+                        simd.silu(p_silu, p_gate, ci(shexp_int))
+                        b_silu[:shexp_int] *= b_up[:shexp_int]
+                        kern.quant_matmul_omp(lw.shexp_down_raw, p_silu, p_ffn,
+                                               lw.shexp_down_nr, lw.shexp_down_nc, lw.shexp_down_qt)
+                        b_x[:N] += shexp_score * b_ffn[:N]
             else:
                 if lw.ffn_gate_use_c and lw.ffn_up_use_c:
                     kern.batch_gate_up_omp(
@@ -746,7 +977,7 @@ class TurboEngineV7MoE:
                     if lw.ffn_up_use_c:
                         kern.quant_matmul_omp(lw.ffn_up_raw, p_xn, p_up,
                                                lw.ffn_up_nr, lw.ffn_up_nc, lw.ffn_up_qt)
-                simd.silu(p_silu, p_gate, ctypes.c_int(FF))
+                simd.silu(p_silu, p_gate, ci(FF))
                 b_silu[:FF] *= b_up[:FF]
                 if lw.ffn_down_use_c:
                     kern.quant_matmul_omp(lw.ffn_down_raw, p_silu, p_ffn,
