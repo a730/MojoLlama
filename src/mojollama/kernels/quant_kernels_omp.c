@@ -194,11 +194,13 @@ void q4_1_matmul_omp(const uint8_t *restrict W, const float *restrict x,
 void q4_k_matmul_omp(const uint8_t *restrict W, const float *restrict x,
                       float *restrict out, int n_rows, int n_cols) {
     int nb_blocks = n_cols / 32;
-    uint8_t *x_q8 = (uint8_t*)malloc((size_t)nb_blocks * Q8_0_BS);
+    uint8_t x_q8_buf[2048 / 32 * Q8_0_BS];  /* stack alloc for up to 2048 dims */
+    int q8_sz = (size_t)nb_blocks * Q8_0_BS;
+    uint8_t *x_q8 = q8_sz <= sizeof(x_q8_buf) ? x_q8_buf : (uint8_t*)malloc(q8_sz);
     if (!x_q8) { for (int r = 0; r < n_rows; r++) out[r] = 0.0f; return; }
     quantize_row_q8_0(x, x_q8, n_cols);
     q4_k_q8_0_matmul_omp(W, x_q8, out, n_rows, n_cols);
-    free(x_q8);
+    if (x_q8 != x_q8_buf) free(x_q8);
 }
 
 /* ═════════════════════════════════════════════════════════════════════════
@@ -1158,11 +1160,12 @@ static inline float dot_q4_k_q8_0(const uint8_t *restrict qk, const uint8_t *res
     const uint8_t *scales = qk + 4;
     const uint8_t *qs_nib = qk + 16;
     float sum = 0.0f;
-    __m128i ones16 = _mm_set1_epi16(1);
+    __m256i ones16 = _mm256_set1_epi16(1);
+    __m256i mask_lo = _mm256_set1_epi8(0x0F);
 
     for (int i = 0; i < 8; i++) {
-        int grp = i >> 1;  /* 0..3: which 64-value nibble group */
-        int sub = i & 1;   /* 0 = lo nibble (pos 0..31), 1 = hi nibble (pos 32..63) */
+        int grp = i >> 1;
+        int sub = i & 1;
 
         uint8_t sc, m;
         get_scale_min_k4(grp * 2 + sub, scales, &sc, &m);
@@ -1173,45 +1176,40 @@ static inline float dot_q4_k_q8_0(const uint8_t *restrict qk, const uint8_t *res
         float d8 = f16_to_f32((uint16_t)q8b[0] | ((uint16_t)q8b[1] << 8));
         const int8_t *q8qs = (const int8_t *)(q8b + 2);
 
-        /* 32 nibbles: 32 bytes × 1 nibble per byte (either lo or hi half) */
         const uint8_t *nib = qs_nib + (size_t)grp * 32;
-        __m128i n0 = _mm_loadu_si128((const __m128i*)(nib));
-        __m128i n1 = _mm_loadu_si128((const __m128i*)(nib + 16));
 
+        /* AVX2: process all 32 nibbles and 32 Q8_0 values at once */
+        __m256i nv = _mm256_loadu_si256((const __m256i*)nib);
         if (sub == 0) {
-            n0 = _mm_and_si128(n0, _mm_set1_epi8(0x0F));
-            n1 = _mm_and_si128(n1, _mm_set1_epi8(0x0F));
+            nv = _mm256_and_si256(nv, mask_lo);
         } else {
-            n0 = _mm_and_si128(_mm_srli_epi16(n0, 4), _mm_set1_epi8(0x0F));
-            n1 = _mm_and_si128(_mm_srli_epi16(n1, 4), _mm_set1_epi8(0x0F));
+            nv = _mm256_and_si256(_mm256_srli_epi16(nv, 4), mask_lo);
         }
 
-        __m128i q8_0 = _mm_loadu_si128((const __m128i*)(q8qs));
-        __m128i q8_1 = _mm_loadu_si128((const __m128i*)(q8qs + 16));
+        __m256i q8v = _mm256_loadu_si256((const __m256i*)q8qs);
 
-        /* maddubs: unsigned(nibble) × signed(q8) → 8 i16 pair-sums */
-        __m128i md0 = _mm_maddubs_epi16(n0, q8_0);
-        __m128i md1 = _mm_maddubs_epi16(n1, q8_1);
+        /* maddubs: 32 × unsigned(nibble) × signed(q8) → 16 int16 pair-sums */
+        __m256i md = _mm256_maddubs_epi16(nv, q8v);
 
-        /* Sum nibble*qs8 for this Q8_0 block: 16 i16 → 8 i32 → 1 int32 */
-        __m128i s0 = _mm_madd_epi16(md0, ones16);     /* 4 i32 pair-sums */
-        __m128i s1 = _mm_madd_epi16(md1, ones16);
-        __m128i s01 = _mm_hadd_epi32(s0, s1);          /* [a,b,c,d] */
-        s01 = _mm_hadd_epi32(s01, _mm_setzero_si128());/* [a+b, c+d] */
-        int32_t nq8_sum = _mm_cvtsi128_si32(s01) + _mm_extract_epi32(s01, 1);
+        /* Sum all 16 int16 → 8 int32 pair-sums → 1 int32 */
+        __m256i s = _mm256_madd_epi16(md, ones16);
+        __m128i slo = _mm256_castsi256_si128(s);
+        __m128i shi = _mm256_extractf128_si256(s, 1);
+        __m128i s128 = _mm_hadd_epi32(slo, shi);
+        s128 = _mm_hadd_epi32(s128, s128);
+        int32_t nq8_sum = _mm_cvtsi128_si32(s128);
 
-        /* Sum of Q8 int8 for the min*Σ(qs8) correction */
-        __m128i e0a = _mm_cvtepi8_epi16(q8_0);
-        __m128i e0b = _mm_cvtepi8_epi16(_mm_shuffle_epi32(q8_0, 0x4e));
-        __m128i e1a = _mm_cvtepi8_epi16(q8_1);
-        __m128i e1b = _mm_cvtepi8_epi16(_mm_shuffle_epi32(q8_1, 0x4e));
-
-        __m128i q8ps = _mm_add_epi32(
-            _mm_add_epi32(_mm_madd_epi16(e0a, ones16), _mm_madd_epi16(e0b, ones16)),
-            _mm_add_epi32(_mm_madd_epi16(e1a, ones16), _mm_madd_epi16(e1b, ones16)));
-        q8ps = _mm_hadd_epi32(q8ps, _mm_setzero_si128());
-        q8ps = _mm_hadd_epi32(q8ps, _mm_setzero_si128());
-        int32_t q8_total = _mm_cvtsi128_si32(q8ps);
+        /* Sum of all 32 Q8 int8 values for min*Σ(qs8) correction */
+        __m256i e_lo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(q8v));
+        __m256i e_hi = _mm256_cvtepi8_epi16(_mm256_extractf128_si256(q8v, 1));
+        __m256i q8ps = _mm256_add_epi32(
+            _mm256_madd_epi16(e_lo, ones16),
+            _mm256_madd_epi16(e_hi, ones16));
+        __m128i q8ps_lo = _mm256_castsi256_si128(q8ps);
+        __m128i q8ps_hi = _mm256_extractf128_si256(q8ps, 1);
+        q8ps_lo = _mm_hadd_epi32(q8ps_lo, q8ps_hi);
+        q8ps_lo = _mm_hadd_epi32(q8ps_lo, q8ps_lo);
+        int32_t q8_total = _mm_cvtsi128_si32(q8ps_lo);
 
         sum += d_sc * d8 * (float)nq8_sum - m_sc * d8 * (float)q8_total;
     }
@@ -1512,56 +1510,58 @@ void moe_forward_omp(
 
     if (!all_bufs) return;
 
-    /* ── Quantize x_norm to Q8_0 once for Q4_K quantized-activation path ── */
+    /* ── Quantize x_norm to Q8_0 once for all Q4_K quantized-activation rows ── */
     int n_blocks_x = n_embd / 32;
-    uint8_t *x_q8 = prealloc_q8 ? prealloc_q8 : (uint8_t*)malloc((size_t)n_blocks_x * Q8_0_BS);
-    int q8_nb = quantize_row_q8_0(x_norm, x_q8, n_embd);
+    uint8_t x_q8_buf[2048 / 32 * Q8_0_BS];  /* stack alloc for up to 2048 dims */
+    int q8_sz = (size_t)n_blocks_x * Q8_0_BS;
+    uint8_t *x_q8 = q8_sz <= sizeof(x_q8_buf) ? x_q8_buf : (uint8_t*)malloc(q8_sz);
+    uint8_t *x_q8_alloced = (x_q8 != x_q8_buf) ? x_q8 : NULL;
+    (void)prealloc_q8;  /* kept for ABI compat — using stack alloc instead */
+    quantize_row_q8_0(x_norm, x_q8, n_embd);
 
     int total_gate    = top_k * n_ff_expert;
-    int total_gate_up = total_gate * 2;
-    int total_silu    = top_k * n_ff_expert;
     int total_down    = top_k * n_embd;
-    int total_all     = total_gate_up + total_silu + total_down;
 
-    /* ── Phase 1: Gate + Up rows (parallel, dynamic scheduling) ── */
+    /* ── Phase 1: Gate + Up rows (single OMP region, fused per-row) ── */
+    /* Each iteration processes one (expert, row) pair computing both gate+up */
+    /* to amortize x_q8 read and reduce OMP fork-join vs two separate passes. */
     #pragma omp parallel for schedule(dynamic, 64)
-    for (int i = 0; i < total_gate_up; i++) {
-        int exp_idx = i / n_ff_expert;
-        int row     = i % n_ff_expert;
-        int e = top_indices[exp_idx];
-        float val;
-        if (i < total_gate) {
-            if (qt_gate == 12) {
-                val = q4_k_row_dot_q8(gate_raw[e], x_q8, n_embd, row);
-            } else if (qt_gate == 14) {
-                val = q6_k_row_dot_avx2(gate_raw[e], x_norm, n_embd, row);
-            } else if (qt_gate == 2) {
-                int bpr = n_embd / 32;
-                val = q4_0_row_dot(gate_raw[e], x_norm, bpr, row);
-            } else {
-                val = 0.0f;
-            }
-            gate_buf[exp_idx * n_ff_expert + row] = val;
+    for (int i = 0; i < top_k * n_ff_expert; i++) {
+        int ei = i / n_ff_expert;
+        int row = i % n_ff_expert;
+        int e = top_indices[ei];
+        float gv, uv;
+        if (qt_gate == 12) {
+            gv = q4_k_row_dot_q8(gate_raw[e], x_q8, n_embd, row);
+        } else if (qt_gate == 14) {
+            gv = q6_k_row_dot_avx2(gate_raw[e], x_norm, n_embd, row);
+        } else if (qt_gate == 2) {
+            int bpr = n_embd / 32;
+            gv = q4_0_row_dot(gate_raw[e], x_norm, bpr, row);
+        } else if (qt_gate == 3) {
+            int bpr = n_embd / 32;
+            gv = q4_1_row_dot(gate_raw[e], x_norm, bpr, row);
         } else {
-            int idx = i - total_gate;
-            exp_idx = idx / n_ff_expert;
-            row     = idx % n_ff_expert;
-            e = top_indices[exp_idx];
-            if (qt_up == 12) {
-                val = q4_k_row_dot_q8(up_raw[e], x_q8, n_embd, row);
-            } else if (qt_up == 14) {
-                val = q6_k_row_dot_avx2(up_raw[e], x_norm, n_embd, row);
-            } else if (qt_up == 2) {
-                int bpr = n_embd / 32;
-                val = q4_0_row_dot(up_raw[e], x_norm, bpr, row);
-            } else {
-                val = 0.0f;
-            }
-            up_buf[exp_idx * n_ff_expert + row] = val;
+            gv = 0.0f;
         }
+        if (qt_up == 12) {
+            uv = q4_k_row_dot_q8(up_raw[e], x_q8, n_embd, row);
+        } else if (qt_up == 14) {
+            uv = q6_k_row_dot_avx2(up_raw[e], x_norm, n_embd, row);
+        } else if (qt_up == 2) {
+            int bpr = n_embd / 32;
+            uv = q4_0_row_dot(up_raw[e], x_norm, bpr, row);
+        } else if (qt_up == 3) {
+            int bpr = n_embd / 32;
+            uv = q4_1_row_dot(up_raw[e], x_norm, bpr, row);
+        } else {
+            uv = 0.0f;
+        }
+        gate_buf[i] = gv;
+        up_buf[i] = uv;
     }
 
-    /* ── Phase 1.5: SiLU(gate) * up (parallel, simple) ── */
+    /* ── Phase 1.5: SiLU(gate) * up (parallel) ── */
     #pragma omp parallel for schedule(static)
     for (int i = 0; i < top_k * n_ff_expert; i++) {
         float gv = gate_buf[i];
@@ -1591,7 +1591,7 @@ void moe_forward_omp(
     }
 
     if (!prealloc_buf) free(all_bufs);
-    if (!prealloc_q8)  free(x_q8);
+    if (x_q8_alloced)  free(x_q8_alloced);
 }
 
 /* ═════════════════════════════════════════════════════════════════════════
