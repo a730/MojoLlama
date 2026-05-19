@@ -292,6 +292,8 @@ typedef struct {
     const int *q_quant, *k_quant, *v_quant, *o_quant;
     const int *g_quant, *u_quant, *d_quant;
     int emb_quant;
+    const uint8_t **wQK;   /* fused Q+K weight pointer (NULL if no fusion) */
+    const int *qk_quant;   /* quant type for fused Q+K weight */
     float *cos_table;
     float *sin_table;
     int max_ctx;
@@ -446,6 +448,8 @@ void emb_lookup(const uint8_t *emb, int token, float *out, int N, int quant) {
 void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
     int N=c->N, NH=c->NH, NKH=c->NKH, HD=c->HD, FF=c->FF, L=c->L, nc=c->nc;
     int S = N; if (NH*HD > S) S = NH*HD; if (FF > S) S = FF; if (NKH*HD > S) S = NKH*HD;
+    int qk_fused = NH*HD + NKH*HD;
+    if (qk_fused > S) S = qk_fused;
     
     float *x = ws, *xn = ws + B*S, *res = ws + 2*B*S;
     float *q = ws + 3*B*S, *k = ws + 4*B*S, *v = ws + 5*B*S;
@@ -466,9 +470,22 @@ void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
             rms(xn + b*N, x + b*N, c->wAN[l], N, c->eps);
         }
         
-        batch_matmul(c->q_quant[l], c->wQ[l], xn, q, c->nQ[l], nc, B);
-        batch_matmul(c->k_quant[l], c->wK[l], xn, k, c->nK[l], nc, B);
-        batch_matmul(c->v_quant[l], c->wV[l], xn, v, c->nV[l], nc, B);
+        /* Fused Q+K matmul when available (types match, weight built), else 3 separate */
+        int use_fused_qk = (c->wQK && c->wQK[l] != NULL);
+        if (use_fused_qk) {
+            int nqk = c->nQ[l] + c->nK[l];
+            batch_matmul(c->qk_quant[l], c->wQK[l], xn, q, nqk, nc, B);
+            for (int b = 0; b < B; b++) {
+                memcpy(k + (size_t)b * c->nK[l],
+                       q + (size_t)b * nqk + c->nQ[l],
+                       c->nK[l] * sizeof(float));
+            }
+            batch_matmul(c->v_quant[l], c->wV[l], xn, v, c->nV[l], nc, B);
+        } else {
+            batch_matmul(c->q_quant[l], c->wQ[l], xn, q, c->nQ[l], nc, B);
+            batch_matmul(c->k_quant[l], c->wK[l], xn, k, c->nK[l], nc, B);
+            batch_matmul(c->v_quant[l], c->wV[l], xn, v, c->nV[l], nc, B);
+        }
         
         for (int b = 0; b < B; b++) {
             float *qb = q + b*c->nQ[l], *kb = k + b*c->nK[l], *vb = v + b*c->nV[l];

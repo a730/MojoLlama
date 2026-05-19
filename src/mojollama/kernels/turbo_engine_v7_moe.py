@@ -71,7 +71,10 @@ class LayerWeights:
                  'ffn_gate_use_c', 'ffn_up_use_c', 'ffn_down_use_c',
                  'q_norm_w', 'k_norm_w',
                  'has_q_norm', 'has_k_norm',
-                 'moe']
+                 'moe',
+                 'attn_qk_raw', 'attn_qk_nr', 'attn_qk_nc', 'attn_qk_qt',
+                 'attn_qk_use_c',
+                 '_attn_qk_raw_buf']
 
 
 class TurboEngineV7MoE:
@@ -419,6 +422,24 @@ class TurboEngineV7MoE:
 
             lw.attn_norm_w = self.weights[f'{pfx}.attn_norm.weight']
             lw.ffn_norm_w = self.weights[f'{pfx}.ffn_norm.weight']
+
+            # Build fused Q+K weight if Q and K have same quant type
+            if (lw.attn_q_use_c and lw.attn_k_use_c and
+                lw.attn_q_qt.value == lw.attn_k_qt.value):
+                q_name = f'{pfx}.attn_q.weight'
+                k_name = f'{pfx}.attn_k.weight'
+                q_raw_arr = self.raw_weights.get(q_name)
+                k_raw_arr = self.raw_weights.get(k_name)
+                if q_raw_arr is not None and k_raw_arr is not None:
+                    qk_raw_arr = np.concatenate([q_raw_arr, k_raw_arr])
+                    qk_raw_arr = np.ascontiguousarray(qk_raw_arr, dtype=np.uint8)
+                    # Keep the fused buffer alive on the layer object
+                    lw._attn_qk_raw_buf = qk_raw_arr
+                    lw.attn_qk_raw = qk_raw_arr.ctypes.data_as(cu)
+                    lw.attn_qk_nr = ctypes.c_int(lw.attn_q_nr.value + lw.attn_k_nr.value)
+                    lw.attn_qk_nc = lw.attn_q_nc  # same n_cols as Q
+                    lw.attn_qk_qt = lw.attn_q_qt  # same quant type as Q
+                    lw.attn_qk_use_c = True
             lw.has_q_norm = f'{pfx}.attn_q_norm.weight' in self.weights
             lw.has_k_norm = f'{pfx}.attn_k_norm.weight' in self.weights
             if lw.has_q_norm:
@@ -504,8 +525,10 @@ class TurboEngineV7MoE:
         self._x = np.zeros(N, dtype=np.float32)
         self._x_norm = np.zeros(N, dtype=np.float32)
         self._residual = np.zeros(N, dtype=np.float32)
-        self._q = np.zeros(NK, dtype=np.float32)
-        self._k = np.zeros(NKH, dtype=np.float32)
+        # Fused Q+K buffer: _q = _qk[:NK], _k = _qk[NK:] for fused QK matmul
+        self._qk = np.zeros(NK + NKH, dtype=np.float32)
+        self._q = self._qk[:NK]
+        self._k = self._qk[NK:]
         self._v = np.zeros(NKH, dtype=np.float32)
         self._att_out = np.zeros(NK, dtype=np.float32)
         self._o_proj = np.zeros(N, dtype=np.float32)
@@ -539,6 +562,7 @@ class TurboEngineV7MoE:
         self._p_q = self._q.ctypes.data_as(cf)
         self._p_k = self._k.ctypes.data_as(cf)
         self._p_v = self._v.ctypes.data_as(cf)
+        self._p_qk = self._qk.ctypes.data_as(cf)  # fused QK output
         self._p_att_out = self._att_out.ctypes.data_as(cf)
         self._p_gate = self._gate.ctypes.data_as(cf)
         self._p_up = self._up.ctypes.data_as(cf)
@@ -592,6 +616,7 @@ class TurboEngineV7MoE:
         eps_f = self._eps_f
         p_x = self._p_x; p_xn = self._p_x_norm; p_r = self._p_residual
         p_q = self._p_q; p_k = self._p_k; p_v = self._p_v
+        p_qk = self._p_qk  # fused QK output buffer
         p_att = self._p_att_out; p_gate = self._p_gate; p_up = self._p_up
         p_silu = self._p_silu_gate; p_oproj = self._p_o_proj
         p_ffn = self._p_ffn; p_logits = self._p_logits
@@ -610,8 +635,17 @@ class TurboEngineV7MoE:
                           lw.attn_norm_w.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
                           N, eps_f)
 
-            # QKV — batched
-            if lw.attn_q_use_c and lw.attn_k_use_c and lw.attn_v_use_c:
+            # QKV — batched (fused Q+K when available, else batch_qkv_omp or separate)
+            if hasattr(lw, 'attn_qk_use_c') and lw.attn_qk_use_c:
+                # Fused Q+K matmul into _qk buffer (q=first NK, k=next NKH)
+                kern.quant_matmul_omp(
+                    lw.attn_qk_raw, p_xn, p_qk,
+                    lw.attn_qk_nr, lw.attn_qk_nc, lw.attn_qk_qt)
+                # Separate V matmul
+                kern.quant_matmul_omp(
+                    lw.attn_v_raw, p_xn, p_v,
+                    lw.attn_v_nr, lw.attn_v_nc, lw.attn_v_qt)
+            elif lw.attn_q_use_c and lw.attn_k_use_c and lw.attn_v_use_c:
                 kern.batch_qkv_omp(
                     lw.attn_q_raw, lw.attn_k_raw, lw.attn_v_raw,
                     p_xn, p_q, p_k, p_v,

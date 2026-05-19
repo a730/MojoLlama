@@ -41,6 +41,7 @@ class BC(ctypes.Structure):
         ("gate_exp_quant",ci),("up_exp_quant",ci),("down_exp_quant",ci),
         ("q_quant",cv),("k_quant",cv),("v_quant",cv),("o_quant",cv),
         ("g_quant",cv),("u_quant",cv),("d_quant",cv),("emb_quant",ci),
+        ("wQK",cv),("qk_quant",cv),
         ("cos_table",cv),("sin_table",cv),("max_ctx",ci),
     ]
 
@@ -78,6 +79,7 @@ for attr, val in [('L',L),('N',N),('NH',NH),('NKH',NKH),('HD',HD),('FF',FF),('V'
 wQ_arr = [0]*L; wK_arr = [0]*L; wV_arr = [0]*L; wO_arr = [0]*L
 wG_arr = [0]*L; wU_arr = [0]*L; wD_arr = [0]*L
 wAN_arr = [0]*L; wFN_arr = [0]*L
+wQK_arr = [0]*L; qkQ_arr = [0]*L  # fused Q+K (NULL if types don't match)
 nQ_arr = [0]*L; nK_arr = [0]*L; nV_arr = [0]*L; nO_arr = [0]*L
 nG_arr = [0]*L; nU_arr = [0]*L; nD_arr = [0]*L
 qQ_arr = [0]*L; qK_arr = [0]*L; qV_arr = [0]*L; qO_arr = [0]*L
@@ -106,6 +108,13 @@ for i, lw in enumerate(e._layers):
         elif target == 'D': wD_arr[i] = raw; nD_arr[i] = nr; qD_arr[i] = qt
     wAN_arr[i] = lw.attn_norm_w.ctypes.data_as(cv)
     wFN_arr[i] = lw.ffn_norm_w.ctypes.data_as(cv)
+    # Fused Q+K weight (if available)
+    if hasattr(lw, 'attn_qk_use_c') and lw.attn_qk_use_c:
+        wQK_arr[i] = lw.attn_qk_raw
+        qkQ_arr[i] = lw.attn_qk_qt.value
+    else:
+        wQK_arr[i] = cv(0)
+        qkQ_arr[i] = 0
 
 # MoE pointers
 w_gate_inp_arr = [0]*L; w_gate_exps_arr = [0]*L; w_up_exps_arr = [0]*L; w_down_exps_arr = [0]*L
@@ -139,6 +148,7 @@ bc.wV = ctypes.cast(wa(wV_arr), cv); bc.wO = ctypes.cast(wa(wO_arr), cv)
 bc.wG = ctypes.cast(wa(wG_arr), cv); bc.wU = ctypes.cast(wa(wU_arr), cv)
 bc.wD = ctypes.cast(wa(wD_arr), cv)
 bc.wAN = ctypes.cast(wa(wAN_arr), cv); bc.wFN = ctypes.cast(wa(wFN_arr), cv)
+bc.wQK = ctypes.cast(wa(wQK_arr), cv); bc.qk_quant = ctypes.cast(ia(qkQ_arr), cv)
 bc.nQ = ctypes.cast(ia(nQ_arr), cv); bc.nK = ctypes.cast(ia(nK_arr), cv)
 bc.nV = ctypes.cast(ia(nV_arr), cv); bc.nO = ctypes.cast(ia(nO_arr), cv)
 bc.nG = ctypes.cast(ia(nG_arr), cv); bc.nU = ctypes.cast(ia(nU_arr), cv)

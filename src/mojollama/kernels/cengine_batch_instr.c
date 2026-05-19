@@ -255,10 +255,15 @@ void q4_k_batch_matmul(const uint8_t *W, const float *x, float *out,
     }
 }
 
-/* AVX2 Batched Q6_K matmul: 256-element blocks, 6-bit K-quant */
+/* AVX2 Batched Q6_K matmul: 256-element blocks, 6-bit K-quant (fused dequant+dot) */
 void q6_k_batch_matmul(const uint8_t *W, const float *x, float *out,
                        int n_rows, int nc, int B) {
     int bpr = nc / QK_K;
+    /* LUT for _mm_shuffle_epi8 nibble deinterleave:
+       maps [n0,n2,n4,n6,n8,n10,n12,n14, n1,n3,n5,n7,n9,n11,n13,n15]
+         to [n0,n1,n2,n3,n4,n5,n6,n7, n8,n9,n10,n11,n12,n13,n14,n15] */
+    static const uint8_t kShufNib[16] = {0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15};
+    __m128i shuf_nib = _mm_loadu_si128((const __m128i*)kShufNib);
     #pragma omp parallel for schedule(static, 8)
     for (int r = 0; r < n_rows; r++) {
         float *acc = (float*)__builtin_alloca(B * sizeof(float));
@@ -266,22 +271,48 @@ void q6_k_batch_matmul(const uint8_t *W, const float *x, float *out,
         for (int blk = 0; blk < bpr; blk++) {
             const block_q6_K *bp = (const block_q6_K*)(W + ((size_t)r * bpr + blk) * sizeof(block_q6_K));
             float d = gf16(bp->d);
-            float deq[QK_K];
-            for (int j = 0; j < QK_K; j++) {
-                uint8_t ql = bp->ql[j/2];
-                uint8_t qh = bp->qh[j/4];
-                int s = (j & 1) ? (ql >> 4) : (ql & 0xF);
-                int sh = (qh >> ((j & 3) * 2)) & 3;
-                s |= (sh << 4); s -= 32;
-                deq[j] = d * bp->scales[j/16] * s;
-            }
             int o = blk * QK_K;
             for (int b = 0; b < B; b++) {
                 const float *xb = x + (size_t)b * nc + o;
                 __m256 sum = _mm256_setzero_ps();
-                for (int j = 0; j < QK_K; j += 8)
-                    sum = _mm256_fmadd_ps(_mm256_loadu_ps(deq + j),
-                                         _mm256_loadu_ps(xb + j), sum);
+                for (int j = 0; j < QK_K; j += 16) {
+                    float scale = d * bp->scales[j/16];
+                    __m256 sv = _mm256_set1_ps(scale);
+                    /* --- QL: Extract 16 nibbles from 8 packed bytes via SIMD --- */
+                    __m128i ql8 = _mm_loadl_epi64((const __m128i*)(bp->ql + j/2));
+                    __m128i lo = _mm_and_si128(ql8, _mm_set1_epi8(0x0F));
+                    __m128i hi = _mm_and_si128(_mm_srli_epi16(ql8, 4), _mm_set1_epi8(0x0F));
+                    /* Combine lo in lower lane, hi in upper lane, shuffle to order */
+                    __m128i nib_all = _mm_shuffle_epi8(_mm_unpacklo_epi64(lo, hi), shuf_nib);
+                    __m128i nib_lo = nib_all;
+                    __m128i nib_hi = _mm_srli_si128(nib_all, 8);
+                    /* --- QH: Extract 16 x 2-bit pairs from 4 bytes (shifts+masks) --- */
+                    uint32_t qh4;
+                    memcpy(&qh4, bp->qh + j/4, 4);
+                    uint8_t qh16[16];
+                    for (int k = 0; k < 4; k++) {
+                        uint8_t byte = (qh4 >> (k * 8)) & 0xFF;
+                        qh16[k*4 + 0] = byte & 3;
+                        qh16[k*4 + 1] = (byte >> 2) & 3;
+                        qh16[k*4 + 2] = (byte >> 4) & 3;
+                        qh16[k*4 + 3] = (byte >> 6) & 3;
+                    }
+                    __m128i up = _mm_loadu_si128((const __m128i*)qh16);
+                    __m128i up_lo = up;
+                    __m128i up_hi = _mm_srli_si128(up, 8);
+                    /* --- Combine 6-bit value: nibble | (upper << 4), zero-center --- */
+                    __m128i val_lo = _mm_sub_epi8(
+                        _mm_or_si128(nib_lo, _mm_slli_epi16(up_lo, 4)), _mm_set1_epi8(32));
+                    __m128i val_hi = _mm_sub_epi8(
+                        _mm_or_si128(nib_hi, _mm_slli_epi16(up_hi, 4)), _mm_set1_epi8(32));
+                    /* --- Convert to float, scale, FMA with x --- */
+                    sum = _mm256_fmadd_ps(
+                        _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(val_lo)), sv),
+                        _mm256_loadu_ps(xb + j), sum);
+                    sum = _mm256_fmadd_ps(
+                        _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(val_hi)), sv),
+                        _mm256_loadu_ps(xb + j + 8), sum);
+                }
                 acc[b] += hsum_ps(sum);
             }
         }
@@ -399,6 +430,8 @@ typedef struct {
     const int *q_quant, *k_quant, *v_quant, *o_quant;
     const int *g_quant, *u_quant, *d_quant;
     int emb_quant;
+    const uint8_t **wQK;   /* fused Q+K weight pointer (NULL if no fusion) */
+    const int *qk_quant;   /* quant type for fused Q+K weight */
     float *cos_table;
     float *sin_table;
     int max_ctx;
@@ -557,6 +590,8 @@ void emb_lookup(const uint8_t *emb, int token, float *out, int N, int quant) {
 void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
     int N=c->N, NH=c->NH, NKH=c->NKH, HD=c->HD, FF=c->FF, L=c->L, nc=c->nc;
     int S = N; if (NH*HD > S) S = NH*HD; if (FF > S) S = FF; if (NKH*HD > S) S = NKH*HD;
+    int qk_fused = NH*HD + NKH*HD;  /* for fused QK output (if fusion enabled) */
+    if (qk_fused > S) S = qk_fused;
     
     float *x = ws, *xn = ws + B*S, *res = ws + 2*B*S;
     float *q = ws + 3*B*S, *k = ws + 4*B*S, *v = ws + 5*B*S;
@@ -589,9 +624,22 @@ void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
         rms(xn + b*N, xb, c->wAN[l], N, c->eps);
     }
         
-        batch_matmul(c->q_quant[l], c->wQ[l], xn, q, c->nQ[l], nc, B);
-        batch_matmul(c->k_quant[l], c->wK[l], xn, k, c->nK[l], nc, B);
-        batch_matmul(c->v_quant[l], c->wV[l], xn, v, c->nV[l], nc, B);
+        /* Fused Q+K matmul when available (types match, weight built), else 3 separate */
+        int use_fused_qk = (c->wQK && c->wQK[l] != NULL);
+        if (use_fused_qk) {
+            int nqk = c->nQ[l] + c->nK[l];
+            batch_matmul(c->qk_quant[l], c->wQK[l], xn, q, nqk, nc, B);
+            for (int b = 0; b < B; b++) {
+                memcpy(k + (size_t)b * c->nK[l],
+                       q + (size_t)b * nqk + c->nQ[l],
+                       c->nK[l] * sizeof(float));
+            }
+            batch_matmul(c->v_quant[l], c->wV[l], xn, v, c->nV[l], nc, B);
+        } else {
+            batch_matmul(c->q_quant[l], c->wQ[l], xn, q, c->nQ[l], nc, B);
+            batch_matmul(c->k_quant[l], c->wK[l], xn, k, c->nK[l], nc, B);
+            batch_matmul(c->v_quant[l], c->wV[l], xn, v, c->nV[l], nc, B);
+        }
         
         for (int b = 0; b < B; b++) {
             float *qb = q + b*c->nQ[l], *kb = k + b*c->nK[l], *vb = v + b*c->nV[l];

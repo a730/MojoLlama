@@ -31,6 +31,7 @@ class BC(ctypes.Structure):
         ("gate_exp_quant",ci),("up_exp_quant",ci),("down_exp_quant",ci),
         ("q_quant",cv),("k_quant",cv),("v_quant",cv),("o_quant",cv),
         ("g_quant",cv),("u_quant",cv),("d_quant",cv),("emb_quant",ci),
+        ("wQK",cv),("qk_quant",cv),
         ("cos_table",cv),("sin_table",cv),("max_ctx",ci)]
 
 class KVBlock(ctypes.Structure):
@@ -46,6 +47,7 @@ def ia(arr): return (ci*L)(*[int(a) for a in arr])
 wQ_arr=[0]*L; wK_arr=[0]*L; wV_arr=[0]*L; wO_arr=[0]*L
 wG_arr=[0]*L; wU_arr=[0]*L; wD_arr=[0]*L
 wAN_arr=[0]*L; wFN_arr=[0]*L
+wQK_arr=[0]*L; qkQ_arr=[0]*L  # fused Q+K weight (NULL if types don't match)
 nQ_arr=[0]*L; nK_arr=[0]*L; nV_arr=[0]*L; nO_arr=[0]*L; nG_arr=[0]*L; nU_arr=[0]*L; nD_arr=[0]*L
 qQ_arr=[0]*L; qK_arr=[0]*L; qV_arr=[0]*L; qO_arr=[0]*L; qG_arr=[0]*L; qU_arr=[0]*L; qD_arr=[0]*L
 
@@ -55,6 +57,11 @@ for i,lw in enumerate(e._layers):
     wV_arr[i]=lw.attn_v_raw; nV_arr[i]=lw.attn_v_nr.value; qV_arr[i]=lw.attn_v_qt.value
     wO_arr[i]=lw.attn_out_raw; nO_arr[i]=lw.attn_out_nr.value; qO_arr[i]=lw.attn_out_qt.value
     wAN_arr[i]=lw.attn_norm_w.ctypes.data_as(cv); wFN_arr[i]=lw.ffn_norm_w.ctypes.data_as(cv)
+    # Fused Q+K weight (if available)
+    if hasattr(lw,'attn_qk_use_c') and lw.attn_qk_use_c:
+        wQK_arr[i]=lw.attn_qk_raw; qkQ_arr[i]=lw.attn_qk_qt.value
+    else:
+        wQK_arr[i]=cv(0); qkQ_arr[i]=0
 for i,me in enumerate(e._moe_layers):
     wG_arr[i]=me.gate_raw[0].ctypes.data_as(cv) if me.gate_raw else cv(0)
     wU_arr[i]=me.up_raw[0].ctypes.data_as(cv) if me.up_raw else cv(0)
@@ -110,6 +117,7 @@ for attr,val in [('L',L),('N',N),('NH',NH),('NKH',NKH),('HD',HD),('FF',FF),('V',
 bc.wQ=ctypes.cast(wa(wQ_arr),cv); bc.wK=ctypes.cast(wa(wK_arr),cv); bc.wV=ctypes.cast(wa(wV_arr),cv); bc.wO=ctypes.cast(wa(wO_arr),cv)
 bc.wG=ctypes.cast(wa(wG_arr),cv); bc.wU=ctypes.cast(wa(wU_arr),cv); bc.wD=ctypes.cast(wa(wD_arr),cv)
 bc.wAN=ctypes.cast(wa(wAN_arr),cv); bc.wFN=ctypes.cast(wa(wFN_arr),cv)
+bc.wQK=ctypes.cast(wa(wQK_arr),cv); bc.qk_quant=ctypes.cast(ia(qkQ_arr),cv)
 bc.nQ=ctypes.cast(ia(nQ_arr),cv); bc.nK=ctypes.cast(ia(nK_arr),cv); bc.nV=ctypes.cast(ia(nV_arr),cv); bc.nO=ctypes.cast(ia(nO_arr),cv)
 bc.nG=ctypes.cast(ia(nG_arr),cv); bc.nU=ctypes.cast(ia(nU_arr),cv); bc.nD=ctypes.cast(ia(nD_arr),cv)
 bc.q_quant=ctypes.cast(ia(qQ_arr),cv); bc.k_quant=ctypes.cast(ia(qK_arr),cv); bc.v_quant=ctypes.cast(ia(qV_arr),cv); bc.o_quant=ctypes.cast(ia(qO_arr),cv)
