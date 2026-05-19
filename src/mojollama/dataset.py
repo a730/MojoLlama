@@ -803,7 +803,7 @@ class AutoLabeler:
     
     def __init__(
         self,
-        api_base: str = "http://127.0.0.1:8080",
+        api_base: str = "http://127.0.0.1:9000",
         model: str = "",
         max_tokens: int = 256,
         temperature: float = 0.7,

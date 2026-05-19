@@ -6,11 +6,11 @@ concurrency levels. Reports req/s, latency, and error rates.
 
 Usage:
   # Start the server first:
-  python3 -m mojollama.server --model model.gguf --port 8080
+  python3 -m mojollama.server --model model.gguf --port 9000
 
   # Then run benchmark:
-  python3 bench_concurrency.py --url http://127.0.0.1:8080
-  python3 bench_concurrency.py --url http://127.0.0.1:8080 --concurrency 4,8,16,32
+  python3 bench_concurrency.py --url http://127.0.0.1:9000
+  python3 bench_concurrency.py --url http://127.0.0.1:9000 --concurrency 4,8,16,32
 """
 
 import json
@@ -115,7 +115,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="MojoLlama concurrent benchmark"
     )
-    parser.add_argument("--url", default="http://127.0.0.1:8080",
+    parser.add_argument("--url", default="http://127.0.0.1:9000",
                         help="Server URL")
     parser.add_argument("--concurrency", "-c",
                         default="1,2,4,8,16",

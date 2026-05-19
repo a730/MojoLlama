@@ -22,7 +22,7 @@ from src.mojollama.model.device import list_devices
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 DEFAULT_HOST = "0.0.0.0"
-DEFAULT_PORT = 8080
+DEFAULT_PORT = 9000
 DEFAULT_MAX_TOKENS = 256
 
 app = Flask(__name__)

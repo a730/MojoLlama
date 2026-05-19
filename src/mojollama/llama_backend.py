@@ -15,7 +15,7 @@ from typing import Optional
 class LlamaCppBackend:
     """Inference backend using llama.cpp server."""
     
-    def __init__(self, base_url: str = "http://localhost:8080"):
+    def __init__(self, base_url: str = "http://localhost:9000"):
         self.base_url = base_url.rstrip("/")
         self._model_info = None
     

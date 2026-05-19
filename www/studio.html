@@ -62,7 +62,9 @@ body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
 .backend-status:hover { border-color: var(--accent); }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .status-dot.online { background: var(--green); box-shadow: 0 0 8px var(--green); }
-.status-dot.offline { background: var(--red); }
+.status-dot.offline { background: var(--red); animation: pulse-offline 2s ease-in-out infinite; }
+@keyframes pulse-offline { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
+.text-code { font-family: monospace; font-size: 12px; color: var(--dim); word-break: break-all; }
 .backend-info { flex: 1; overflow: hidden; }
 .backend-name { font-weight: 600; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .backend-uptime { color: var(--dim); font-size: 10px; }
@@ -348,6 +350,9 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
       <div class="nav-item" data-tab="merge">
         <span class="nav-icon">🔗</span><span>Merge</span>
       </div>
+      <div class="nav-item" data-tab="checkpoints">
+        <span class="nav-icon">💾</span><span>Checkpoints</span>
+      </div>
       <div class="nav-item" data-tab="templates">
         <span class="nav-icon">📋</span><span>Templates</span>
         <span class="nav-badge">New</span>
@@ -395,12 +400,12 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
           <div style="flex:1">
             <div style="font-weight:600;font-size:14px;">Server Offline</div>
             <div style="font-size:12px;color:var(--dim);margin-top:2px;">
-              Cannot connect to the MojoLlama API server.
-              Configure the server URL or start your server.
+              Cannot connect to <span class="text-code" id="offlineApiUrl"></span>.<br>
+              Start your MojoLlama server, then configure the URL below.
             </div>
           </div>
           <button class="btn btn-primary" onclick="showServerSettings()" style="flex-shrink:0;">
-            Configure Server
+            ⚙ Configure
           </button>
           <button class="btn btn-dim" onclick="refreshAll()" style="flex-shrink:0;">
             Retry
@@ -841,6 +846,74 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
             </div>
           </div>
         </div>
+        <!-- GGUF → Safetensors -->
+        <div class="row mb-8 gap-16">
+          <div style="flex:1">
+            <div class="card">
+              <div class="card-header"><h3><span class="icon">🔄</span> GGUF → Safetensors</h3></div>
+              <div class="row mb-8">
+                <div style="flex:2">
+                  <label>GGUF Model</label>
+                  <input type="text" id="stModel" placeholder="path/to/model.gguf">
+                </div>
+                <div style="flex:1">
+                  <label>Output Dir</label>
+                  <input type="text" id="stOutput" placeholder="model-safetensors/">
+                </div>
+                <div style="width:100px">
+                  <label>Dtype</label>
+                  <select id="stDtype">
+                    <option value="float16">float16</option>
+                    <option value="float32">float32</option>
+                    <option value="bfloat16">bfloat16</option>
+                  </select>
+                </div>
+                <div style="width:90px">
+                  <label>Shard</label>
+                  <select id="stShard">
+                    <option value="2GB">2GB</option>
+                    <option value="NO">None</option>
+                    <option value="5GB">5GB</option>
+                  </select>
+                </div>
+              </div>
+              <button class="btn btn-primary" onclick="startSafetensors()">🔄 Convert</button>
+            </div>
+          </div>
+        </div>
+        <!-- GGUF → ONNX -->
+        <div class="row mb-8 gap-16">
+          <div style="flex:1">
+            <div class="card">
+              <div class="card-header"><h3><span class="icon">🔷</span> GGUF → ONNX</h3></div>
+              <div class="row mb-8">
+                <div style="flex:2">
+                  <label>GGUF Model</label>
+                  <input type="text" id="onnxModel" placeholder="path/to/model.gguf">
+                </div>
+                <div style="flex:1">
+                  <label>Output Path</label>
+                  <input type="text" id="onnxOutput" placeholder="model.onnx">
+                </div>
+                <div style="width:90px">
+                  <label>Opset</label>
+                  <input type="number" id="onnxOpset" value="17" min="7" max="21">
+                </div>
+                <div style="width:110px">
+                  <label>Max Seq Len</label>
+                  <input type="number" id="onnxSeqLen" value="2048" min="64">
+                </div>
+              </div>
+              <button class="btn btn-primary" onclick="startOnnx()">🔷 Export ONNX</button>
+            </div>
+          </div>
+          <div style="flex:1">
+            <div class="card">
+              <div class="card-header"><h3><span class="icon">📜</span> Export Log (Safetensors/ONNX)</h3></div>
+              <div class="log" id="exportFormatLog" style="max-height:240px;font-size:11px">Ready for format conversion.</div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- ═══════════ BENCHMARK ═══════════ -->
@@ -1073,6 +1146,45 @@ input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16p
             <div class="card">
               <div class="card-header"><h3><span class="icon">📜</span> Merge Log</h3></div>
               <div class="log" id="mergeLog" style="max-height:420px">Ready. Select a base model and LoRA adapter to merge.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════════ CHECKPOINTS ═══════════ -->
+      <div class="panel" id="panel-checkpoints">
+        <div class="row mb-8 gap-16">
+          <div class="col-2">
+            <div class="card">
+              <div class="card-header"><h3><span class="icon">💾</span> Checkpoint Manager</h3></div>
+              <label>Checkpoint Directory</label>
+              <div class="input-group">
+                <input type="text" id="ckptDir" placeholder="checkpoints" value="checkpoints" style="flex:1">
+                <button class="btn btn-dim" onclick="listCheckpoints()">🔄 List</button>
+                <button class="btn btn-primary" onclick="saveCheckpoint()">💾 Save</button>
+              </div>
+              <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+                <button class="btn btn-danger btn-xs" onclick="deleteAllCheckpoints()">🗑 Clear All</button>
+                <span style="font-size:11px;color:var(--dim)">Saves current training state</span>
+              </div>
+            </div>
+            <div class="card" style="margin-top:8px">
+              <div class="card-header"><h3><span class="icon">▶️</span> Resume Training</h3></div>
+              <label>Base Model</label>
+              <input type="text" id="ckptResumeModel" placeholder="path/to/base-model.gguf">
+              <label>Checkpoint</label>
+              <select id="ckptResumeSelect">
+                <option value="">List checkpoints first...</option>
+              </select>
+              <label>Output Adapter</label>
+              <input type="text" id="ckptResumeOutput" placeholder="adapter.gguf">
+              <button class="btn btn-primary" id="ckptResumeBtn" onclick="resumeTraining()" disabled>▶️ Resume</button>
+            </div>
+          </div>
+          <div style="flex:1">
+            <div class="card">
+              <div class="card-header"><h3><span class="icon">📜</span> Checkpoint Log</h3></div>
+              <div class="log" id="ckptList" style="max-height:420px;font-size:11px">Open a checkpoint directory and click List.</div>
             </div>
           </div>
         </div>
@@ -1360,11 +1472,11 @@ const API = (() => {
   const params = new URLSearchParams(location.search);
   const apiParam = params.get('api');
   if (apiParam) { localStorage.setItem('mojollama_api_url', apiParam); return apiParam; }
-  // Same-origin: served directly from the API server on port 8080
-  if (location.port === '8080') return '';
+  // Same-origin: served directly from the API server on port 9000
+  if (location.port === '9000') return '';
   // For static sites (OneDev ~site, GitHub Pages, etc.) or any other origin,
-  // default to hostname:8080 for LAN setups. User can override via settings.
-  return `http://${location.hostname}:8080`;
+  // default to hostname:9000. Can override via settings. Edit mojollama.server --port to match.
+  return `http://${location.hostname}:9000`;
 })();
 
 const TEMPLATES = {
@@ -1403,7 +1515,7 @@ let benchHistory = [];
 // ─── Tab switching ──────────────────────────────────────────────
 const TAB_ICONS = { chat:'💬 Chat', train:'🎓 Train', dataset:'📊 Dataset', export:'📤 Export',
                     benchmark:'⚡ Benchmark', evaluate:'🎯 Evaluate', quantize:'🔮 Quantize',
-                    merge:'🔗 Merge', templates:'📋 Templates', hub:'🤗 HF Hub',
+                    merge:'🔗 Merge', checkpoints:'💾 Checkpoints', templates:'📋 Templates', hub:'🤗 HF Hub',
                     experiments:'🔬 Experiments', modelcards:'📇 Cards' };
 document.querySelectorAll('.nav-item').forEach(item => {
   item.addEventListener('click', () => {
@@ -1464,9 +1576,14 @@ async function loadBackend() {
     document.getElementById('statusDot').className = 'status-dot offline';
     document.getElementById('backendName').textContent = 'offline';
     document.getElementById('backendName').style.color = 'var(--red)';
-    // Show offline banner
+    document.getElementById('backendSpeed').textContent = '';
+    // Show offline banner with current API URL
     const banner = document.getElementById('offlineBanner');
-    if (banner) banner.style.display = 'block';
+    if (banner) {
+      const urlEl = document.getElementById('offlineApiUrl');
+      if (urlEl) urlEl.textContent = API;
+      banner.style.display = 'block';
+    }
   }
 }
 
@@ -1477,7 +1594,7 @@ async function loadModels() {
     // Store model metadata for auto-suggest
     window._modelData = {};
     models.forEach(m => { window._modelData[m.path || m.name] = m; });
-    const selects = ['chatModel','trainModel','benchModel','dsModel','mergeBase','evalModel','quantModel','hubModelPath'];
+    const selects = ['chatModel','trainModel','benchModel','dsModel','mergeBase','evalModel','quantModel','hubModelPath','ckptResumeModel'];
     selects.forEach(id => {
       const sel = document.getElementById(id);
       if (!sel) return;
@@ -1562,18 +1679,38 @@ function showServerSettings() {
   dialog.innerHTML = `
     <h3>⚙️ Server Settings</h3>
     <label>API Server URL</label>
-    <input id="settingsApiUrl" type="text" value="${API}" placeholder="http://hostname:8080" style="font-family:monospace;">
+    <input id="settingsApiUrl" type="text" value="${API}" placeholder="http://hostname:9000" style="font-family:monospace;width:100%;">
     <div style="font-size:12px;color:var(--dim);margin-bottom:12px;margin-top:-4px;">
       Enter the URL where your MojoLlama server is running.<br>
       The Studio fetches models and sends chat requests to this server.
     </div>
-    <div class="dialog-actions">
+    <div style="display:flex;gap:8px;margin-bottom:12px;" id="testResult"></div>
+    <div class="dialog-actions" style="display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn btn-dim" id="settingsTestBtn" style="flex:0;">🔍 Test Connection</button>
       <button class="btn btn-dim" onclick="this.closest('.dialog-overlay').remove()">Cancel</button>
       <button class="btn btn-primary" id="settingsSaveBtn">Save &amp; Reload</button>
     </div>
   `;
   overlay.appendChild(dialog);
   document.body.appendChild(overlay);
+  
+  document.getElementById('settingsTestBtn').addEventListener('click', async () => {
+    const url = document.getElementById('settingsApiUrl').value.trim();
+    const resultDiv = document.getElementById('testResult');
+    resultDiv.innerHTML = '<span class="text-dim">Testing...</span>';
+    try {
+      const resp = await fetch(url + '/api/backend', { signal: AbortSignal.timeout(5000) });
+      if (resp.ok) {
+        const data = await resp.json();
+        resultDiv.innerHTML = '<span class="text-green">✅ Connected — ' + (data.active || data.backend || 'server') + '</span>';
+      } else {
+        resultDiv.innerHTML = '<span class="text-red">❌ Server returned HTTP ' + resp.status + '</span>';
+      }
+    } catch(e) {
+      resultDiv.innerHTML = '<span class="text-red">❌ Cannot reach this URL — ' + e.message + '</span>';
+    }
+  });
+  
   document.getElementById('settingsSaveBtn').addEventListener('click', () => {
     const url = document.getElementById('settingsApiUrl').value.trim();
     if (url) { localStorage.setItem('mojollama_api_url', url); location.reload(); }
@@ -2929,6 +3066,167 @@ async function hubPushAdapter() {
     toast('Adapter upload complete!', 'success');
   } catch(e) { log.textContent += `\nError: ${e.message}`; toast('Upload failed', 'error'); }
   btn.disabled = false; btn.textContent = '⬆️ Push Adapter';
+}
+
+// ─── Safetensors Export ───
+async function startSafetensors() {
+  const model = document.getElementById('stModel').value;
+  const output = document.getElementById('stOutput').value || model.replace('.gguf', '-safetensors');
+  const dtype = document.getElementById('stDtype').value;
+  const shard = document.getElementById('stShard').value;
+  const log = document.getElementById('exportFormatLog');
+  if (!model) { toast('Enter a GGUF model path', 'error'); return; }
+  log.textContent = 'Starting safetensors conversion...\n';
+  try {
+    const resp = await fetch(`${API}/api/export/safetensors`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model_path: model, output_dir: output, dtype, shard_size: shard})
+    });
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const {done, value} = await reader.read(); if (done) break;
+      log.textContent += decoder.decode(value, {stream: true});
+      log.scrollTop = log.scrollHeight;
+    }
+    toast('Safetensors conversion complete!', 'success');
+  } catch(e) { log.textContent += `\nError: ${e.message}`; toast('Conversion failed', 'error'); }
+}
+
+// ─── ONNX Export ───
+async function startOnnx() {
+  const model = document.getElementById('onnxModel').value;
+  const output = document.getElementById('onnxOutput').value || model.replace('.gguf', '.onnx');
+  const opset = parseInt(document.getElementById('onnxOpset').value) || 17;
+  const seqLen = parseInt(document.getElementById('onnxSeqLen').value) || 2048;
+  const log = document.getElementById('exportFormatLog');
+  if (!model) { toast('Enter a GGUF model path', 'error'); return; }
+  log.textContent = 'Starting ONNX export...\n';
+  try {
+    const resp = await fetch(`${API}/api/export/onnx`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model_path: model, output_path: output, opset, max_seq_len: seqLen})
+    });
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const {done, value} = await reader.read(); if (done) break;
+      log.textContent += decoder.decode(value, {stream: true});
+      log.scrollTop = log.scrollHeight;
+    }
+    toast('ONNX export complete!', 'success');
+  } catch(e) { log.textContent += `\nError: ${e.message}`; toast('Export failed', 'error'); }
+}
+
+// ─── Checkpoint Management ───
+async function listCheckpoints() {
+  const dir = document.getElementById('ckptDir').value || 'checkpoints';
+  const log = document.getElementById('ckptList');
+  const sel = document.getElementById('ckptResumeSelect');
+  log.textContent = 'Loading checkpoints...\n';
+  try {
+    const data = await apiFetch(`/api/checkpoint?dir=${encodeURIComponent(dir)}`);
+    const ckpts = data.checkpoints || [];
+    if (ckpts.length === 0) {
+      log.innerHTML = '<span class="text-dim">No checkpoints found.</span>';
+      sel.innerHTML = '<option value="">No checkpoints</option>';
+      document.getElementById('ckptResumeBtn').disabled = true;
+      return;
+    }
+    sel.innerHTML = '<option value="">Select checkpoint...</option>';
+    log.innerHTML = `<div style="margin-bottom:12px;font-size:14px">Found <strong>${ckpts.length}</strong> checkpoint(s):</div>`;
+    ckpts.forEach((c, i) => {
+      const err = c.error ? '❌' : '✅';
+      const loss = c.loss !== undefined ? c.loss.toFixed(4) : '?';
+      const step = c.step !== undefined ? `Step ${c.step}` : '?';
+      const epoch = c.epoch !== undefined ? `Epoch ${c.epoch}` : '';
+      const ts = c.timestamp ? new Date(c.timestamp*1000).toLocaleString() : '';
+      log.innerHTML += `<div style="padding:6px 0;border-bottom:1px solid var(--border)">${err} <strong>${c.name || c.path}</strong><br>`
+        + `<span style="font-size:11px;color:var(--dim)">${step} | ${epoch} | Loss: ${loss} | ${ts}</span></div>`;
+
+      const opt = document.createElement('option');
+      opt.value = c.path || c.name;
+      opt.textContent = `${c.name} — step ${step}, loss ${loss}`;
+      sel.appendChild(opt);
+    });
+    sel.onchange = () => {
+      document.getElementById('ckptResumeBtn').disabled = !sel.value;
+    };
+    toast(`Loaded ${ckpts.length} checkpoint(s)`, 'success');
+  } catch(e) {
+    log.textContent = `Error loading checkpoints: ${e.message}`;
+    toast('Failed to load checkpoints', 'error');
+  }
+}
+
+async function saveCheckpoint() {
+  const dir = document.getElementById('ckptDir').value || 'checkpoints';
+  const log = document.getElementById('ckptList');
+  log.textContent = 'Saving checkpoint...\n';
+  try {
+    const resp = await fetch(`${API}/api/checkpoint/save`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({dir})
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      log.textContent += `Error: ${err}`;
+      toast('Checkpoint save failed', 'error');
+      return;
+    }
+    log.textContent += 'Checkpoint saved!\n';
+    toast('Checkpoint saved!', 'success');
+    listCheckpoints();
+  } catch(e) {
+    log.textContent += `Error: ${e.message}`;
+    toast('Checkpoint save failed', 'error');
+  }
+}
+
+async function deleteAllCheckpoints() {
+  if (!confirm('Delete all checkpoint data? This cannot be undone.')) return;
+  const dir = document.getElementById('ckptDir').value || 'checkpoints';
+  const log = document.getElementById('ckptList');
+  log.textContent = 'Deleting checkpoints...\n';
+  try {
+    const resp = await fetch(`${API}/api/checkpoint/clear`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({dir})
+    });
+    log.textContent += 'Checkpoints cleared.\n';
+    toast('Checkpoints cleared', 'info');
+    listCheckpoints();
+  } catch(e) {
+    log.textContent += `Error: ${e.message}`;
+    toast('Failed to clear checkpoints', 'error');
+  }
+}
+
+async function resumeTraining() {
+  const model = document.getElementById('ckptResumeModel').value;
+  const ckpt = document.getElementById('ckptResumeSelect').value;
+  const output = document.getElementById('ckptResumeOutput').value || 'adapter.gguf';
+  if (!model || !ckpt) { toast('Select model and checkpoint', 'error'); return; }
+  const log = document.getElementById('ckptList');
+  log.textContent = `Starting resume training from ${ckpt}...\n`;
+  try {
+    const resp = await fetch(`${API}/api/train`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        model: model,
+        method: 'lora',
+        resume_from: ckpt,
+        output: output,
+      })
+    });
+    const result = await resp.json();
+    const trainingId = result.job_id || 'unknown';
+    log.textContent += `Training job started: ${trainingId}\n`;
+    toast(`Resume training started (job ${trainingId})`, 'success');
+  } catch(e) {
+    log.textContent += `Error: ${e.message}`;
+    toast('Failed to start resume training', 'error');
+  }
 }
 
 // ─── Init ───

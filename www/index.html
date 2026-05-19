@@ -133,7 +133,7 @@ footer a { color: var(--accent); }
     </ol>
     <p style="margin-top:8px">
       🔗 <strong>Direct access</strong> (no config needed):
-      <code><span id="directUrl">http://hostname:8080/studio.html</span></code>
+      <code><span id="directUrl">http://hostname:9000/studio.html</span></code>
     </p>
   </div>
   <div class="connect-card" id="serverDetails" style="display:none;">
@@ -225,7 +225,7 @@ footer a { color: var(--accent); }
   const dot = document.getElementById('statusDot');
   const label = document.getElementById('statusLabel');
   const stored = localStorage.getItem('mojollama_api_url');
-  const baseUrl = stored || `http://${location.hostname}:8080`;
+  const baseUrl = stored || `http://${location.hostname}:9000`;
   try {
     const resp = await fetch(`${baseUrl}/health`, { signal: AbortSignal.timeout(3000) });
     const data = await resp.json();
@@ -254,7 +254,7 @@ function showServerInfo() {
   details.scrollIntoView({ behavior: 'smooth' });
 }
 
-document.getElementById('directUrl').textContent = `${location.protocol}//${location.hostname}:8080/studio.html`;
+document.getElementById('directUrl').textContent = `${location.protocol}//${location.hostname}:9000/studio.html`;
 </script>
 </body>
 </html>

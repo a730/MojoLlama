@@ -11,7 +11,7 @@ SSE streaming, CORS, and studio endpoints are all built in.
 
 Usage:
     python3 server.py
-    python3 server.py --model /path/to/model.gguf --port 8080
+    python3 server.py --model /path/to/model.gguf --port 9000
 """
 
 import os
@@ -75,7 +75,7 @@ def _get_llama_conn():
     except queue.Empty:
         pass
     if conn is None:
-        llama_port = backend.backend.port if hasattr(backend.backend, 'port') else 8081
+        llama_port = backend.backend.port if hasattr(backend.backend, 'port') else 9001
         conn = http.client.HTTPConnection("127.0.0.1", llama_port, timeout=120)
     conn._pool_age = time.time()
     return conn
@@ -752,7 +752,8 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
         elif path == "/api/checkpoint":
             try:
                 from mojollama.exporter import TrainingCheckpoint
-                checkpoints = TrainingCheckpoint.list_checkpoints(str(WORK_DIR))
+                ckpt_dir = query.get("dir", [None])[0] or str(WORK_DIR)
+                checkpoints = TrainingCheckpoint.list_checkpoints(str(ckpt_dir))
                 self._send_json({"checkpoints": checkpoints, "count": len(checkpoints)})
             except Exception as e:
                 self._send_error(f"Failed to list checkpoints: {e}")
@@ -1468,7 +1469,7 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
 
             if eval_type in BENCHMARK_TYPES or (eval_type == "benchmark" and benchmarks):
                 # ── Benchmark evaluation mode ──
-                llama_port = backend.backend.port if hasattr(backend, 'backend') and hasattr(backend.backend, 'port') else 8081
+                llama_port = backend.backend.port if hasattr(backend, 'backend') and hasattr(backend.backend, 'port') else 9001
                 backend_url = f"http://127.0.0.1:{llama_port}"
 
                 # Ensure llama.cpp server is running
@@ -1601,10 +1602,19 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
             max_seq_length = body.get("max_seq_length", 512)
             seed = body.get("seed", 42)
             save_steps = body.get("save_steps", 0)
+            resume_from = body.get("resume_from", "")
+            checkpoint_dir = body.get("checkpoint_dir", "")
+            is_resume = bool(resume_from)
 
-            if not model or not data:
-                self._send_error("'model' and 'data' fields are required")
-                return
+            if is_resume:
+                if not model:
+                    self._send_error("'model' field is required even for resume")
+                    return
+                # data is optional for resume (checkpoint has config)
+            else:
+                if not model or not data:
+                    self._send_error("'model' and 'data' fields are required")
+                    return
 
             # Resolve model path
             model_path = None
@@ -1618,12 +1628,19 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
                 self._send_error(f"Model not found: {model}")
                 return
 
+            # Resolve data path (skip for resume — checkpoint has config)
             data_path = data
-            if not os.path.exists(data_path):
-                data_path = str(Path(WORK_DIR) / data)
-            if not os.path.exists(data_path):
-                self._send_error(f"Data not found: {data}")
-                return
+            if data_path:
+                if not os.path.exists(data_path):
+                    data_path = str(Path(WORK_DIR) / data)
+                if not os.path.exists(data_path):
+                    self._send_error(f"Data not found: {data}")
+                    return
+            elif not is_resume:
+                data_path = str(Path(WORK_DIR))
+                if not os.path.exists(data_path) and not os.path.isabs(data_path):
+                    self._send_error(f"Data not found: {data}")
+                    return
 
             # Build method-specific kwargs
             kwargs = {}
@@ -1699,6 +1716,8 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
                 "max_seq_length": max_seq_length,
                 "seed": seed,
                 "save_steps": save_steps,
+                "resume_from": resume_from,
+                "checkpoint_dir": checkpoint_dir,
                 **kwargs,
             }
 
@@ -1905,6 +1924,24 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_error(f"Failed to save checkpoint: {e}")
 
+        # ── Studio API: /api/checkpoint/clear ────────────────────
+        elif path == "/api/checkpoint/clear":
+            try:
+                import shutil
+                ckpt_dir = body.get("dir", "checkpoints")
+                if os.path.exists(ckpt_dir):
+                    for item in os.listdir(ckpt_dir):
+                        item_path = os.path.join(ckpt_dir, item)
+                        if os.path.isdir(item_path):
+                            shutil.rmtree(item_path)
+                        else:
+                            os.remove(item_path)
+                    self._send_json({"success": True, "message": f"Cleared checkpoints in {ckpt_dir}"})
+                else:
+                    self._send_json({"success": True, "message": f"No checkpoints directory: {ckpt_dir}"})
+            except Exception as e:
+                self._send_error(f"Failed to clear checkpoints: {e}")
+
         # ── Not found (do_POST) ─────────────────────────────────────────
         else:
             self._send_error("not found", 404)
@@ -2045,14 +2082,14 @@ def main():
 
     parser = argparse.ArgumentParser(description="MojoLlama inference server")
     parser.add_argument("--model", help="Path to GGUF model file", default="")
-    parser.add_argument("--port", type=int, help="HTTP server port", default=8080)
-    parser.add_argument("--llama-port", type=int, help="llama.cpp backend port", default=8081)
+    parser.add_argument("--port", type=int, help="HTTP server port", default=9000)
+    parser.add_argument("--llama-port", type=int, help="llama.cpp backend port", default=9001)
     parser.add_argument("--max-workers", type=int, help="Max concurrent requests", default=32)
     parser.add_argument("--queue-size", type=int, help="Max queued requests", default=128)
     parser.add_argument("--weight", help="Path to MAX weight file", default="")
     args, _ = parser.parse_known_args()
 
-    port = args.port or int(os.environ.get("PORT", 8080))
+    port = args.port or int(os.environ.get("PORT", 9000))
     model_path = args.model or os.environ.get("MODEL_PATH", "")
     weight_path = args.weight or os.environ.get("WEIGHT_PATH", "")
     llama_port = args.llama_port

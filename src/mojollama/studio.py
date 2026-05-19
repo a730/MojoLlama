@@ -8,7 +8,7 @@ Usage:
   mojollama-studio dataset auto-label --model model.gguf --input prompts.jsonl
   mojollama-studio merge --base model.gguf --lora adapter.gguf --output merged.gguf
   mojollama-studio chat --model model.gguf
-  mojollama-studio serve --model model.gguf --port 8080
+  mojollama-studio serve --model model.gguf --port 9000
   mojollama-studio benchmark --model model.gguf
 """
 
@@ -797,7 +797,7 @@ def _cmd_dataset_autolabel(args):
     """Auto-generate completions with confidence scoring."""
     input_file = args.input or input("Input dataset (JSONL): ").strip()
     output = args.output or input_file.replace(".jsonl", "-labeled.jsonl")
-    api_base = args.api_base or "http://127.0.0.1:8080"
+    api_base = args.api_base or "http://127.0.0.1:9000"
     model = args.model or ""
     max_tokens = args.max_tokens or 256
     temperature = args.temperature or 0.7
@@ -887,7 +887,7 @@ def cmd_chat(args):
     print()
     
     model = args.model or input("Model path (GGUF): ").strip()
-    port = args.port or 8080
+    port = args.port or 9000
     
     if not os.path.exists(model):
         print(f"❌ Model not found: {model}")
@@ -948,7 +948,7 @@ def cmd_serve(args):
     print("[Serve] MojoLlama API server")
     print()
     
-    os.environ["PORT"] = str(args.port or 8080)
+    os.environ["PORT"] = str(args.port or 9000)
     if args.model:
         os.environ["MODEL_PATH"] = args.model
     
@@ -1544,8 +1544,8 @@ def main():
     p_data.add_argument("--input", help="Input file")
     p_data.add_argument("--format", help="Dataset format (alpaca/sharegpt/openai/preference/jsonl)")
     p_data.add_argument("--model", help="Model name for auto-label")
-    p_data.add_argument("--port", type=int, default=8080, help="Server port for auto-label API")
-    p_data.add_argument("--api-base", help="API base URL for auto-label (default: http://127.0.0.1:8080)")
+    p_data.add_argument("--port", type=int, default=9000, help="Server port for auto-label API")
+    p_data.add_argument("--api-base", help="API base URL for auto-label (default: http://127.0.0.1:9000)")
     p_data.add_argument("--max-tokens", type=int, default=256, help="Max tokens for auto-label")
     p_data.add_argument("--temperature", type=float, default=0.7, help="Temperature for auto-label")
     p_data.add_argument("--count", type=int, default=10, help="Number of samples to show (view/stream)")
@@ -1598,11 +1598,11 @@ def main():
     # chat
     p_chat = sub.add_parser("chat", help="Interactive chat")
     p_chat.add_argument("--model", help="Model path (GGUF)")
-    p_chat.add_argument("--port", type=int, default=8080)
-    
+    p_chat.add_argument("--port", type=int, default=9000)
+
     # serve
     p_serve = sub.add_parser("serve", help="Start API server")
-    p_serve.add_argument("--port", type=int, default=8080)
+    p_serve.add_argument("--port", type=int, default=9000)
     p_serve.add_argument("--model", help="Model path override")
     
     # benchmark
