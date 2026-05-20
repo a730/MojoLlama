@@ -483,8 +483,7 @@ class MAXBackend(BackendBase):
         })
         from max.entrypoints import LLM as MAX_LLM
         self._llm = MAX_LLM(pipeline_config=config)
-        )
-
+    
     # ═══════════════════════════════════════════════════════════════════════
     #  Inference
     # ═══════════════════════════════════════════════════════════════════════
