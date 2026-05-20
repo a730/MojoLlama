@@ -5,11 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MojoLlama Documentation</title>
 <meta name="description" content="MojoLlama documentation: CLI reference, Docker guide, model support, troubleshooting, and API reference.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" type="image/png" sizes="32x32" href="../favicon.png">
+<link rel="icon" type="image/png" sizes="48x48" href="../favicon-48.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 /* ══════════════════════════════════════════════
-   MojoLlama Documentation — IBM Docs Inspired
+   MojoLlama Docs — Carbon-Inspired Design System
+   Token-driven theming, progressive layering,
+   accessible focus, half-step interactions
    ══════════════════════════════════════════════ */
 :root {
   --mojo: #6C3CE1; --mojo-dark: #5228B5; --mojo-light: #8B5CF6;
@@ -17,30 +23,88 @@
   --bg: #FFFFFF; --bg-alt: #F4F4F4;
   --sidebar-bg: #F4F4F4; --sidebar-hover: #E8E8E8;
   --sidebar-active: #FFFFFF;
-  --border: #E0E0E0; --border-light: #EDEDED;
+  --border: #E0E0E0; --border-light: #EDEDED; --border-strong: #C6C6C6;
   --text: #161616; --text-secondary: #525252;
   --text-tertiary: #8D8D8D; --text-inverse: #FFFFFF;
   --success: #198038; --warning: #DA1E28; --info: #0043CE;
-  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --layer-hover: rgba(0,0,0,0.04);
+  --focus: #6C3CE1; --focus-inverse: #FFFFFF;
+  --font-body: 'Inter', 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'IBM Plex Mono', 'Fira Code', monospace;
   --radius-sm: 4px; --radius: 8px; --radius-lg: 12px;
   --transition: 0.15s cubic-bezier(0.2, 0, 0, 1);
+  --transition-slow: 0.4s cubic-bezier(0.2, 0, 0, 1);
   --toc-width: 280px;
 }
+
+/* ── Dark theme — IBM Carbon g90/g100 progressive layering ── */
+[data-theme="dark"] {
+  --bg: #161616; --bg-alt: #1C1C1C;
+  --sidebar-bg: #1C1C1C; --sidebar-hover: #262626;
+  --sidebar-active: #262626;
+  --border: #393939; --border-light: #333333; --border-strong: #525252;
+  --text: #F4F4F4; --text-secondary: #C6C6C6;
+  --text-tertiary: #8D8D8D; --text-inverse: #161616;
+  --layer-hover: rgba(255,255,255,0.05);
+  --mojo-subtle: rgba(139,92,246,0.15);
+  --success: #42BE65; --warning: #FA4D56; --info: #5AA8FF;
+  --focus: #8B5CF6; --focus-inverse: #161616;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161616; --bg-alt: #1C1C1C;
+    --sidebar-bg: #1C1C1C; --sidebar-hover: #262626;
+    --sidebar-active: #262626;
+    --border: #393939; --border-light: #333333; --border-strong: #525252;
+    --text: #F4F4F4; --text-secondary: #C6C6C6;
+    --text-tertiary: #8D8D8D; --text-inverse: #161616;
+    --layer-hover: rgba(255,255,255,0.05);
+    --mojo-subtle: rgba(139,92,246,0.15);
+    --success: #42BE65; --warning: #FA4D56; --info: #5AA8FF;
+    --focus: #8B5CF6; --focus-inverse: #161616;
+  }
+}
+
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 html { scroll-behavior: smooth; -webkit-font-smoothing: antialiased; }
-body { font-family: var(--font-body); background: var(--bg); color: var(--text); line-height: 1.6; font-size: 16px; }
+body { font-family: var(--font-body); background: var(--bg); color: var(--text); line-height: 1.6; font-size: 16px; transition: background var(--transition-slow), color var(--transition-slow); }
 ::selection { background: var(--mojo-subtle); }
 a { color: var(--mojo); text-decoration: none; transition: color var(--transition); }
 a:hover { color: var(--mojo-dark); }
 img { max-width: 100%; }
 
+/* ── Skip to content ── */
+.skip-link {
+  position: absolute; top: -100%; left: 16px;
+  background: var(--mojo); color: #fff;
+  padding: 8px 16px; border-radius: var(--radius-sm);
+  font-size: 0.875rem; font-weight: 600; z-index: 9999;
+  transition: top 0.2s;
+}
+.skip-link:focus { top: 8px; color: #fff; }
+
+/* ── Focus visible ── */
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+[data-theme="dark"] :focus-visible { outline-color: var(--focus); }
+
+/* ── Scroll reveal ── */
+.reveal {
+  opacity: 0; transform: translateY(16px);
+  transition: opacity 0.5s cubic-bezier(0.2,0,0,1), transform 0.5s cubic-bezier(0.2,0,0,1);
+}
+.reveal.visible { opacity: 1; transform: translateY(0); }
+
 /* ─── Top Nav ─── */
 nav.top {
   position: fixed; top: 0; width: 100%; z-index: 100;
-  background: rgba(255,255,255,0.95); backdrop-filter: blur(12px);
+  background: rgba(255,255,255,0.92); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border-light); height: 48px;
   display: flex; align-items: center; padding: 0 24px;
+  transition: background var(--transition-slow), border-color var(--transition-slow);
+}
+[data-theme="dark"] nav.top,
+:root:not([data-theme="light"]) nav.top {
+  background: rgba(22,22,22,0.92);
 }
 nav.top .inner { max-width: 1440px; margin: 0 auto; width: 100%; display: flex; align-items: center; gap: 16px; }
 nav.top .logo { font-weight: 700; font-size: 1rem; color: var(--text); }
@@ -50,6 +114,32 @@ nav.top .breadcrumb { color: var(--text-tertiary); font-size: 0.82rem; display: 
 nav.top .breadcrumb a { color: var(--text-tertiary); }
 nav.top .breadcrumb a:hover { color: var(--mojo); }
 nav.top .breadcrumb .sep { color: var(--border); }
+nav.top .nav-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+
+/* Theme toggle (same as index.html) */
+.theme-toggle {
+  background: none; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+  cursor: pointer; color: var(--text-secondary); transition: all var(--transition); padding: 0;
+}
+.theme-toggle:hover { border-color: var(--mojo); color: var(--mojo); background: var(--mojo-subtle); }
+.theme-toggle svg { width: 16px; height: 16px; }
+.theme-toggle .icon-moon { display: block; }
+.theme-toggle .icon-sun { display: none; }
+[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
+[data-theme="dark"] .theme-toggle .icon-sun { display: block; }
+:root:not([data-theme="light"]) .theme-toggle .icon-moon { display: none; }
+:root:not([data-theme="light"]) .theme-toggle .icon-sun { display: block; }
+
+/* Mobile sidebar toggle */
+.sidebar-toggle {
+  display: none; background: none; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); width: 32px; height: 32px;
+  align-items: center; justify-content: center; cursor: pointer;
+  color: var(--text-secondary); transition: all var(--transition); padding: 0;
+}
+.sidebar-toggle:hover { border-color: var(--mojo); color: var(--mojo); }
+.sidebar-toggle svg { width: 18px; height: 18px; }
 
 /* ─── Layout ─── */
 .wrap { display: flex; max-width: 1440px; margin: 48px auto 0; min-height: calc(100vh - 48px); }
@@ -57,10 +147,10 @@ nav.top .breadcrumb .sep { color: var(--border); }
 /* ─── Sidebar TOC ─── */
 .toc {
   width: var(--toc-width); flex-shrink: 0;
-  background: var(--sidebar-bg);
-  border-right: 1px solid var(--border);
+  background: var(--sidebar-bg); border-right: 1px solid var(--border);
   padding: 0; overflow-y: auto;
   position: sticky; top: 48px; height: calc(100vh - 48px);
+  transition: background var(--transition-slow), border-color var(--transition-slow);
 }
 .toc-header { padding: 20px 20px 12px; border-bottom: 1px solid var(--border); }
 .toc-header h3 { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-tertiary); margin-bottom: 8px; }
@@ -69,17 +159,17 @@ nav.top .breadcrumb .sep { color: var(--border); }
   width: 100%; padding: 6px 10px; font-size: 0.8rem;
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg); font-family: inherit; color: var(--text);
-  outline: none; transition: border-color var(--transition);
+  outline: none; transition: border-color var(--transition), background var(--transition-slow);
 }
 .toc-search input:focus { border-color: var(--mojo); }
+.toc-search input::placeholder { color: var(--text-tertiary); }
 .toc-nav { padding: 8px 0; }
 .toc-section { margin-bottom: 2px; }
 .toc-section-title {
   display: flex; align-items: center; justify-content: space-between;
   padding: 8px 20px 8px 16px; cursor: pointer;
   font-size: 0.82rem; font-weight: 600; color: var(--text);
-  transition: background var(--transition);
-  border-left: 3px solid transparent;
+  transition: background var(--transition); border-left: 3px solid transparent;
 }
 .toc-section-title:hover { background: var(--sidebar-hover); }
 .toc-section-title.active { background: var(--sidebar-active); border-left-color: var(--mojo); color: var(--mojo); }
@@ -90,8 +180,7 @@ nav.top .breadcrumb .sep { color: var(--border); }
 .toc-item {
   display: block; padding: 5px 20px 5px 28px;
   font-size: 0.8rem; color: var(--text-secondary);
-  border-left: 2px solid transparent;
-  transition: all var(--transition);
+  border-left: 2px solid transparent; transition: all var(--transition);
 }
 .toc-item:hover { color: var(--text); background: var(--sidebar-hover); }
 .toc-item.active { color: var(--mojo); border-left-color: var(--mojo); background: var(--sidebar-active); font-weight: 500; }
@@ -115,16 +204,35 @@ nav.top .breadcrumb .sep { color: var(--border); }
   font-family: var(--font-mono); font-size: 0.85em;
   background: var(--mojo-subtle); padding: 2px 6px; border-radius: var(--radius-sm); color: var(--mojo-dark);
 }
+[data-theme="dark"] .content code,
+:root:not([data-theme="light"]) .content code { color: var(--mojo-light); }
 .content pre {
   background: #1a1a2e; color: #e0e0e0; border-radius: var(--radius-lg);
   padding: 16px 20px; font-family: var(--font-mono); font-size: 0.82rem;
   line-height: 1.7; overflow-x: auto; margin: 16px 0; max-width: 720px;
+  position: relative;
 }
+[data-theme="dark"] .content pre,
+:root:not([data-theme="light"]) .content pre { background: #0D0D14; }
 .content pre .prompt { color: var(--mojo-light); }
 .content pre .comment { color: #6f6f8f; font-style: italic; }
 .content pre .cmd { color: #e0e0f0; }
 .content pre .result { color: #6fcf97; }
 .content pre .err { color: #f85149; }
+
+/* Copy button */
+.copy-btn {
+  position: absolute; top: 8px; right: 8px;
+  background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.15);
+  border-radius: var(--radius-sm); padding: 4px 10px;
+  font-size: 0.7rem; font-family: var(--font-body);
+  color: rgba(255,255,255,0.6); cursor: pointer;
+  transition: all var(--transition); opacity: 0;
+}
+.content pre:hover .copy-btn { opacity: 1; }
+.copy-btn:hover { background: rgba(255,255,255,0.2); color: #fff; }
+.copy-btn.copied { color: #6fcf97; border-color: #6fcf97; opacity: 1; }
+
 .content kbd {
   background: var(--bg-alt); border: 1px solid var(--border);
   border-radius: 3px; padding: 1px 5px; font-size: 0.78rem;
@@ -150,13 +258,13 @@ nav.top .breadcrumb .sep { color: var(--border); }
 .content td:first-child { font-family: var(--font-mono); font-size: 0.82rem; color: var(--text); white-space: nowrap; }
 .content td strong { color: var(--text); }
 
-/* Topics grid (IBM docs style) */
+/* Topics grid */
 .topics-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin: 24px 0; }
 .topic-card {
   padding: 20px; border: 1px solid var(--border-light); border-radius: var(--radius);
-  transition: all var(--transition); cursor: pointer;
+  transition: all var(--transition); cursor: pointer; background: var(--bg);
 }
-.topic-card:hover { border-color: var(--mojo); box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
+.topic-card:hover { border-color: var(--mojo); box-shadow: 0 2px 8px rgba(0,0,0,0.04); background: var(--layer-hover); }
 .topic-card h3 { font-size: 1rem; font-weight: 600; margin: 0 0 6px; }
 .topic-card h3 a { color: var(--text); }
 .topic-card h3 a:hover { color: var(--mojo); }
@@ -173,19 +281,55 @@ nav.top .breadcrumb .sep { color: var(--border); }
 /* ─── Footer ─── */
 .doc-footer { margin-top: 48px; padding-top: 24px; border-top: 1px solid var(--border-light); font-size: 0.82rem; color: var(--text-tertiary); display: flex; justify-content: space-between; }
 
+/* ─── Back-to-top ── */
+.back-to-top {
+  position: fixed; bottom: 24px; right: 24px;
+  width: 40px; height: 40px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; opacity: 0; transform: translateY(10px);
+  transition: opacity var(--transition), transform var(--transition), background var(--transition);
+  z-index: 50; color: var(--text-secondary); box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+.back-to-top.visible { opacity: 1; transform: translateY(0); }
+.back-to-top:hover { background: var(--mojo); color: #fff; border-color: var(--mojo); }
+
+/* ─── Mobile sidebar overlay ─── */
+.sidebar-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.4); z-index: 199;
+  opacity: 0; transition: opacity 0.3s;
+}
+.sidebar-overlay.open { opacity: 1; }
+
 /* ─── Responsive ─── */
-@media (max-width: 1100px) { .toc { width: 220px; } .content { padding: 24px 32px 60px; } }
+@media (max-width: 1100px) {
+  .toc { width: 220px; }
+  .content { padding: 24px 32px 60px; }
+}
 @media (max-width: 768px) {
-  .toc { display: none; }
+  .sidebar-toggle { display: flex; }
+  .toc {
+    position: fixed; top: 48px; left: 0; bottom: 0;
+    width: 280px; z-index: 200;
+    transform: translateX(-100%);
+    transition: transform 0.3s cubic-bezier(0.2,0,0,1);
+  }
+  .toc.open { transform: translateX(0); }
   .content { padding: 20px 20px 48px; max-width: 100%; }
   .topics-grid { grid-template-columns: 1fr; }
   .content h1 { font-size: 1.6rem; }
   .content h2 { font-size: 1.25rem; }
+  .content pre { max-width: 100%; }
 }
-@media (max-width: 480px) { .content { padding: 16px; } }
+@media (max-width: 480px) {
+  .content { padding: 16px; }
+}
 </style>
 </head>
 <body>
+
+<a href="#main-content" class="skip-link">Skip to content</a>
 
 <nav class="top">
 <div class="inner">
@@ -195,12 +339,23 @@ nav.top .breadcrumb .sep { color: var(--border); }
     <span class="sep">/</span>
     <span>Documentation</span>
   </div>
+  <div class="nav-actions">
+    <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
+    <button class="theme-toggle" id="themeToggle" aria-label="Toggle dark mode">
+      <svg class="icon-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      <svg class="icon-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+    </button>
+  </div>
 </div>
 </nav>
 
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+
 <div class="wrap">
 <!-- ═══ SIDEBAR TOC ═══ -->
-<aside class="toc">
+<aside class="toc" id="tocSidebar">
   <div class="toc-header">
     <h3>Documentation</h3>
     <div class="toc-search">
@@ -212,7 +367,7 @@ nav.top .breadcrumb .sep { color: var(--border); }
     <div class="toc-section">
       <div class="toc-section-title open" onclick="toggleSection(this)">
         <span>Getting Started</span>
-        <span class="arrow">▶</span>
+        <span class="arrow">&#9654;</span>
       </div>
       <div class="toc-items open">
         <a href="#install" class="toc-item">Installation</a>
@@ -224,7 +379,7 @@ nav.top .breadcrumb .sep { color: var(--border); }
     <div class="toc-section">
       <div class="toc-section-title open" onclick="toggleSection(this)">
         <span>CLI Reference</span>
-        <span class="arrow">▶</span>
+        <span class="arrow">&#9654;</span>
       </div>
       <div class="toc-items open">
         <a href="#cli-chat" class="toc-item">chat</a>
@@ -240,7 +395,7 @@ nav.top .breadcrumb .sep { color: var(--border); }
     <div class="toc-section">
       <div class="toc-section-title open" onclick="toggleSection(this)">
         <span>Docker Guide</span>
-        <span class="arrow">▶</span>
+        <span class="arrow">&#9654;</span>
       </div>
       <div class="toc-items open">
         <a href="#docker-quickstart" class="toc-item">Quick start</a>
@@ -254,7 +409,7 @@ nav.top .breadcrumb .sep { color: var(--border); }
     <div class="toc-section">
       <div class="toc-section-title open" onclick="toggleSection(this)">
         <span>Model Support</span>
-        <span class="arrow">▶</span>
+        <span class="arrow">&#9654;</span>
       </div>
       <div class="toc-items open">
         <a href="#arch-support" class="toc-item">Architecture table</a>
@@ -266,7 +421,7 @@ nav.top .breadcrumb .sep { color: var(--border); }
     <div class="toc-section">
       <div class="toc-section-title open" onclick="toggleSection(this)">
         <span>Troubleshooting</span>
-        <span class="arrow">▶</span>
+        <span class="arrow">&#9654;</span>
       </div>
       <div class="toc-items open">
         <a href="#ts-cli" class="toc-item">CLI issues</a>
@@ -280,7 +435,7 @@ nav.top .breadcrumb .sep { color: var(--border); }
     <div class="toc-section">
       <div class="toc-section-title" onclick="toggleSection(this)">
         <span>API Reference</span>
-        <span class="arrow">▶</span>
+        <span class="arrow">&#9654;</span>
       </div>
       <div class="toc-items">
         <a href="#api-openai" class="toc-item">OpenAI-compatible API</a>
@@ -293,7 +448,7 @@ nav.top .breadcrumb .sep { color: var(--border); }
 </aside>
 
 <!-- ═══ CONTENT ═══ -->
-<main class="content">
+<main class="content" id="main-content">
 
 <h1>MojoLlama Documentation <span class="tagline">CLI reference, Docker guide, model support, and troubleshooting</span></h1>
 <p class="last-updated">v0.5.0 — Last updated May 2026</p>
@@ -301,32 +456,32 @@ nav.top .breadcrumb .sep { color: var(--border); }
 <!-- ═══════ RECOMMENDED TOPICS ═══════ -->
 <h2>Recommended topics</h2>
 <div class="topics-grid">
-  <div class="topic-card">
+  <div class="topic-card reveal">
     <span class="tag tag-guide">Quick start</span>
     <h3><a href="#quickstart">Get started in 5 minutes</a></h3>
     <p>Install MojoLlama, download a model, and run your first inference.</p>
   </div>
-  <div class="topic-card">
+  <div class="topic-card reveal">
     <span class="tag tag-cli">CLI</span>
     <h3><a href="#cli-serve">Serving models via API</a></h3>
     <p>Start an OpenAI-compatible API server with concurrent users.</p>
   </div>
-  <div class="topic-card">
+  <div class="topic-card reveal">
     <span class="tag tag-docker">Docker</span>
     <h3><a href="#docker-quickstart">Docker deployment guide</a></h3>
     <p>Run MojoLlama in containers with auto-tune and model download.</p>
   </div>
-  <div class="topic-card">
+  <div class="topic-card reveal">
     <span class="tag tag-models">Models</span>
     <h3><a href="#arch-support">Architecture support</a></h3>
     <p>Supported model architectures and quantization types.</p>
   </div>
-  <div class="topic-card">
+  <div class="topic-card reveal">
     <span class="tag tag-cli">CLI</span>
     <h3><a href="#cli-bench">Benchmark models</a></h3>
     <p>Measure tok/s throughput and compare against llama.cpp.</p>
   </div>
-  <div class="topic-card">
+  <div class="topic-card reveal">
     <span class="tag tag-guide">Guide</span>
     <h3><a href="#ts-cli">Troubleshooting</a></h3>
     <p>Common issues and solutions for CLI and Docker.</p>
@@ -338,22 +493,22 @@ nav.top .breadcrumb .sep { color: var(--border); }
 
 <h3>Installation</h3>
 <p>Clone the repository and install with pip in development mode:</p>
-<pre><span class="prompt">$</span> <span class="cmd">git clone https://github.com/a730/MojoLlama.git</span>
+<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><span class="prompt">$</span> <span class="cmd">git clone https://github.com/a730/MojoLlama.git</span>
 <span class="prompt">$</span> <span class="cmd">cd MojoLlama/src && pip install -e .</span></pre>
 <p>Verify the installation:</p>
-<pre><span class="prompt">$</span> <span class="cmd">mojollama --version</span>
+<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><span class="prompt">$</span> <span class="cmd">mojollama --version</span>
 <span class="result">mojollama v0.5.0</span></pre>
 
 <h3 id="quickstart">Quick start</h3>
 <p>Download a GGUF model and run chat inference:</p>
-<pre><span class="prompt">$</span> <span class="cmd">mojollama convert --hf meta-llama/Llama-3.2-1B --outtype q4_0</span>
+<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><span class="prompt">$</span> <span class="cmd">mojollama convert --hf meta-llama/Llama-3.2-1B --outtype q4_0</span>
 <span class="prompt">$</span> <span class="cmd">mojollama chat -m model.gguf</span></pre>
 <p>Or use an existing GGUF file:</p>
-<pre><span class="prompt">$</span> <span class="cmd">mojollama chat -m /path/to/model.gguf</span></pre>
+<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><span class="prompt">$</span> <span class="cmd">mojollama chat -m /path/to/model.gguf</span></pre>
 
 <h3 id="cli-overview">CLI overview</h3>
 <p>The <code>mojollama</code> command provides a unified interface for all operations:</p>
-<pre><span class="prompt">$</span> <span class="cmd">mojollama</span>
+<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><span class="prompt">$</span> <span class="cmd">mojollama</span>
 <span class="comment">  chat       Interactive chat with a model</span>
 <span class="comment">  serve      OpenAI-compatible API server</span>
 <span class="comment">  bench      Run benchmarks (tok/s, latency)</span>
@@ -371,8 +526,9 @@ nav.top .breadcrumb .sep { color: var(--border); }
 
 <h3><code>mojollama chat</code></h3>
 <p>Interactive chat session with a loaded model.</p>
-<pre><span class="prompt">$</span> <span class="cmd">mojollama chat -m model.gguf</span>
+<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><span class="prompt">$</span> <span class="cmd">mojollama chat -m model.gguf</span>
 <span class="prompt">$</span> <span class="cmd">mojollama chat -m model.gguf --temp 0.8 --max-tokens 2048</span></pre>
+<div class="table-wrap">
 <table>
   <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
   <tr><td>-m, --model</td><td>—</td><td>Path to GGUF model file (required)</td></tr>
@@ -381,12 +537,14 @@ nav.top .breadcrumb .sep { color: var(--border); }
   <tr><td>--top-p</td><td>0.9</td><td>Top-p nucleus sampling</td></tr>
   <tr><td>--repeat-penalty</td><td>1.1</td><td>Repeat penalty</td></tr>
 </table>
+</div>
 
 <h3 id="cli-serve"><code>mojollama serve</code></h3>
 <p>Start an OpenAI-compatible API server for concurrent requests.</p>
-<pre><span class="prompt">$</span> <span class="cmd">mojollama serve -m model.gguf -p 8080</span>
+<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><span class="prompt">$</span> <span class="cmd">mojollama serve -m model.gguf -p 8080</span>
 <span class="prompt">$</span> <span class="cmd">mojollama serve -m model.gguf -p 8080 --workers 4</span>
 <span class="result">✓ Server started on http://0.0.0.0:8080</span></pre>
+<div class="table-wrap">
 <table>
   <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
   <tr><td>-p, --port</td><td>8080</td><td>Server port</td></tr>
@@ -394,32 +552,33 @@ nav.top .breadcrumb .sep { color: var(--border); }
   <tr><td>--batch-size</td><td>1</td><td>Batch size for inference</td></tr>
   <tr><td>--cors-allow-origin</td><td>—</td><td>CORS origin (use * for all)</td></tr>
 </table>
+</div>
 
 <h3 id="cli-bench"><code>mojollama bench</code></h3>
 <p>Measure throughput and compare against llama.cpp.</p>
-<pre><span class="prompt">$</span> <span class="cmd">mojollama bench -m model.gguf</span>
+<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><span class="prompt">$</span> <span class="cmd">mojollama bench -m model.gguf</span>
 <span class="prompt">$</span> <span class="cmd">mojollama bench -m model.gguf --prompt-tokens 512 --gen-tokens 128</span>
 <span class="prompt">$</span> <span class="cmd">mojollama bench -m model.gguf --compare</span>  <span class="comment"># vs llama.cpp</span></pre>
 
 <h3 id="cli-convert"><code>mojollama convert</code></h3>
 <p>Convert a HuggingFace model to GGUF format.</p>
-<pre><span class="prompt">$</span> <span class="cmd">mojollama convert --hf meta-llama/Llama-3.2-1B --outtype q4_0</span>
+<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><span class="prompt">$</span> <span class="cmd">mojollama convert --hf meta-llama/Llama-3.2-1B --outtype q4_0</span>
 <span class="prompt">$</span> <span class="cmd">mojollama convert --hf mistralai/Mistral-7B --outtype q4_k_m</span></pre>
 
 <h3 id="cli-quantize"><code>mojollama quantize</code></h3>
 <p>Quantize an existing GGUF model to a different precision.</p>
-<pre><span class="prompt">$</span> <span class="cmd">mojollama quantize -m model.gguf -t q4_k_m</span>
+<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><span class="prompt">$</span> <span class="cmd">mojollama quantize -m model.gguf -t q4_k_m</span>
 <span class="prompt">$</span> <span class="cmd">mojollama quantize -m model.gguf -t q8_0 -o model-q8.gguf</span></pre>
 
 <h3 id="cli-autotune"><code>mojollama autotune</code></h3>
 <p>Sweep hardware parameters to find optimal settings for your model:</p>
-<pre><span class="prompt">$</span> <span class="cmd">mojollama autotune -m model.gguf</span>
+<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><span class="prompt">$</span> <span class="cmd">mojollama autotune -m model.gguf</span>
 <span class="prompt">$</span> <span class="cmd">mojollama autotune -m model.gguf --quick</span>
 <span class="result">✓ Optimal: threads=32, batch=512, concurrency=10</span></pre>
 
 <h3 id="cli-info"><code>mojollama info</code></h3>
 <p>Display model metadata, architecture, and tensor layout without running inference.</p>
-<pre><span class="prompt">$</span> <span class="cmd">mojollama info -m model.gguf</span>
+<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><span class="prompt">$</span> <span class="cmd">mojollama info -m model.gguf</span>
 <span class="comment">  Architecture:    llama</span>
 <span class="comment">  Parameters:      7.24B</span>
 <span class="comment">  Quantization:    Q4_K_M</span>
@@ -431,11 +590,12 @@ nav.top .breadcrumb .sep { color: var(--border); }
 
 <h3>Quick start</h3>
 <p>Pull the latest image and run with a model:</p>
-<pre><span class="prompt">$</span> <span class="cmd">docker pull ghcr.io/a730/mojollama:latest</span>
+<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><span class="prompt">$</span> <span class="cmd">docker pull ghcr.io/a730/mojollama:latest</span>
 <span class="prompt">$</span> <span class="cmd">docker run -e MODEL=/models/model.gguf -v /path/to/model.gguf:/models/model.gguf \</span>
   <span class="cmd">ghcr.io/a730/mojollama:latest mojollama chat</span></pre>
 
 <h3 id="docker-profiles">Docker Compose profiles</h3>
+<div class="table-wrap">
 <table>
   <tr><th>Profile</th><th>Command</th><th>Description</th></tr>
   <tr><td>mojollama</td><td><code>docker compose --profile mojollama up</code></td><td>API server</td></tr>
@@ -445,8 +605,10 @@ nav.top .breadcrumb .sep { color: var(--border); }
   <tr><td>autotune</td><td><code>docker compose --profile autotune up</code></td><td>Hardware auto-tune</td></tr>
   <tr><td>llama-cpp</td><td><code>docker compose --profile llama-cpp up</code></td><td>llama.cpp fallback</td></tr>
 </table>
+</div>
 
 <h3 id="docker-env">Environment variables</h3>
+<div class="table-wrap">
 <table>
   <tr><th>Variable</th><th>Default</th><th>Description</th></tr>
   <tr><td><code>MODEL</code></td><td><code>/models/model.gguf</code></td><td>Path to the GGUF model file</td></tr>
@@ -457,10 +619,11 @@ nav.top .breadcrumb .sep { color: var(--border); }
   <tr><td><code>HF_FILE</code></td><td>—</td><td>GGUF filename in the HF repo</td></tr>
   <tr><td><code>HF_TOKEN</code></td><td>—</td><td>HuggingFace token for gated models</td></tr>
 </table>
+</div>
 
 <h3 id="docker-models">Model auto-download</h3>
 <p>The entrypoint script downloads models from HuggingFace on first run. Set <code>HF_REPO</code> and <code>HF_FILE</code> to auto-download:</p>
-<pre><span class="prompt">$</span> <span class="cmd">docker run -e HF_REPO=QuantFactory/Meta-Llama-3-8B-GGUF \</span>
+<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><span class="prompt">$</span> <span class="cmd">docker run -e HF_REPO=QuantFactory/Meta-Llama-3-8B-GGUF \</span>
   <span class="cmd">-e HF_FILE=Meta-Llama-3-8B.Q4_K_M.gguf \</span>
   <span class="cmd">-e MODEL=/models/Meta-Llama-3-8B.Q4_K_M.gguf \</span>
   <span class="cmd">ghcr.io/a730/mojollama:latest mojollama chat</span></pre>
@@ -479,7 +642,7 @@ nav.top .breadcrumb .sep { color: var(--border); }
   <tr><th>Architecture</th><th>Status</th><th>Notable features</th></tr>
   <tr><td>Llama 2/3/4, Mistral</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>Dense, GQA, SwiGLU, RoPE</td></tr>
   <tr><td>Qwen2, Qwen3</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>TNT embedding, partial rotary</td></tr>
-  <tr><td>GPT-OSS</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>MoE 32 experts, bias attention — 2.26× vs llama.cpp</td></tr>
+  <tr><td>GPT-OSS</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>MoE 32 experts, bias attention — 2.26x vs llama.cpp</td></tr>
   <tr><td>Qwen3 MoE</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>128 experts top-8, shared expert, SwiGLU</td></tr>
   <tr><td>Qwen3.6-35B</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>Hybrid SSM+Attention, MXFP4, 256 experts</td></tr>
   <tr><td>Gemma 4</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>Per-layer proj, GeGLU, sliding window, softcapping</td></tr>
@@ -492,6 +655,7 @@ nav.top .breadcrumb .sep { color: var(--border); }
 </div>
 
 <h3 id="quant-types">Quantization types</h3>
+<div class="table-wrap">
 <table>
   <tr><th>Type</th><th>Bits</th><th>Description</th></tr>
   <tr><td>Q4_0</td><td>4</td><td>4-bit, no K-quant (fast, compact)</td></tr>
@@ -501,12 +665,13 @@ nav.top .breadcrumb .sep { color: var(--border); }
   <tr><td>Q8_0</td><td>8</td><td>8-bit (accurate)</td></tr>
   <tr><td>MXFP4</td><td>4</td><td>4-bit MXFP4 (expert weights)</td></tr>
 </table>
+</div>
 
 <h3 id="model-tips">Model tips</h3>
 <ul>
   <li><strong>Small models (&lt;10B):</strong> Use 1 thread — OpenMP overhead kills performance on small matrix multiplications (e.g., ZAYA1-8B optimal at 1 thread)</li>
   <li><strong>Large models (&gt;10B):</strong> Use all physical cores (e.g., 32 threads on Threadripper 3970X)</li>
-  <li><strong>MoE models:</strong> MojoLlama excels here — GPT-OSS reaches 2.26× llama.cpp throughput</li>
+  <li><strong>MoE models:</strong> MojoLlama excels here — GPT-OSS reaches 2.26x llama.cpp throughput</li>
   <li><strong>Check architecture:</strong> Use <code>mojollama info -m model.gguf</code> to verify a model is recognized</li>
 </ul>
 
@@ -517,7 +682,7 @@ nav.top .breadcrumb .sep { color: var(--border); }
 
 <h4><code>mojollama</code> command not found</h4>
 <p>Install the package in your active Python environment:</p>
-<pre><span class="prompt">$</span> <span class="cmd">cd MojoLlama/src && pip install -e .</span>
+<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><span class="prompt">$</span> <span class="cmd">cd MojoLlama/src && pip install -e .</span>
 <span class="prompt">$</span> <span class="cmd">mojollama --version</span>
 <span class="result">mojollama v0.5.0</span></pre>
 
@@ -534,7 +699,7 @@ nav.top .breadcrumb .sep { color: var(--border); }
 </ul>
 
 <h4>Server fails to start (address in use)</h4>
-<pre><span class="prompt">$</span> <span class="cmd">lsof -i :8080</span>
+<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><span class="prompt">$</span> <span class="cmd">lsof -i :8080</span>
 <span class="prompt">$</span> <span class="cmd">kill -9 &lt;PID&gt;</span>
 <span class="prompt">$</span> <span class="cmd">mojollama serve -m model.gguf -p 8081</span>  <span class="comment"># use different port</span></pre>
 
@@ -550,7 +715,7 @@ nav.top .breadcrumb .sep { color: var(--border); }
 
 <h4>Container exits immediately</h4>
 <p>Check the logs:</p>
-<pre><span class="prompt">$</span> <span class="cmd">docker logs &lt;container-name&gt;</span>
+<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><span class="prompt">$</span> <span class="cmd">docker logs &lt;container-name&gt;</span>
 <span class="prompt">$</span> <span class="cmd">docker compose logs mojollama</span></pre>
 <p>Common causes:</p>
 <ul>
@@ -567,6 +732,7 @@ nav.top .breadcrumb .sep { color: var(--border); }
 </ul>
 
 <h3 id="ts-performance">Performance issues</h3>
+<div class="table-wrap">
 <table>
   <tr><th>Problem</th><th>Fix</th></tr>
   <tr><td>OMP_NUM_THREADS too low</td><td>Set to number of physical cores (e.g., 32 for Threadripper 3970X)</td></tr>
@@ -575,11 +741,12 @@ nav.top .breadcrumb .sep { color: var(--border); }
   <tr><td>CPU throttling</td><td>Monitor: <code>watch -n1 "grep MHz /proc/cpuinfo"</code></td></tr>
   <tr><td>Low throughput</td><td>Run <code>mojollama autotune --quick</code> for optimized config</td></tr>
 </table>
+</div>
 
 <h3 id="ts-models">Model loading</h3>
 <h4>"Unknown architecture" error</h4>
 <p>Check what architecture the model reports:</p>
-<pre><span class="prompt">$</span> <span class="cmd">mojollama info -m model.gguf | grep architecture</span></pre>
+<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><span class="prompt">$</span> <span class="cmd">mojollama info -m model.gguf | grep architecture</span></pre>
 <p>If unsupported, MojoLlama falls back to a generic forward pass — results may be incorrect. See the <a href="#arch-support">architecture table</a> for supported list.</p>
 
 <h3 id="ts-nan">NaN values in output</h3>
@@ -598,13 +765,13 @@ nav.top .breadcrumb .sep { color: var(--border); }
 <p>MojoLlama serves an OpenAI-compatible API at <code>/v1/chat/completions</code>, compatible with the OpenAI Python client, LangChain, and any OpenAI SDK.</p>
 
 <h4 id="api-chat">Chat Completions</h4>
-<pre><span class="prompt">$</span> <span class="cmd">curl http://localhost:8080/v1/chat/completions \</span>
+<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><span class="prompt">$</span> <span class="cmd">curl http://localhost:8080/v1/chat/completions \</span>
   <span class="cmd">-H "Content-Type: application/json" \</span>
   <span class="cmd">-d '{"model":"default","messages":[{"role":"user","content":"Hello!"}]}'</span>
 <span class="result">{"id":"chat-...","choices":[{"index":0,"message":{"role":"assistant","content":"Hi there!"},"finish_reason":"stop"}],"usage":...}</span></pre>
 
 <h4 id="api-models">Model listing</h4>
-<pre><span class="prompt">$</span> <span class="cmd">curl http://localhost:8080/v1/models</span>
+<pre><button class="copy-btn" onclick="copyCode(this)">Copy</button><span class="prompt">$</span> <span class="cmd">curl http://localhost:8080/v1/models</span>
 <span class="result">{"object":"list","data":[{"id":"default","object":"model","created":...,"owned_by":"mojollama"}]}</span></pre>
 
 <div class="callout note"><strong>Note:</strong> The API supports streaming (<code>stream: true</code>), temperature, top_p, max_tokens, frequency_penalty, and presence_penalty parameters.</div>
@@ -618,46 +785,164 @@ nav.top .breadcrumb .sep { color: var(--border); }
 </main>
 </div>
 
+<!-- Back to top -->
+<button class="back-to-top" id="backToTop" aria-label="Back to top">
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+</button>
+
 <script>
-function toggleSection(el) {
-  el.classList.toggle('open');
-  var items = el.nextElementSibling;
-  if (items) items.classList.toggle('open');
-}
-function filterToc(val) {
-  val = val.toLowerCase();
-  document.querySelectorAll('.toc-item').forEach(function(item) {
-    item.style.display = item.textContent.toLowerCase().includes(val) ? 'block' : 'none';
-  });
-  document.querySelectorAll('.toc-section-title').forEach(function(title) {
-    var hasVisible = false;
-    var items = title.nextElementSibling;
-    if (items) {
-      items.querySelectorAll('.toc-item').forEach(function(item) {
-        if (item.style.display !== 'none') hasVisible = true;
+(function() {
+  'use strict';
+
+  /* ── Theme toggle ── */
+  function initTheme() {
+    var toggle = document.getElementById('themeToggle');
+    var stored = localStorage.getItem('mojollama-theme');
+    if (stored) document.documentElement.setAttribute('data-theme', stored);
+    if (toggle) {
+      toggle.addEventListener('click', function() {
+        var current = document.documentElement.getAttribute('data-theme');
+        var next = current === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('mojollama-theme', next);
       });
     }
-    if (val && !hasVisible) title.style.display = 'none';
-    else title.style.display = 'flex';
+  }
+
+  /* ── Mobile sidebar toggle ── */
+  function initSidebar() {
+    var btn = document.getElementById('sidebarToggle');
+    var overlay = document.getElementById('sidebarOverlay');
+    var sidebar = document.getElementById('tocSidebar');
+    if (!btn || !overlay || !sidebar) return;
+
+    btn.addEventListener('click', function() {
+      sidebar.classList.toggle('open');
+      overlay.classList.toggle('open');
+      overlay.style.display = sidebar.classList.contains('open') ? 'block' : 'none';
+    });
+    overlay.addEventListener('click', function() {
+      sidebar.classList.remove('open');
+      overlay.classList.remove('open');
+      setTimeout(function() { overlay.style.display = 'none'; }, 300);
+    });
+    var links = sidebar.querySelectorAll('.toc-item');
+    for (var i = 0; i < links.length; i++) {
+      links[i].addEventListener('click', function() {
+        if (window.innerWidth <= 768) {
+          sidebar.classList.remove('open');
+          overlay.classList.remove('open');
+          setTimeout(function() { overlay.style.display = 'none'; }, 300);
+        }
+      });
+    }
+  }
+
+  /* ── Scroll reveal ── */
+  function initScrollReveal() {
+    var els = document.querySelectorAll('.reveal');
+    if (!('IntersectionObserver' in window)) {
+      for (var i = 0; i < els.length; i++) els[i].classList.add('visible');
+      return;
+    }
+    var observer = new IntersectionObserver(function(entries) {
+      for (var i = 0; i < entries.length; i++) {
+        if (entries[i].isIntersecting) {
+          entries[i].target.classList.add('visible');
+          observer.unobserve(entries[i].target);
+        }
+      }
+    }, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+    for (var i = 0; i < els.length; i++) observer.observe(els[i]);
+  }
+
+  /* ── Back to top ── */
+  function initBackToTop() {
+    var btn = document.getElementById('backToTop');
+    if (!btn) return;
+    window.addEventListener('scroll', function() {
+      btn.classList.toggle('visible', window.scrollY > 400);
+    }, { passive: true });
+    btn.addEventListener('click', function() {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  }
+
+  /* ── Copy code buttons ── */
+  window.copyCode = function(btn) {
+    var pre = btn.parentElement;
+    var text = pre.textContent || pre.innerText;
+    text = text.replace(/^Copy$/m, '').trim();
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).then(function() {
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(function() { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+      });
+    } else {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      btn.textContent = 'Copied!';
+      btn.classList.add('copied');
+      setTimeout(function() { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+    }
+  };
+
+  /* ── Sidebar TOC toggle (existing) ── */
+  window.toggleSection = function(el) {
+    el.classList.toggle('open');
+    var items = el.nextElementSibling;
+    if (items) items.classList.toggle('open');
+  };
+
+  window.filterToc = function(val) {
+    val = val.toLowerCase();
+    document.querySelectorAll('.toc-item').forEach(function(item) {
+      item.style.display = item.textContent.toLowerCase().includes(val) ? 'block' : 'none';
+    });
+    document.querySelectorAll('.toc-section-title').forEach(function(title) {
+      var hasVisible = false;
+      var items = title.nextElementSibling;
+      if (items) {
+        items.querySelectorAll('.toc-item').forEach(function(item) {
+          if (item.style.display !== 'none') hasVisible = true;
+        });
+      }
+      if (val && !hasVisible) title.style.display = 'none';
+      else title.style.display = 'flex';
+    });
+  };
+
+  /* ── Highlight active TOC item on scroll ── */
+  var tocItems = document.querySelectorAll('.toc-item');
+  var sections = [];
+  tocItems.forEach(function(a) {
+    var id = a.getAttribute('href').substring(1);
+    var el = document.getElementById(id);
+    if (el) sections.push({el: el, link: a});
   });
-}
-// Highlight active TOC item on scroll
-var tocItems = document.querySelectorAll('.toc-item');
-var sections = [];
-tocItems.forEach(function(a) {
-  var id = a.getAttribute('href').substring(1);
-  var el = document.getElementById(id);
-  if (el) sections.push({el: el, link: a});
-});
-window.addEventListener('scroll', function() {
-  var scrollY = window.scrollY + 120;
-  var active = null;
-  sections.forEach(function(s) {
-    if (s.el.offsetTop <= scrollY) active = s;
+  window.addEventListener('scroll', function() {
+    var scrollY = window.scrollY + 120;
+    var active = null;
+    sections.forEach(function(s) {
+      if (s.el.offsetTop <= scrollY) active = s;
+    });
+    tocItems.forEach(function(a) { a.classList.remove('active'); });
+    if (active) active.link.classList.add('active');
+  }, { passive: true });
+
+  /* ── Init ── */
+  document.addEventListener('DOMContentLoaded', function() {
+    initTheme();
+    initSidebar();
+    initScrollReveal();
+    initBackToTop();
   });
-  tocItems.forEach(function(a) { a.classList.remove('active'); });
-  if (active) active.link.classList.add('active');
-});
+})();
 </script>
 </body>
 </html>

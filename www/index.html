@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MojoLlama — CPU-First LLM Inference Platform</title>
 <meta name="description" content="MojoLlama: high-throughput CPU LLM inference. GGUF native, MoE-optimized, 50+ architectures. Open-source inference engine built in Mojo+MAX.">
+<meta name="color-scheme" content="light dark">
 <meta property="og:title" content="MojoLlama — CPU-First LLM Platform">
 <meta property="og:description" content="Inference, fine-tuning, quantization, and serving — engineered for CPU. Built in Mojo+MAX.">
 <meta property="og:url" content="https://git.bamse.cloud/a730/MojoLlama/~site/">
@@ -13,15 +14,18 @@
 <link rel="icon" type="image/png" sizes="48x48" href="favicon-48.png">
 <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 /* ══════════════════════════════════════════════
-   MojoLlama — Refined Brand System
-   Inspired by IBM Carbon Design System:
-   - Purposeful whitespace (8px grid)
-   - Clear typographic hierarchy
-   - Border-based card language
-   - Subtle depth, never decorative
+   MojoLlama — Carbon-Inspired Brand System
+   IBM Carbon Design System principles:
+   - Token-driven theming (light/dark + layers)
+   - Productive/expressive type scale
+   - Half-step hover, two-step active interactions
+   - Progressive dark layering (#161616 → #262626 → #393939)
+   - Purposeful 8px grid whitespace
+   - Sharp, authoritative card language
    ══════════════════════════════════════════════ */
 
 :root {
@@ -32,25 +36,32 @@
   --mojo-subtle: rgba(108, 60, 225, 0.08);
   --mojo-gradient: linear-gradient(135deg, #6C3CE1 0%, #22D3EE 100%);
 
-  /* Neutrals — IBM-inspired cool grey palette */
+  /* Light theme — IBM Carbon g10/g100 tokens */
   --bg: #FFFFFF;
   --bg-alt: #F4F4F4;
   --bg-card: #FFFFFF;
+  --bg-terminal: #1a1a2e;
   --border: #E0E0E0;
   --border-light: #EDEDED;
+  --border-strong: #C6C6C6;
 
   --text: #161616;
   --text-secondary: #525252;
   --text-tertiary: #8D8D8D;
   --text-inverse: #FFFFFF;
 
+  --layer-hover: rgba(0,0,0,0.04);
+  --layer-active: rgba(0,0,0,0.08);
+  --focus: #6C3CE1;
+  --focus-inverse: #FFFFFF;
+
   /* Feedback */
   --success: #198038;
   --warning: #DA1E28;
 
   /* Typography */
-  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --font-body: 'Inter', 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'IBM Plex Mono', 'Fira Code', monospace;
 
   /* Spacing (8px grid) */
   --space-2: 2px;
@@ -76,6 +87,56 @@
   --shadow: 0 4px 12px rgba(0,0,0,0.08);
   --shadow-lg: 0 12px 40px rgba(0,0,0,0.1);
   --transition: 0.2s cubic-bezier(0.2, 0, 0, 1);
+  --transition-slow: 0.4s cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* ── Dark theme — IBM Carbon g90/g100 tokens with progressive layering ── */
+[data-theme="dark"] {
+  --bg: #161616;
+  --bg-alt: #1C1C1C;
+  --bg-card: #262626;
+  --bg-terminal: #0D0D14;
+  --border: #393939;
+  --border-light: #333333;
+  --border-strong: #525252;
+
+  --text: #F4F4F4;
+  --text-secondary: #C6C6C6;
+  --text-tertiary: #8D8D8D;
+  --text-inverse: #161616;
+
+  --layer-hover: rgba(255,255,255,0.05);
+  --layer-active: rgba(255,255,255,0.1);
+  --mojo-subtle: rgba(139, 92, 246, 0.15);
+  --focus: #8B5CF6;
+  --focus-inverse: #161616;
+
+  --success: #42BE65;
+  --warning: #FA4D56;
+}
+
+/* ── System preference (no explicit toggle yet) ── */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161616;
+    --bg-alt: #1C1C1C;
+    --bg-card: #262626;
+    --bg-terminal: #0D0D14;
+    --border: #393939;
+    --border-light: #333333;
+    --border-strong: #525252;
+    --text: #F4F4F4;
+    --text-secondary: #C6C6C6;
+    --text-tertiary: #8D8D8D;
+    --text-inverse: #161616;
+    --layer-hover: rgba(255,255,255,0.05);
+    --layer-active: rgba(255,255,255,0.1);
+    --mojo-subtle: rgba(139, 92, 246, 0.15);
+    --focus: #8B5CF6;
+    --focus-inverse: #161616;
+    --success: #42BE65;
+    --warning: #FA4D56;
+  }
 }
 
 /* ── Reset ── */
@@ -87,11 +148,40 @@ body {
   color: var(--text);
   line-height: 1.5;
   font-size: 16px;
+  transition: background var(--transition-slow), color var(--transition-slow);
 }
 img { max-width: 100%; display: block; }
 a { color: var(--mojo); text-decoration: none; transition: color var(--transition); }
 a:hover { color: var(--mojo-dark); }
 ::selection { background: var(--mojo-subtle); }
+
+/* ── Skip to content (a11y) ── */
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: var(--space-16);
+  background: var(--mojo);
+  color: #fff;
+  padding: var(--space-8) var(--space-16);
+  border-radius: var(--radius-sm);
+  font-size: 0.875rem;
+  font-weight: 600;
+  z-index: 9999;
+  transition: top 0.2s;
+}
+.skip-link:focus {
+  top: var(--space-8);
+  color: #fff;
+}
+
+/* ── Focus visible (IBM Carbon style) ── */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+[data-theme="dark"] :focus-visible {
+  outline-color: var(--focus);
+}
 
 /* ── Typography ── */
 h1, h2, h3, h4 { font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; }
@@ -129,6 +219,17 @@ code {
   border: none;
 }
 
+/* ── Scroll reveal ── */
+.reveal {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 0.6s cubic-bezier(0.2, 0, 0, 1), transform 0.6s cubic-bezier(0.2, 0, 0, 1);
+}
+.reveal.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 /* ── Navigation ── */
 nav {
   position: fixed; top: 0; width: 100%; z-index: 100;
@@ -136,6 +237,11 @@ nav {
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border-light);
+  transition: background var(--transition-slow), border-color var(--transition-slow);
+}
+[data-theme="dark"] nav,
+:root:not([data-theme="light"]) nav {
+  background: rgba(22,22,22,0.92);
 }
 nav .container {
   display: flex; align-items: center; justify-content: space-between;
@@ -151,8 +257,20 @@ nav .nav-links a {
   font-size: 0.875rem; font-weight: 500;
   color: var(--text-secondary);
   transition: color var(--transition);
+  position: relative;
 }
-nav .nav-links a:hover { color: var(--text); text-decoration: none; }
+nav .nav-links a:hover,
+nav .nav-links a.active { color: var(--text); }
+nav .nav-links a.active::after {
+  content: '';
+  position: absolute;
+  bottom: -4px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--mojo);
+  border-radius: 1px;
+}
 nav .version-badge {
   font-size: 0.7rem; font-weight: 600;
   color: var(--text-tertiary);
@@ -169,6 +287,84 @@ nav .btn-nav {
 }
 nav .btn-nav:hover { opacity: 0.85; color: var(--text-inverse); text-decoration: none; }
 
+/* Theme toggle */
+.theme-toggle {
+  background: none; border: 1px solid var(--border);
+  border-radius: var(--radius);
+  width: 36px; height: 36px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: all var(--transition);
+  padding: 0;
+}
+.theme-toggle:hover {
+  border-color: var(--mojo);
+  color: var(--mojo);
+  background: var(--mojo-subtle);
+}
+.theme-toggle svg { width: 18px; height: 18px; }
+.theme-toggle .icon-moon { display: block; }
+.theme-toggle .icon-sun { display: none; }
+[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
+[data-theme="dark"] .theme-toggle .icon-sun { display: block; }
+:root:not([data-theme="light"]) .theme-toggle .icon-moon { display: none; }
+:root:not([data-theme="light"]) .theme-toggle .icon-sun { display: block; }
+
+/* Mobile hamburger */
+.nav-hamburger {
+  display: none;
+  background: none; border: none;
+  width: 36px; height: 36px;
+  align-items: center; justify-content: center;
+  cursor: pointer;
+  color: var(--text);
+  padding: 0;
+}
+.nav-hamburger svg { width: 24px; height: 24px; }
+.nav-hamburger .hamburger-close { display: none; }
+.nav-hamburger.open .hamburger-open { display: none; }
+.nav-hamburger.open .hamburger-close { display: block; }
+.mobile-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 99;
+  opacity: 0;
+  transition: opacity var(--transition);
+}
+.mobile-overlay.open { opacity: 1; }
+.mobile-drawer {
+  position: fixed;
+  top: 56px;
+  right: 0;
+  width: 280px;
+  height: calc(100vh - 56px);
+  background: var(--bg);
+  border-left: 1px solid var(--border-light);
+  z-index: 101;
+  padding: var(--space-24);
+  transform: translateX(100%);
+  transition: transform 0.3s cubic-bezier(0.2, 0, 0, 1);
+  overflow-y: auto;
+}
+.mobile-drawer.open { transform: translateX(0); }
+.mobile-drawer a {
+  display: block;
+  padding: var(--space-12) 0;
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-light);
+}
+.mobile-drawer a:hover { color: var(--text); }
+.mobile-drawer .drawer-version {
+  font-size: 0.7rem; font-weight: 600;
+  color: var(--text-tertiary);
+  margin-top: var(--space-16);
+}
+
 /* ── Hero — Split layout (60/40) ── */
 .hero {
   padding: var(--space-128) 0 var(--space-80);
@@ -184,6 +380,10 @@ nav .btn-nav:hover { opacity: 0.85; color: var(--text-inverse); text-decoration:
   background: radial-gradient(circle, rgba(108,60,225,0.06) 0%, transparent 60%);
   pointer-events: none;
 }
+[data-theme="dark"] .hero::before,
+:root:not([data-theme="light"]) .hero::before {
+  background: radial-gradient(circle, rgba(139,92,246,0.1) 0%, transparent 60%);
+}
 .hero .hero-split {
   display: grid;
   grid-template-columns: 1.2fr 1fr;
@@ -198,6 +398,10 @@ nav .btn-nav:hover { opacity: 0.85; color: var(--text-inverse); text-decoration:
   background: var(--mojo-subtle);
   color: var(--mojo-dark);
   margin-bottom: var(--space-24);
+}
+[data-theme="dark"] .hero-badge,
+:root:not([data-theme="light"]) .hero-badge {
+  color: var(--mojo-light);
 }
 .hero h1 { max-width: 700px; margin-bottom: var(--space-24); }
 .hero h1 .gradient {
@@ -216,7 +420,7 @@ nav .btn-nav:hover { opacity: 0.85; color: var(--text-inverse); text-decoration:
 
 /* Hero terminal visual */
 .hero-terminal {
-  background: #1a1a2e;
+  background: var(--bg-terminal);
   border-radius: var(--radius-lg);
   border: 1px solid rgba(255,255,255,0.08);
   box-shadow: var(--shadow-lg);
@@ -251,6 +455,17 @@ nav .btn-nav:hover { opacity: 0.85; color: var(--text-inverse); text-decoration:
 .hero-terminal .result { color: #6fcf97; }
 .hero-terminal .comment { color: #6f6f8f; font-style: italic; }
 
+/* Terminal typing animation */
+.term-line {
+  opacity: 0;
+  transform: translateY(4px);
+}
+.term-line.typed {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
 .btn {
   display: inline-flex; align-items: center; gap: var(--space-8);
   padding: 12px 28px; border-radius: var(--radius);
@@ -270,6 +485,18 @@ nav .btn-nav:hover { opacity: 0.85; color: var(--text-inverse); text-decoration:
 }
 .btn-secondary:hover {
   border-color: var(--text); transform: translateY(-1px); text-decoration: none;
+}
+[data-theme="dark"] .btn-primary {
+  background: var(--mojo-light);
+}
+[data-theme="dark"] .btn-primary:hover {
+  background: var(--mojo);
+}
+:root:not([data-theme="light"]) .btn-primary {
+  background: var(--mojo-light);
+}
+:root:not([data-theme="light"]) .btn-primary:hover {
+  background: var(--mojo);
 }
 
 /* ── Metrics Strip ── */
@@ -305,6 +532,7 @@ nav .btn-nav:hover { opacity: 0.85; color: var(--text-inverse); text-decoration:
 .feature-card:hover {
   border-color: var(--mojo);
   box-shadow: var(--shadow);
+  background: var(--layer-hover);
 }
 .feature-card .icon {
   width: 40px; height: 40px;
@@ -328,7 +556,7 @@ nav .btn-nav:hover { opacity: 0.85; color: var(--text-inverse); text-decoration:
 /* ── Release Notes / News ── */
 .release-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: var(--space-24);
   margin-top: var(--space-40);
 }
@@ -337,9 +565,12 @@ nav .btn-nav:hover { opacity: 0.85; color: var(--text-inverse); text-decoration:
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-light);
   background: var(--bg-card);
-  transition: border-color var(--transition);
+  transition: border-color var(--transition), box-shadow var(--transition);
 }
-.release-card:hover { border-color: var(--mojo); }
+.release-card:hover {
+  border-color: var(--mojo);
+  box-shadow: var(--shadow);
+}
 .release-card .release-tag {
   display: inline-block;
   padding: 2px 10px; border-radius: 100px;
@@ -349,8 +580,12 @@ nav .btn-nav:hover { opacity: 0.85; color: var(--text-inverse); text-decoration:
   margin-bottom: var(--space-12);
 }
 .release-tag-new { background: rgba(108,60,225,0.1); color: var(--mojo-dark); }
+[data-theme="dark"] .release-tag-new,
+:root:not([data-theme="light"]) .release-tag-new { color: var(--mojo-light); }
 .release-tag-perf { background: rgba(25,128,56,0.1); color: var(--success); }
 .release-tag-infra { background: rgba(0,120,200,0.1); color: #0066CC; }
+[data-theme="dark"] .release-tag-infra,
+:root:not([data-theme="light"]) .release-tag-infra { color: #5AA8FF; }
 .release-card h3 {
   font-size: 1rem; margin-bottom: var(--space-8);
 }
@@ -398,8 +633,10 @@ td .badge {
   font-size: 0.75rem; font-weight: 600;
 }
 .badge-green { background: rgba(25,128,56,0.1); color: var(--success); }
-.badge-orange { background: rgba(255,107,0,0.1); color: #DA1E28; }
+.badge-orange { background: rgba(255,107,0,0.1); color: var(--warning); }
 .badge-gold { background: rgba(255,215,0,0.12); color: #B8860B; }
+[data-theme="dark"] .badge-gold,
+:root:not([data-theme="light"]) .badge-gold { color: #FFD700; }
 
 /* ── CLI Code Block ── */
 .cli-box {
@@ -410,6 +647,10 @@ td .badge {
   font-size: 0.82rem;
   line-height: 2;
   overflow-x: auto;
+}
+[data-theme="dark"] .cli-box,
+:root:not([data-theme="light"]) .cli-box {
+  background: #0D0D14;
 }
 .cli-box .comment { color: #6F6F6F; font-style: italic; }
 .cli-box .prompt { color: var(--mojo-light); }
@@ -427,6 +668,11 @@ td .badge {
   border-radius: var(--radius-lg);
   background: var(--bg-card);
   border: 1px solid var(--border-light);
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+.step:hover {
+  border-color: var(--mojo);
+  box-shadow: var(--shadow);
 }
 .step-number {
   font-size: 0.75rem; font-weight: 700; color: var(--mojo);
@@ -537,7 +783,7 @@ td .badge {
 .roadmap-timeline .cards-container { min-height: 120px; }
 .roadmap-timeline .cards-container section {
   padding: 1.5em; border: 1px solid var(--border-light);
-  border-radius: var(--radius-lg); background: var(--bg);
+  border-radius: var(--radius-lg); background: var(--bg-card);
   box-shadow: 0 4px 16px rgba(0,0,0,.06);
 }
 .roadmap-timeline .cards-container section.active {
@@ -581,7 +827,9 @@ td .badge {
 }
 .tag-now { background: rgba(25,128,56,0.1); color: var(--success); }
 .tag-next { background: var(--mojo-subtle); color: var(--mojo-dark); }
-.tag-future { background: rgba(212,90,0,0.08); color: var(--orange); }
+[data-theme="dark"] .tag-next,
+:root:not([data-theme="light"]) .tag-next { color: var(--mojo-light); }
+.tag-future { background: rgba(212,90,0,0.08); color: #D45A00; }
 
 /* Timeline nav arrows */
 .roadmap-timeline .tl-arrow {
@@ -609,7 +857,7 @@ td .badge {
   text-align: center;
 }
 .cta-banner h2 {
-  color: var(--text-inverse);
+  color: #F4F4F4;
   margin-bottom: var(--space-12);
 }
 .cta-banner p {
@@ -619,18 +867,18 @@ td .badge {
 }
 .cta-banner .btn-primary {
   background: var(--mojo-light);
-  color: var(--text-inverse);
+  color: #fff;
 }
 .cta-banner .btn-primary:hover {
   background: var(--mojo);
   transform: translateY(-1px);
 }
 .cta-banner .btn-secondary {
-  color: var(--text-inverse);
+  color: #F4F4F4;
   border-color: rgba(255,255,255,0.2);
 }
 .cta-banner .btn-secondary:hover {
-  border-color: var(--text-inverse);
+  border-color: #F4F4F4;
 }
 
 /* ── Footer ── */
@@ -661,6 +909,34 @@ footer .copyright {
   font-size: 0.8rem; color: var(--text-tertiary);
 }
 
+/* ── Back-to-top ── */
+.back-to-top {
+  position: fixed;
+  bottom: var(--space-24);
+  right: var(--space-24);
+  width: 40px; height: 40px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity var(--transition), transform var(--transition), background var(--transition);
+  z-index: 50;
+  color: var(--text-secondary);
+  box-shadow: var(--shadow);
+}
+.back-to-top.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+.back-to-top:hover {
+  background: var(--mojo);
+  color: #fff;
+  border-color: var(--mojo);
+}
+
 /* ── Responsive ── */
 @media (max-width: 1100px) {
   .hero .hero-split { grid-template-columns: 1fr; }
@@ -682,9 +958,10 @@ footer .copyright {
   .release-grid { grid-template-columns: 1fr; }
   .metrics-strip { gap: var(--space-32); }
   footer .grid { grid-template-columns: 1fr 1fr; }
-  nav .nav-links a:not(.btn-nav):not(.version-badge) { display: none; }
   .hero-terminal { display: none; }
   .roadmap-timeline .cards-container section .items { grid-template-columns: 1fr; }
+  .nav-hamburger { display: flex; }
+  nav .nav-links { display: none; }
 }
 @media (max-width: 480px) {
   .container { padding: 0 var(--space-16); }
@@ -693,6 +970,8 @@ footer .copyright {
 </style>
 </head>
 <body>
+
+<a href="#main-content" class="skip-link">Skip to content</a>
 
 <nav>
 <div class="container">
@@ -704,18 +983,38 @@ footer .copyright {
     <a href="#benchmarks">Benchmarks</a>
     <a href="#quickstart">Quick start</a>
     <a href="docs/">Docs</a>
-    <a href="studio.html">Studio</a>
     <a href="studio.html">Chat</a>
+    <button class="theme-toggle" aria-label="Toggle dark mode" id="themeToggle">
+      <svg class="icon-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      <svg class="icon-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+    </button>
     <a href="https://github.com/a730/MojoLlama" class="btn-nav">GitHub →</a>
   </div>
+  <button class="nav-hamburger" id="hamburgerBtn" aria-label="Open menu">
+    <svg class="hamburger-open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    <svg class="hamburger-close" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+  </button>
 </div>
 </nav>
 
+<div class="mobile-overlay" id="mobileOverlay"></div>
+<div class="mobile-drawer" id="mobileDrawer">
+  <span class="drawer-version">v0.5.0</span>
+  <a href="#features">Features</a>
+  <a href="#models">Models</a>
+  <a href="#benchmarks">Benchmarks</a>
+  <a href="#quickstart">Quick start</a>
+  <a href="docs/">Docs</a>
+  <a href="studio.html">Chat</a>
+  <a href="studio.html">Studio</a>
+  <a href="https://github.com/a730/MojoLlama">GitHub</a>
+</div>
+
 <!-- ════ HERO — Split layout ════ -->
-<div class="hero">
+<div class="hero" id="main-content">
 <div class="container">
   <div class="hero-split">
-    <div class="hero-text">
+    <div class="hero-text reveal">
       <div class="hero-badge">v0.5.0 — Open source</div>
       <h1>CPU-first LLM inference,<br><span class="gradient">engineered for performance</span></h1>
       <p>MojoLlama is a high-throughput inference engine for CPU, built on <a href="https://www.modular.com/max" style="color:inherit;text-decoration:underline;text-decoration-color:var(--mojo-subtle);text-underline-offset:3px;">Modular MAX</a>. GGUF native, MoE-optimized, with support for 50+ architectures — from Llama to Gemma 4 to hybrid SSM models. GPU acceleration via MAX engine for supported models.</p>
@@ -724,7 +1023,7 @@ footer .copyright {
         <a href="studio.html" class="btn btn-secondary">Try chat</a>
       </div>
     </div>
-    <div class="hero-terminal">
+    <div class="hero-terminal reveal" id="heroTerminal">
       <div class="term-header">
         <span class="term-dot"></span>
         <span class="term-dot"></span>
@@ -732,27 +1031,30 @@ footer .copyright {
         <span class="term-title">mojollama — benchmark</span>
       </div>
       <div class="term-body">
-        <span class="comment"># GPT-OSS-20B @ 32 threads</span><br>
-        <span class="prompt">$</span> <span class="cmd">mojollama bench -m gpt-oss-20b.gguf</span><br><br>
-        <span class="result">✓ Model loaded</span><br>
-        <span class="comment">  architecture: gpt-oss (32 experts, top-2)</span><br>
-        <span class="comment">  quantization: Q4_K_M</span><br>
-        <span class="comment">  parameters:   20.0B</span><br><br>
-        <span class="result">✓ Running benchmark...</span><br>
-        <span class="comment">  prefill  512 tokens  ████████░░</span><br>
-        <span class="comment">  decode   128 tokens  ██████████</span><br><br>
-        <span style="color:#ffffff;">📊 Results</span><br>
-        <span class="result">  throughput:  62.6 tok/s</span><br>
-        <span class="result">  vs llama.cpp: 2.26× faster</span>
+        <div class="term-line" data-delay="0"><span class="comment"># GPT-OSS-20B @ 32 threads</span></div>
+        <div class="term-line" data-delay="200"><span class="prompt">$</span> <span class="cmd">mojollama bench -m gpt-oss-20b.gguf</span></div>
+        <div class="term-line" data-delay="600"><br></div>
+        <div class="term-line" data-delay="700"><span class="result">✓ Model loaded</span></div>
+        <div class="term-line" data-delay="900"><span class="comment">  architecture: gpt-oss (32 experts, top-2)</span></div>
+        <div class="term-line" data-delay="1050"><span class="comment">  quantization: Q4_K_M</span></div>
+        <div class="term-line" data-delay="1200"><span class="comment">  parameters:   20.0B</span></div>
+        <div class="term-line" data-delay="1400"><br></div>
+        <div class="term-line" data-delay="1500"><span class="result">✓ Running benchmark...</span></div>
+        <div class="term-line" data-delay="1800"><span class="comment">  prefill  512 tokens  ████████░░</span></div>
+        <div class="term-line" data-delay="2100"><span class="comment">  decode   128 tokens  ██████████</span></div>
+        <div class="term-line" data-delay="2400"><br></div>
+        <div class="term-line" data-delay="2600"><span style="color:#ffffff;">📊 Results</span></div>
+        <div class="term-line" data-delay="2800"><span class="result">  throughput:  62.6 tok/s</span></div>
+        <div class="term-line" data-delay="3000"><span class="result">  vs llama.cpp: 2.26× faster</span></div>
       </div>
     </div>
   </div>
-  <div class="metrics-strip">
-    <div class="metric metric-accent"><div class="metric-value">62.6</div><div class="metric-label">Peak tok/s</div></div>
-    <div class="metric metric-accent"><div class="metric-value">2.3×</div><div class="metric-label">vs llama.cpp</div></div>
-    <div class="metric"><div class="metric-value">50+</div><div class="metric-label">Architectures</div></div>
-    <div class="metric"><div class="metric-value">47</div><div class="metric-label">Concurrent tok/s</div></div>
-    <div class="metric"><div class="metric-value">Apache 2.0</div><div class="metric-label">License</div></div>
+  <div class="metrics-strip reveal">
+    <div class="metric metric-accent"><div class="metric-value" data-count="62.6">0</div><div class="metric-label">Peak tok/s</div></div>
+    <div class="metric metric-accent"><div class="metric-value" data-count="2.3" data-suffix="×">0</div><div class="metric-label">vs llama.cpp</div></div>
+    <div class="metric"><div class="metric-value" data-count="50" data-suffix="+">0</div><div class="metric-label">Architectures</div></div>
+    <div class="metric"><div class="metric-value" data-count="47">0</div><div class="metric-label">Concurrent tok/s</div></div>
+    <div class="metric"><div class="metric-value" data-text="Apache 2.0">0</div><div class="metric-label">License</div></div>
   </div>
 </div>
 </div>
@@ -760,48 +1062,48 @@ footer .copyright {
 <!-- ════ LATEST RELEASES ════ -->
 <div class="section section-alt">
 <div class="container">
-  <div class="section-label">What's new</div>
-  <h2>Latest releases</h2>
-  <p>New architecture support, performance breakthroughs, and infrastructure improvements shipped in recent releases.</p>
+  <div class="section-label reveal">What's new</div>
+  <h2 class="reveal">Latest releases</h2>
+  <p class="reveal">New architecture support, performance breakthroughs, and infrastructure improvements shipped in recent releases.</p>
   <div class="release-grid">
-    <div class="release-card">
+    <div class="release-card reveal">
       <span class="release-tag release-tag-new">Gemma 4</span>
       <h3>Gemma 4 E2B engine</h3>
       <p>Per-layer projections, GeGLU activation, sliding window attention (SWA=512), logit softcapping at 30.0, shared KV layers, and post-attention/FFW norms.</p>
       <div class="release-stat">13.2<span class="release-stat-label"> tok/s</span></div>
     </div>
-    <div class="release-card">
+    <div class="release-card reveal">
       <span class="release-tag release-tag-new">ZAYA1</span>
       <h3>ZAYA1-8B support</h3>
       <p>80 interleaved layers (ATTN+CCA+SSM / MoE+MoD), 16 experts top-1 routing, SwiGLU activation, partial RoPE, and residual scaling.</p>
       <div class="release-stat">8.3<span class="release-stat-label"> tok/s @ 1t</span></div>
     </div>
-    <div class="release-card">
+    <div class="release-card reveal">
       <span class="release-tag release-tag-perf">2.26×</span>
       <h3>GPT-OSS throughput record</h3>
       <p>C-accelerated fused MoE forward kernel with expert dispatch pushes GPT-OSS-20B to 62.6 tok/s — 2.26× faster than llama.cpp on identical hardware.</p>
     </div>
-    <div class="release-card">
+    <div class="release-card reveal">
       <span class="release-tag release-tag-perf">1.57×</span>
       <h3>Qwen3.6 hybrid SSM</h3>
       <p>Hybrid SSM+Attention layers with MXFP4 quantization. Concurrent serving at 47 tok/s aggregate across 10 workers, 92% of 200% scaling target.</p>
     </div>
-    <div class="release-card">
+    <div class="release-card reveal">
       <span class="release-tag release-tag-infra">Docker</span>
       <h3>Production Docker image</h3>
       <p>Multi-stage build on GHCR with hardware auto-tune, HF model download, and docker-compose profiles for API server, chat, bench, and fallback.</p>
     </div>
-    <div class="release-card">
+    <div class="release-card reveal">
       <span class="release-tag release-tag-infra">Pages</span>
       <h3>GitHub Pages site</h3>
       <p>Interactive chat UI, benchmark tables, architecture support matrix, and getting-started guide deployed to GitHub Pages on every push.</p>
     </div>
-    <div class="release-card">
+    <div class="release-card reveal">
       <span class="release-tag release-tag-infra">MAX</span>
       <h3>MAX GPU acceleration</h3>
       <p>GPU inference via Modular MAX engine — CUDA, ROCm, and Metal backends. Offload compute to GPU while keeping MojoLlama's CPU-optimized pipeline for unsupported layers.</p>
     </div>
-    <div class="release-card">
+    <div class="release-card reveal">
       <span class="release-tag release-tag-new">Studio</span>
       <h3>MojoLlama Studio dashboard</h3>
       <p>Full-featured dashboard with chat, training, benchmarking, auto-tune, quantization, dataset tools, and HuggingFace Hub integration.</p>
@@ -813,58 +1115,58 @@ footer .copyright {
 <!-- ════ FEATURES ════ -->
 <div class="section" id="features">
 <div class="container">
-  <div class="section-label">Features</div>
-  <h2>Built for local LLM workloads</h2>
-  <p style="margin-bottom:0;">From single-token inference to production concurrent serving — MojoLlama scales to your hardware.</p>
+  <div class="section-label reveal">Features</div>
+  <h2 class="reveal">Built for local LLM workloads</h2>
+  <p class="reveal" style="margin-bottom:0;">From single-token inference to production concurrent serving — MojoLlama scales to your hardware.</p>
   <div class="feature-grid">
-    <div class="feature-card">
+    <div class="feature-card reveal">
       <div class="icon">⚡</div>
       <h3>MoE-optimized engine</h3>
       <p>C-accelerated fused MoE forward kernel with expert dispatch. Up to 2.3× faster than llama.cpp on GPT-OSS and Qwen3 MoE models.</p>
       <span class="tag">2.3× vs llama.cpp</span>
     </div>
-    <div class="feature-card">
+    <div class="feature-card reveal">
       <div class="icon">🧬</div>
       <h3>Hybrid SSM + Attention</h3>
       <p>Qwen3.6-35B with Mamba-2 SSM + Attention hybrid layers, MXFP4 quantization, and concurrent serving at 47 tok/s aggregate.</p>
     </div>
-    <div class="feature-card">
+    <div class="feature-card reveal">
       <div class="icon">🧩</div>
       <h3>Gemma 4 &amp; ZAYA1</h3>
       <p>Gemma 4: per-layer projections, GeGLU activation, sliding window, logit softcapping. ZAYA1: interleaved ATTN/MoE+MoD with CCA.</p>
     </div>
-    <div class="feature-card">
+    <div class="feature-card reveal">
       <div class="icon">🔌</div>
       <h3>50+ architectures</h3>
       <p>Llama, Mistral, Qwen, GPT-OSS, DeepSeek V2/V3, DBRX, Mixtral, Gemma 4, ZAYA1, Falcon, Phi — pluggable forward passes for any GGUF model.</p>
     </div>
-    <div class="feature-card">
+    <div class="feature-card reveal">
       <div class="icon">🔋</div>
       <h3>GGUF native</h3>
       <p>All quantization types: Q4_0, Q4_K, Q5_K, Q6_K, Q8_0, MXFP4. Full K-quant support including Q5_K and MXFP4 for expert weights.</p>
     </div>
-    <div class="feature-card">
+    <div class="feature-card reveal">
       <div class="icon">🎮</div>
       <h3>MAX GPU engine</h3>
       <p>Built on <strong>Modular MAX</strong> — GPU acceleration via MAX engine for supported models. Leverages CUDA, ROCm, and Metal backends through MAX's hardware abstraction layer.</p>
       <span class="tag">GPU acceleration</span>
     </div>
-    <div class="feature-card">
+    <div class="feature-card reveal">
       <div class="icon">🔄</div>
       <h3>Concurrent serving</h3>
       <p>Multi-process server with configurable workers. Up to 47 tok/s aggregate on Qwen3.6-35B with 10 concurrent users.</p>
     </div>
-    <div class="feature-card">
+    <div class="feature-card reveal">
       <div class="icon">🔧</div>
       <h3>Hardware auto-tune</h3>
       <p>Sweeps OMP threads, batch sizes, concurrency levels, and engine settings. Caches per-model optimized config on first load.</p>
     </div>
-    <div class="feature-card">
+    <div class="feature-card reveal">
       <div class="icon">📦</div>
       <h3>Docker ready</h3>
       <p>Pre-built image on GHCR with auto-tune, HuggingFace model download, and docker-compose for API server, chat, and llama.cpp fallback.</p>
     </div>
-    <div class="feature-card">
+    <div class="feature-card reveal">
       <div class="icon">🖥️</div>
       <h3>Unified CLI</h3>
       <p>Single <code>mojollama</code> command for chat, serve, bench, quantize, convert, autotune, eval, train, export, and hub operations.</p>
@@ -876,10 +1178,10 @@ footer .copyright {
 <!-- ════ ARCHITECTURE SUPPORT ════ -->
 <div class="section section-alt" id="models">
 <div class="container">
-  <div class="section-label">Models</div>
-  <h2>Architecture support</h2>
-  <p style="margin-bottom:0;">Every model that loads in GGUF format is supported. Architecture-specific forward passes ensure correct computation.</p>
-  <div class="table-wrap">
+  <div class="section-label reveal">Models</div>
+  <h2 class="reveal">Architecture support</h2>
+  <p class="reveal" style="margin-bottom:0;">Every model that loads in GGUF format is supported. Architecture-specific forward passes ensure correct computation.</p>
+  <div class="table-wrap reveal">
   <table>
     <thead><tr><th>Architecture</th><th>Status</th><th>Notable features</th></tr></thead>
     <tbody>
@@ -903,10 +1205,10 @@ footer .copyright {
 <!-- ════ BENCHMARKS ════ -->
 <div class="section" id="benchmarks">
 <div class="container">
-  <div class="section-label">Performance</div>
-  <h2>Benchmarked on real hardware</h2>
-  <p style="margin-bottom:0;">AMD Threadripper 3970X (32C/64T, 251GB DDR4). 32 threads unless noted. All measurements in tok/s (higher is better).</p>
-  <div class="table-wrap">
+  <div class="section-label reveal">Performance</div>
+  <h2 class="reveal">Benchmarked on real hardware</h2>
+  <p class="reveal" style="margin-bottom:0;">AMD Threadripper 3970X (32C/64T, 251GB DDR4). 32 threads unless noted. All measurements in tok/s (higher is better).</p>
+  <div class="table-wrap reveal">
   <table>
     <thead><tr><th>Model</th><th>Engine</th><th>tok/s</th><th>vs llama.cpp</th></tr></thead>
     <tbody>
@@ -925,11 +1227,11 @@ footer .copyright {
 <!-- ════ GETTING STARTED ════ -->
 <div class="section section-alt" id="quickstart">
 <div class="container">
-  <div class="section-label">Getting started</div>
-  <h2>From zero to inference</h2>
-  <p style="margin-bottom:var(--space-8);">Install MojoLlama and run your first model in minutes.</p>
+  <div class="section-label reveal">Getting started</div>
+  <h2 class="reveal">From zero to inference</h2>
+  <p class="reveal" style="margin-bottom:var(--space-8);">Install MojoLlama and run your first model in minutes.</p>
   <div class="steps">
-    <div class="step">
+    <div class="step reveal">
       <div class="step-number">Step 01</div>
       <h3>Install</h3>
       <p style="font-size:0.88rem; margin-top:var(--space-12);">Clone the repository and install dependencies.</p>
@@ -938,7 +1240,7 @@ footer .copyright {
         <span class="prompt">$</span> <span class="cmd">cd MojoLlama/src && pip install -e .</span>
       </div>
     </div>
-    <div class="step">
+    <div class="step reveal">
       <div class="step-number">Step 02</div>
       <h3>Download a model</h3>
       <p style="font-size:0.88rem; margin-top:var(--space-12);">Get a GGUF model from HuggingFace or use your own.</p>
@@ -947,7 +1249,7 @@ footer .copyright {
         <span class="cmd">  --outtype q4_0</span>
       </div>
     </div>
-    <div class="step">
+    <div class="step reveal">
       <div class="step-number">Step 03</div>
       <h3>Run inference</h3>
       <p style="font-size:0.88rem; margin-top:var(--space-12);">Chat, serve, or benchmark — all from one command.</p>
@@ -966,11 +1268,11 @@ footer .copyright {
 <!-- ════ ROADMAP ════ -->
 <div class="section section-alt" id="roadmap">
 <div class="container">
-  <div class="section-label">Roadmap</div>
-  <h2>What's coming next</h2>
-  <p>Major milestones across engine, studio, GPU, and platform. Use the timeline dots or arrows to navigate.</p>
+  <div class="section-label reveal">Roadmap</div>
+  <h2 class="reveal">What's coming next</h2>
+  <p class="reveal">Major milestones across engine, studio, GPU, and platform. Use the timeline dots or arrows to navigate.</p>
 
-  <div class="roadmap-timeline" id="mojoTimeline">
+  <div class="roadmap-timeline reveal" id="mojoTimeline">
 
     <!-- Periods (top) -->
     <div class="periods-container">
@@ -1105,9 +1407,9 @@ footer .copyright {
 <!-- ════ CTA BANNER ════ -->
 <div class="cta-banner">
 <div class="container">
-  <h2>Star us on GitHub</h2>
-  <p>MojoLlama is open source (Apache 2.0). Contributions, issues, and feature requests welcome.</p>
-  <div class="hero-btns" style="justify-content:center;">
+  <h2 class="reveal">Star us on GitHub</h2>
+  <p class="reveal">MojoLlama is open source (Apache 2.0). Contributions, issues, and feature requests welcome.</p>
+  <div class="hero-btns reveal" style="justify-content:center;">
     <a href="https://github.com/a730/MojoLlama" class="btn btn-primary">GitHub →</a>
     <a href="https://github.com/a730/MojoLlama/issues" class="btn btn-secondary">Report an issue</a>
   </div>
@@ -1147,6 +1449,11 @@ footer .copyright {
 </div>
 </footer>
 
+<!-- Back to top -->
+<button class="back-to-top" id="backToTop" aria-label="Back to top">
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>
+</button>
+
 <script>
 (function() {
   'use strict';
@@ -1159,6 +1466,186 @@ footer .copyright {
     period4: '#009D9A'
   };
 
+  /* ── Theme toggle (IBM Carbon style) ── */
+  function initTheme() {
+    var toggle = document.getElementById('themeToggle');
+    var stored = localStorage.getItem('mojollama-theme');
+    if (stored) {
+      document.documentElement.setAttribute('data-theme', stored);
+    }
+    if (toggle) {
+      toggle.addEventListener('click', function() {
+        var current = document.documentElement.getAttribute('data-theme');
+        var next = current === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('mojollama-theme', next);
+      });
+    }
+  }
+
+  /* ── Mobile hamburger ── */
+  function initMobileMenu() {
+    var btn = document.getElementById('hamburgerBtn');
+    var overlay = document.getElementById('mobileOverlay');
+    var drawer = document.getElementById('mobileDrawer');
+    if (!btn || !overlay || !drawer) return;
+
+    function openMenu() {
+      btn.classList.add('open');
+      overlay.classList.add('open');
+      drawer.classList.add('open');
+      overlay.style.display = 'block';
+      document.body.style.overflow = 'hidden';
+    }
+    function closeMenu() {
+      btn.classList.remove('open');
+      overlay.classList.remove('open');
+      drawer.classList.remove('open');
+      document.body.style.overflow = '';
+      setTimeout(function() { overlay.style.display = 'none'; }, 300);
+    }
+
+    btn.addEventListener('click', function() {
+      if (drawer.classList.contains('open')) closeMenu();
+      else openMenu();
+    });
+    overlay.addEventListener('click', closeMenu);
+
+    var links = drawer.querySelectorAll('a');
+    for (var i = 0; i < links.length; i++) {
+      links[i].addEventListener('click', closeMenu);
+    }
+  }
+
+  /* ── Scroll reveal (IntersectionObserver) ── */
+  function initScrollReveal() {
+    var els = document.querySelectorAll('.reveal');
+    if (!('IntersectionObserver' in window)) {
+      for (var i = 0; i < els.length; i++) els[i].classList.add('visible');
+      return;
+    }
+    var observer = new IntersectionObserver(function(entries) {
+      for (var i = 0; i < entries.length; i++) {
+        if (entries[i].isIntersecting) {
+          entries[i].target.classList.add('visible');
+          observer.unobserve(entries[i].target);
+        }
+      }
+    }, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+    for (var i = 0; i < els.length; i++) observer.observe(els[i]);
+  }
+
+  /* ── Animated metric counters ── */
+  function initCounters() {
+    var metrics = document.querySelectorAll('.metric-value[data-count]');
+    if (!('IntersectionObserver' in window)) {
+      for (var i = 0; i < metrics.length; i++) {
+        var m = metrics[i];
+        if (m.getAttribute('data-text')) {
+          m.textContent = m.getAttribute('data-text');
+        } else {
+          m.textContent = m.getAttribute('data-count') + (m.getAttribute('data-suffix') || '');
+        }
+      }
+      return;
+    }
+    var observed = new Set();
+    var observer = new IntersectionObserver(function(entries) {
+      for (var i = 0; i < entries.length; i++) {
+        if (entries[i].isIntersecting && !observed.has(entries[i].target)) {
+          observed.add(entries[i].target);
+          animateCounter(entries[i].target);
+          observer.unobserve(entries[i].target);
+        }
+      }
+    }, { threshold: 0.5 });
+    for (var i = 0; i < metrics.length; i++) observer.observe(metrics[i]);
+  }
+
+  function animateCounter(el) {
+    var target = parseFloat(el.getAttribute('data-count'));
+    var suffix = el.getAttribute('data-suffix') || '';
+    var text = el.getAttribute('data-text');
+    if (text) { el.textContent = text; return; }
+
+    var isFloat = String(target).indexOf('.') !== -1;
+    var duration = 1200;
+    var start = performance.now();
+
+    function step(now) {
+      var progress = Math.min((now - start) / duration, 1);
+      var eased = 1 - Math.pow(1 - progress, 3);
+      var val = target * eased;
+      el.textContent = (isFloat ? val.toFixed(1) : Math.round(val)) + suffix;
+      if (progress < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  /* ── Terminal typing animation ── */
+  function initTerminal() {
+    var terminal = document.getElementById('heroTerminal');
+    if (!terminal) return;
+    var lines = terminal.querySelectorAll('.term-line');
+    if (!('IntersectionObserver' in window)) {
+      for (var i = 0; i < lines.length; i++) lines[i].classList.add('typed');
+      return;
+    }
+    var observer = new IntersectionObserver(function(entries) {
+      for (var i = 0; i < entries.length; i++) {
+        if (entries[0].isIntersecting) {
+          revealTerminal(lines);
+          observer.unobserve(terminal);
+        }
+      }
+    }, { threshold: 0.3 });
+    observer.observe(terminal);
+  }
+
+  function revealTerminal(lines) {
+    for (var i = 0; i < lines.length; i++) {
+      (function(line, idx) {
+        var delay = parseInt(line.getAttribute('data-delay') || idx * 200, 10);
+        setTimeout(function() { line.classList.add('typed'); }, delay);
+      })(lines[i], i);
+    }
+  }
+
+  /* ── Active nav highlighting on scroll ── */
+  function initNavHighlight() {
+    var sections = document.querySelectorAll('div.section[id], div.section-alt[id]');
+    var navLinks = document.querySelectorAll('nav .nav-links a[href^="#"]');
+    if (!sections.length || !navLinks.length) return;
+
+    function update() {
+      var scrollY = window.scrollY + 100;
+      for (var i = sections.length - 1; i >= 0; i--) {
+        if (sections[i].offsetTop <= scrollY) {
+          var id = sections[i].getAttribute('id');
+          for (var j = 0; j < navLinks.length; j++) {
+            navLinks[j].classList.toggle('active', navLinks[j].getAttribute('href') === '#' + id);
+          }
+          break;
+        }
+      }
+    }
+    window.addEventListener('scroll', update, { passive: true });
+    update();
+  }
+
+  /* ── Back to top button ── */
+  function initBackToTop() {
+    var btn = document.getElementById('backToTop');
+    if (!btn) return;
+    window.addEventListener('scroll', function() {
+      btn.classList.toggle('visible', window.scrollY > 400);
+    }, { passive: true });
+    btn.addEventListener('click', function() {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  }
+
+  /* ── Timeline (preserved) ── */
   function PRESTimeline(el) {
     this.base = el;
     this.periodContainer = el.querySelector('.periods-container');
@@ -1223,7 +1710,6 @@ footer .copyright {
     }
     this.timelineData[this.activeCardIndex].classList.add('active');
 
-    // hide/show back/next buttons
     var tlB = this.base.querySelectorAll('.btn-back');
     var tlN = this.base.querySelectorAll('.btn-next');
     for (i = 0; i < tlB.length; i++) {
@@ -1326,7 +1812,6 @@ footer .copyright {
       })(i);
     }
 
-    // Insert color styles
     var sbstyle = document.createElement('style');
     document.head.appendChild(sbstyle);
     for (var p in COLORS) {
@@ -1335,7 +1820,6 @@ footer .copyright {
       sbstyle.sheet.insertRule('li.' + p + '::after { background-color: ' + COLORS[p] + ' }', 0);
     }
 
-    // Style the card list item dots
     var allCards = this.cardContainer.querySelectorAll('section.card-single');
     for (var c = 0; c < allCards.length; c++) {
       var items = allCards[c].querySelectorAll('.items li');
@@ -1391,9 +1875,17 @@ footer .copyright {
     this._adjustCardContainer();
   };
 
+  /* ── Init everything ── */
   document.addEventListener('DOMContentLoaded', function() {
-    var el = document.getElementById('mojoTimeline');
-    if (el) new PRESTimeline(el);
+    initTheme();
+    initMobileMenu();
+    initScrollReveal();
+    initCounters();
+    initTerminal();
+    initNavHighlight();
+    initBackToTop();
+    var timeline = document.getElementById('mojoTimeline');
+    if (timeline) new PRESTimeline(timeline);
   });
 })();
 </script>

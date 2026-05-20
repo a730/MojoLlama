@@ -4,11 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MojoLlama Studio — Dashboard</title>
-<link rel="icon" type="image/png" sizes="32x32" href="favicon.png">
-<link rel="icon" type="image/png" sizes="48x48" href="favicon-48.png">
-<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="MojoLlama Studio: chat, train, benchmark, quantize, and serve LLMs from your browser.">
+<link rel="icon" type="image/png" sizes="32x32" href="../favicon.png">
+<link rel="icon" type="image/png" sizes="48x48" href="../favicon-48.png">
+<link rel="apple-touch-icon" sizes="180x180" href="../apple-touch-icon.png">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700;800;900&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 /* ══════════════════════════════════════════════
@@ -45,8 +48,13 @@
   --cyan: #009D9A;
 
   /* Typography */
-  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --font-body: 'Inter', 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'IBM Plex Mono', 'Fira Code', monospace;
+
+  /* Interaction */
+  --layer-hover: rgba(0,0,0,0.04);
+  --focus: #6C3CE1;
+  --focus-inverse: #FFFFFF;
 
   /* Spacing (8px grid) */
   --space-8: 8px;
@@ -65,6 +73,33 @@
   --shadow: 0 4px 12px rgba(0,0,0,0.06);
   --shadow-lg: 0 12px 40px rgba(0,0,0,0.08);
   --transition: 0.15s cubic-bezier(0.2, 0, 0, 1);
+  --transition-slow: 0.4s cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* ── Dark theme — IBM Carbon g90/g100 progressive layering ── */
+[data-theme="dark"] {
+  --bg: #161616; --bg-alt: #1C1C1C;
+  --surface: #262626; --surface-hover: #333333;
+  --border: #393939; --border-light: #333333;
+  --text: #F4F4F4; --text-secondary: #C6C6C6;
+  --text-tertiary: #8D8D8D; --text-inverse: #161616;
+  --layer-hover: rgba(255,255,255,0.05);
+  --mojo-subtle: rgba(139,92,246,0.15);
+  --success: #42BE65; --warning: #FA4D56; --info: #5AA8FF;
+  --focus: #8B5CF6; --focus-inverse: #161616;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161616; --bg-alt: #1C1C1C;
+    --surface: #262626; --surface-hover: #333333;
+    --border: #393939; --border-light: #333333;
+    --text: #F4F4F4; --text-secondary: #C6C6C6;
+    --text-tertiary: #8D8D8D; --text-inverse: #161616;
+    --layer-hover: rgba(255,255,255,0.05);
+    --mojo-subtle: rgba(139,92,246,0.15);
+    --success: #42BE65; --warning: #FA4D56; --info: #5AA8FF;
+    --focus: #8B5CF6; --focus-inverse: #161616;
+  }
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -73,6 +108,7 @@ body {
   font-family: var(--font-body);
   background: var(--bg); color: var(--text);
   min-height: 100vh; overflow: hidden;
+  transition: background var(--transition-slow), color var(--transition-slow);
 }
 ::selection { background: var(--mojo-subtle); }
 ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -81,6 +117,19 @@ body {
 ::-webkit-scrollbar-thumb:hover { background: var(--text-tertiary); }
 a { color: var(--mojo); text-decoration: none; }
 a:hover { color: var(--mojo-dark); }
+
+/* Skip to content */
+.skip-link {
+  position: absolute; top: -100%; left: 16px;
+  background: var(--mojo); color: #fff;
+  padding: 8px 16px; border-radius: var(--radius-sm);
+  font-size: 0.875rem; font-weight: 600; z-index: 9999;
+  transition: top 0.2s;
+}
+.skip-link:focus { top: 8px; color: #fff; }
+
+/* Focus visible */
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 /* ─── Layout ─── */
 .app { display: flex; height: 100vh; overflow: hidden; }
@@ -563,14 +612,27 @@ input[type="range"]::-webkit-slider-thumb {
   .row { flex-direction: column; }
   .chat-container { height: 360px; }
 }
+
+/* ── Dark theme overrides ── */
+[data-theme="dark"] .theme-toggle, :root:not([data-theme="light"]) .theme-toggle {
+  border-color: var(--border);
+}
+[data-theme="dark"] .theme-toggle:hover, :root:not([data-theme="light"]) .theme-toggle:hover {
+  border-color: var(--mojo); background: var(--mojo-subtle); color: var(--mojo-light);
+}
+[data-theme="dark"] pre, :root:not([data-theme="light"]) pre { background: #0D0D14; }
+[data-theme="dark"] .msg-avatar.user, :root:not([data-theme="light"]) .msg-avatar.user { background: rgba(90,168,255,0.15); }
+[data-theme="dark"] .msg-avatar.assistant, :root:not([data-theme="light"]) .msg-avatar.assistant { background: rgba(139,92,246,0.15); }
+[data-theme="dark"] .progress-bar-fill, :root:not([data-theme="light"]) .progress-bar-fill { background: var(--mojo-light); }
 </style>
 </head>
 <body>
+<a href="#mainContent" class="skip-link">Skip to content</a>
 <div class="app">
   <!-- Sidebar Navigation -->
   <div class="sidebar">
     <div class="sidebar-header">
-      <a href="index.html"><span class="logo-text">Mojo<span>Llama</span></span></a>
+      <a href="../index.html"><span class="logo-text">Mojo<span>Llama</span></span></a>
       <div class="ver">Studio v0.3.0</div>
     </div>
     <div class="sidebar-nav">
@@ -641,12 +703,16 @@ input[type="range"]::-webkit-slider-thumb {
     <div class="topbar">
       <div class="topbar-title" id="topbarTitle">💬 Chat</div>
       <div class="topbar-actions">
+        <button class="theme-toggle" id="studioThemeToggle" aria-label="Toggle dark mode" style="background:none;border:1px solid var(--border);border-radius:var(--radius-sm);width:32px;height:32px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text-secondary);transition:all var(--transition);padding:0;">
+          <svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+        </button>
         <span class="btn-icon" onclick="refreshAll()" title="Refresh">↻</span>
         <span class="btn-icon" onclick="showServerSettings()" title="Server settings">⚙</span>
       </div>
     </div>
 
-    <div class="content">
+    <div class="content" id="mainContent">
 
       <!-- ═══════════ OFFLINE BANNER ═══════════ -->
       <div id="offlineBanner" class="card" style="display:none;border-color:var(--warning);margin-bottom:16px;padding:16px 20px;">
@@ -1894,6 +1960,31 @@ input[type="range"]::-webkit-slider-thumb {
 </div>
 
 <script>
+// ── Theme toggle (IBM Carbon style) ──
+(function(){
+  var toggle = document.getElementById('studioThemeToggle');
+  var stored = localStorage.getItem('mojollama-theme');
+  if (stored) document.documentElement.setAttribute('data-theme', stored);
+  function updateIcon(){
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark' || (!document.documentElement.getAttribute('data-theme') && window.matchMedia('(prefers-color-scheme:dark)').matches);
+    var moon = toggle.querySelector('.icon-moon');
+    var sun = toggle.querySelector('.icon-sun');
+    if(moon) moon.style.display = isDark ? 'none' : 'block';
+    if(sun) sun.style.display = isDark ? 'block' : 'none';
+  }
+  updateIcon();
+  if(toggle){
+    toggle.addEventListener('click',function(){
+      var current = document.documentElement.getAttribute('data-theme');
+      var next = current === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('mojollama-theme', next);
+      updateIcon();
+    });
+  }
+  window.matchMedia('(prefers-color-scheme:dark)').addEventListener('change', updateIcon);
+})();
+
 // ─── API URL resolution ──────────────────────────────────────────
 const ENGINE_NAMES = { mojollama: 'MojoLlama Native', llamacpp: 'llama.cpp', max: 'MAX' };
 function getSelectedEngine() {
