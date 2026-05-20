@@ -1,6 +1,10 @@
 [Mojo llama](https://git.bamse.cloud/a730/MojoLlama/~site)
 # MojoLlama
 
+<p align="center">
+  <img src="www/logo.png" alt="MojoLlama Logo" width="200">
+</p>
+
 **High‑throughput CPU LLM inference engine** — GGUF native, MoE-optimized, with C acceleration and a full Studio suite.
 
 ![Python](https://img.shields.io/badge/Python-3.11-blue?style=flat-square) ![C](https://img.shields.io/badge/C-AVX2%2B%20OMP-green?style=flat-square) ![GGUF](https://img.shields.io/badge/Format-GGUF-green?style=flat-square) ![License](https://img.shields.io/badge/License-Apache%202.0-lightgrey?style=flat-square)
