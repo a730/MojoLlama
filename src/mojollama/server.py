@@ -794,6 +794,56 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
             return f"{size_bytes / 1024 ** 3:.2f} GB"
 
 
+def _download_from_hf(repo_id, filename=None, cache_dir="/models"):
+    """Download a GGUF model from HuggingFace Hub and return the local path."""
+    import requests
+    import os, sys, json
+
+    # If no filename given, list files in the repo and pick the first .gguf
+    if not filename:
+        api_url = f"https://huggingface.co/api/models/{repo_id}"
+        try:
+            resp = requests.get(api_url, timeout=30)
+            resp.raise_for_status()
+            info = resp.json()
+            siblings = info.get("siblings", [])
+            gguf_files = [s["rfilename"] for s in siblings
+                          if s["rfilename"].endswith(".gguf")]
+            if not gguf_files:
+                raise RuntimeError(
+                    f"No .gguf files found in {repo_id}. "
+                    "Use --hf-file to specify a filename.")
+            # Pick the most common quant (Q4_K_M) or just the first
+            filename = next((f for f in gguf_files if "Q4_K_M" in f), gguf_files[0])
+            print(f"  [HF] Auto-selected: {filename}")
+        except requests.RequestException as e:
+            raise RuntimeError(f"Cannot list repo {repo_id}: {e}")
+
+    local_path = os.path.join(cache_dir, filename.replace("/", "_"))
+    if os.path.exists(local_path):
+        print(f"  [HF] Cached: {local_path}")
+        return local_path
+
+    # Download with progress
+    url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
+    print(f"  [HF] Downloading {url} ...")
+    print(f"  [HF] Saving to {local_path}")
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+    resp = requests.get(url, stream=True, timeout=300)
+    resp.raise_for_status()
+    total = int(resp.headers.get("content-length", 0))
+    downloaded = 0
+    with open(local_path, "wb") as f:
+        for chunk in resp.iter_content(chunk_size=8*1024*1024):
+            f.write(chunk)
+            downloaded += len(chunk)
+            if total:
+                pct = downloaded * 100 // total
+                print(f"\r  [HF] {downloaded//1024//1024}MB / {total//1024//1024}MB ({pct}%)", end="", flush=True)
+    print()
+    return local_path
+
+
 # ─── Main ──────────────────────────────────────────────────────────────
 
 def main():
@@ -801,6 +851,9 @@ def main():
 
     parser = argparse.ArgumentParser(description="MojoLlama inference server")
     parser.add_argument("--model", help="Path to GGUF model file", default="")
+    parser.add_argument("--hf-repo", help="HuggingFace repo ID to download GGUF from (e.g. Qwen/Qwen3-30B-A3B-Instruct-GGUF)", default="")
+    parser.add_argument("--hf-file", help="GGUF filename in the HF repo (auto-detected if omitted)", default="")
+    parser.add_argument("--hf-token", help="HuggingFace token for private repos", default="")
     parser.add_argument("--port", type=int, help="HTTP server port", default=8080)
     parser.add_argument("--llama-port", type=int, help="llama.cpp backend port", default=8081)
     parser.add_argument("--max-workers", type=int, help="Max concurrent requests", default=32)
@@ -814,6 +867,16 @@ def main():
     llama_port = args.llama_port
     max_workers = args.max_workers
     queue_size = args.queue_size
+
+    # ── HuggingFace download ──────────────────────────────────────────
+    hf_repo = args.hf_repo or os.environ.get("HF_REPO", "")
+    hf_file = args.hf_file or os.environ.get("HF_FILE", "")
+    if hf_repo and not model_path:
+        model_path = _download_from_hf(hf_repo, hf_file)
+        # Auto-set TOKENIZER_PATH hint: trim "-GGUF" suffix if present
+        if not os.environ.get("TOKENIZER_PATH"):
+            base_repo = hf_repo.replace("-GGUF", "").replace("-gguf", "")
+            os.environ["TOKENIZER_PATH"] = base_repo
 
     print("╔══════════════════════════════════════════════╗")
     print("║         MojoLlama — Inference Server         ║")

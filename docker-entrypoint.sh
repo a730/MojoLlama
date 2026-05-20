@@ -36,7 +36,10 @@ if [[ -f /opt/intel/oneapi/setvars.sh ]]; then
 fi
 
 # ── Model path resolution ────────────────────────────────────────────────
-if [[ -z "$MODEL_PATH" || ! -f "$MODEL_PATH" ]]; then
+if [[ -n "$HF_REPO" ]]; then
+    log "HF model download requested: ${BLUE}${HF_REPO}${NC}"
+    # Server will handle download — don't auto-detect a local .gguf
+elif [[ -z "$MODEL_PATH" || ! -f "$MODEL_PATH" ]]; then
     for search_dir in /models /app; do
         if [[ -d "$search_dir" ]]; then
             models=("$search_dir"/*.gguf)

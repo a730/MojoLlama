@@ -91,22 +91,8 @@ COPY --from=builder --chown=root:root \
     /app/src/mojollama/kernels/
 
 # ── Python deps ─────────────────────────────────────────────────────────
-RUN pip install --no-cache-dir gguf numpy transformers requests
+RUN pip install --no-cache-dir gguf numpy transformers requests huggingface_hub
 
-# ── Pre-download ZAYA1-8B model + tokenizer for testing ──────────────────
-RUN mkdir -p /models && \
-    curl -fSL --retry 3 --retry-delay 5 --progress-bar \
-        -o /models/ZAYA1-8B-Q4_K_M.gguf \
-        "https://huggingface.co/Abiray/ZAYA1-8B-GGUF/resolve/main/ZAYA1-8B-Q4_K_M.gguf" \
-    || echo "[WARN] ZAYA GGUF download failed"
-# Pre-download ZAYA tokenizer so server works offline
-RUN mkdir -p /models/zaya-tokenizer && \
-    for f in tokenizer.json tokenizer_config.json special_tokens_map.json; do \
-        curl -fSL --retry 3 --retry-delay 5 \
-            -o "/models/zaya-tokenizer/$f" \
-            "https://huggingface.co/Zyphra/ZAYA1-8B/resolve/main/$f" \
-            || echo "[WARN] ZAYA tokenizer $f download failed"; \
-    done
 COPY www/ /app/www/
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 RUN chmod 755 /app/docker-entrypoint.sh
