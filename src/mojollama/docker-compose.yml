@@ -37,6 +37,7 @@ version: "3.9"
 
 x-common: &common
   image: ghcr.io/a730/mojollama:latest
+  pull_policy: always
   environment:
     # ── Model ──
     MODEL_PATH: "${MODEL:-/models/tl-Q4_0.gguf}"
