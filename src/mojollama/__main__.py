@@ -102,8 +102,19 @@ def cmd_bench(args):
         print("Usage: mojollama bench -m model.gguf [-n 128] [-t 32]")
         sys.exit(1)
     os.environ["OMP_NUM_THREADS"] = str(args.threads)
-    from mojollama.bench_tok import bench_mojollama_qwen3
-    bench_mojollama_qwen3(args.model)
+    # Add kernels/ directory to path for engine imports
+    kernels_dir = os.path.join(os.path.dirname(__file__), 'kernels')
+    if kernels_dir not in sys.path:
+        sys.path.insert(0, kernels_dir)
+    from mojollama.benchmarks.bench_tok import bench_mojollama_qwen3
+    ms, tps = bench_mojollama_qwen3(args.model)
+    print(f"\n{'='*50}")
+    print(f"MojoLlama Benchmark")
+    print(f"{'='*50}")
+    print(f"  Model:      {args.model}")
+    print(f"  Threads:    {args.threads}")
+    print(f"  Median:     {ms:.1f} ms/tok ({tps:.1f} tok/s)")
+    print(f"{'='*50}")
 
 
 def cmd_quantize(args):
