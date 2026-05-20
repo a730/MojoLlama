@@ -11,18 +11,18 @@
 ## 🎯 Strategic Pillars
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    MojoLlama Platform                        │
-├──────────────┬──────────────┬──────────────┬────────────────┤
-│  INFERENCE   │   STUDIO     │   ENGINE     │   DEPLOY       │
-│  Engine      │   One-stop   │   Full HF    │   Docker +     │
-│  + Serving   │   App        │   Coverage   │   Desktop      │
-├──────────────┼──────────────┼──────────────┼────────────────┤
-│ C engine     │ Quantization │ 60+ arch     │ Docker         │
-│ MAX GPU      │ Training     │ forward      │ pip package    │
-│ Multi-arch   │ Dataset      │ passes       │ Desktop app    │
-│ Concurrent   │ Benchmark    │ Auto-tune    │ CLI            │
-└──────────────┴──────────────┴──────────────┴────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                       MojoLlama Platform                          │
+├─────────────┬──────────────┬─────────────┬───────────────┬────────┤
+│  INFERENCE  │   STUDIO     │   ENGINE    │   GPU         │ DEPLOY │
+│  Engine     │   One-stop   │   Full HF   │   MAX +       │ Docker │
+│  + Serving  │   ML App     │   Coverage  │   Tuning      │ + App  │
+├─────────────┼──────────────┼─────────────┼───────────────┼────────┤
+│ C engine    │ Quantization │ 60+ arch    │ CUDA/ROCm    │ pip    │
+│ Batch inf   │ Training     │ forward     │ Metal backend │ Desktop│
+│ PagedAttn   │ Dataset      │ passes      │ GPU tuning    │ CLI    │
+│ Concurrent  │ Benchmark    │ Auto-tune   │ Multi-GPU     │ CI/CD  │
+└─────────────┴──────────────┴─────────────┴───────────────┴────────┘
 ```
 
 ---
@@ -130,16 +130,76 @@ The Studio has 14 panels but many delegate to external tools. The vision: everyt
 | 3A.5 | **PagedAttention production** — page table with KV block reclamation, defrag, swap | 4d | Long-context serving |
 | 3A.6 | **Fix Qwen3.6 MXFP4 cleanup crash** — heap corruption on exit | 1d | Stability |
 
-### 3B. GPU via MAX (4 weeks)
+### 3B. GPU via MAX — Full GPU Pipeline (6 weeks)
+
+The MAX backend is currently a stub. This phase builds end-to-end GPU support: loading models, dispatching layers, tuning performance, and handling multi-GPU.
+
+#### 3B.1 GPU Integration (2 weeks)
 
 | # | Task | Est. | Description |
 |---|------|------|-------------|
-| 3B.1 | **MAX GGUF reader** — load GGUF tensors into MAX-compatible buffers | 5d | Foundation |
-| 3B.2 | **MAX CPU inference** — run an LLM forward pass via MAX engine on CPU | 5d | Baseline |
-| 3B.3 | **MAX GPU dispatch** — offload attention to GPU, keep FFN on CPU | 5d | Hybrid inference |
-| 3B.4 | **MAX MoE on GPU** — expert routing + matmuls on GPU with CPU fallback | 5d | MoE acceleration |
-| 3B.5 | **MAX + MojoLlama hybrid** — CPU-optimized layers + MAX GPU layers, auto-dispatch | 5d | Best of both |
-| 3B.6 | **CUDA/ROCm/Metal auto-detect** — pick backend at runtime | 2d | Multi-platform |
+| 3B.1.1 | **MAX GGUF reader** — load GGUF tensors into MAX-compatible buffers, map quantized types to MAX types | 5d | Foundation for all GPU work |
+| 3B.1.2 | **MAX CPU inference** — run full LLM forward pass via MAX engine on CPU as baseline | 3d | Validate MAX engine works |
+| 3B.1.3 | **MAX GPU pipeline** — model load → transfer to GPU → generate tokens → return logits | 5d | First GPU inference |
+| 3B.1.4 | **Layer-by-layer GPU dispatch** — per-layer offloading decision (attn→GPU, FFN→CPU, or all→GPU) | 4d | Hybrid inference control |
+
+#### 3B.2 GPU Acceleration (2 weeks)
+
+| # | Task | Est. | Description |
+|---|------|------|-------------|
+| 3B.2.1 | **GPU attention** — offload Q, K, V projections + softmax attention to GPU | 4d | Biggest speedup per layer |
+| 3B.2.2 | **GPU MoE dispatch** — expert routing + top-k selection + expert matmuls on GPU | 5d | MoE models on GPU |
+| 3B.2.3 | **GPU KV cache** — KV cache blocks on GPU memory, PagedAttention with GPU page table | 4d | Long-context on GPU |
+| 3B.2.4 | **CUDA graphs** — capture repeated forward pass structure as CUDA graph for <10μs kernel launch | 3d | Minimize GPU overhead |
+| 3B.2.5 | **Flash Attention** — use MAX's FlashAttention-2 integration for O(1) memory attention | 3d | 32K+ context on GPU |
+
+#### 3B.3 Multi-GPU (2 weeks)
+
+| # | Task | Est. | Description |
+|---|------|------|-------------|
+| 3B.3.1 | **Tensor parallelism** — split weight matrices across GPUs, all-reduce during forward | 5d | Model sharding |
+| 3B.3.2 | **Pipeline parallelism** — assign layer groups to different GPUs | 4d | Deeper models on multi-GPU |
+| 3B.3.3 | **GPU memory management** — dynamic offloading, swap KV cache between GPU↔CPU, memory budget tracking | 4d | Fit larger models |
+| 3B.3.4 | **Multi-GPU benchmark suite** — speedup curves (1/2/4/8 GPUs), memory scaling, batch scaling | 2d | Know your hardware |
+
+#### 3B.4 GPU Formats & Quantization (2 weeks)
+
+| # | Task | Est. | Description |
+|---|------|------|-------------|
+| 3B.4.1 | **GPU-native quant types** — FP16, FP8 (E4M3/E5M2), INT8, INT4 on GPU natively (no dequant) | 5d | GPU memory efficiency |
+| 3B.4.2 | **On-the-fly quant conversion** — convert GGUF Q4_K/Q8_0 to GPU-native FP8/INT8 at load time | 3d | No re-quantizing needed |
+| 3B.4.3 | **GPU imatrix** — importance matrix computed via GPU (10× faster than CPU) | 3d | Fast calibration |
+| 3B.4.4 | **Mixed-precision GPU inference** — FP16 attn + INT8 FFN + FP32 embeddings automatically | 3d | Max throughput per layer type |
+
+#### 3B.5 GPU Auto-Tune (2 weeks)
+
+| # | Task | Est. | Description |
+|---|------|------|-------------|
+| 3B.5.1 | **GPU layer sweep** — sweep n_gpu_layers 0→all, measure tok/s, find knee | 3d | Optimal GPU/CPU split |
+| 3B.5.2 | **GPU batch size sweep** — test batch sizes 1→64 with GPU, find throughput plateau | 2d | Max concurrency |
+| 3B.5.3 | **GPU memory tuning** — measure peak memory per model/size/quant, auto-pick batch to fit | 3d | No OOM crashes |
+| 3B.5.4 | **GPU concurrent tuning** — sweep concurrent users 1→N, find latency knee (p50/p95/p99) | 3d | Production config |
+| 3B.5.5 | **Multi-GPU tuning** — sweep GPU count (1/2/4/8), parallelism strategy, interconnect type | 4d | Multi-GPU optimization |
+| 3B.5.6 | **Metal/ROCm tuning** — Apple Silicon GPU and AMD GPU specific parameter sweeps | 3d | Cross-platform GPU |
+
+#### 3B.6 GPU Support Matrix
+
+| Backend | Hardware | Status | Target tok/s (7B Q4_K_M) |
+|---------|----------|--------|--------------------------|
+| **MAX CUDA** | NVIDIA Tesla/RTX/A100/H100/B300 | ⬜ Not started | 100+ (A100) |
+| **MAX ROCm** | AMD MI250/MI300X/RX 7000 | ⬜ Not started | 80+ (MI250) |
+| **MAX Metal** | Apple M1/M2/M3/M4 (Pro/Max/Ultra) | ⬜ Not started | 40+ (M2 Ultra) |
+| **MAX CPU** | Any x86_64/ARM with AVX2/SVE | ⬜ Not started | 20+ (Threadripper) |
+| **MojoLlama CPU** | x86_64 AVX2+OMP | ✅ Working | 13-63 (Threadripper) |
+
+#### 3B.7 GPU Production (1 week)
+
+| # | Task | Est. | Description |
+|---|------|------|-------------|
+| 3B.7.1 | **GPU server** — serve models from GPU via /v1/chat/completions, SSE streaming | 3d | Production GPU serving |
+| 3B.7.2 | **GPU health monitoring** — GPU utilization, memory, temperature, power in Studio metrics | 2d | Ops visibility |
+| 3B.7.3 | **Automatic fallback** — GPU OOM → auto-offload to CPU → continue with degraded throughput | 2d | Reliability |
+| 3B.7.4 | **GPU model hot-swap** — unload model from GPU, load new model, without restart | 2d | Multi-model serving |
 
 ### 3C. Auto-Tune Improvement (2 weeks)
 
@@ -170,20 +230,24 @@ The Studio has 14 panels but many delegate to external tools. The vision: everyt
 ## Timeline
 
 ```
-Month 1           Month 2           Month 3           Month 4           Month 5+
-├─────────────────┼─────────────────┼─────────────────┼─────────────────┼──────────►
-│ Phase 1: HF Coverage            │ Phase 2: Studio Pipeline           │ Phase 4
-│ 1.1-1.5 Custom forward passes   │ 2A. Quant Pipeline                 │ Ship
-│ 1.6-1.10 Broader arch + auto    │ 2B. Training                       │ pip
-│                                 │ 2C. Benchmarking                   │ Desktop
-│ Phase 3A: CPU Engine            │ 2D. Dataset                        │ CI/CD
-│ 3A.1-3.3 C kernel improvements  │                                     │
-│ 3A.4-3.6 Batching + stability   │ Phase 3B: MAX GPU                  │
-│                                 │ 3B.1-3.3 MAX integration           │
-│ Phase 3C: Auto-Tune             │ 3B.4-3.6 GPU dispatch              │
-│ 3C.1-3.3 Self-contained + GPU   │                                     │
-│ 3C.4-3.5 Studio UI              │                                     │
-└─────────────────┴─────────────────┴─────────────────┴─────────────────┴──────────►
+Month 1                Month 2                Month 3                Month 4                Month 5+        
+├──────────────────────┼──────────────────────┼──────────────────────┼──────────────────────┼──────────────►
+│ Phase 1: HF Coverage                       │ Phase 2: Studio Pipeline                    │ Phase 4
+│ 1.1-1.5 Custom forward passes              │ 2A. Quant Pipeline                          │ Ship
+│ 1.6-1.10 Broader arch + auto-gen           │ 2B. Training                                │ pip
+│                                             │ 2C. Benchmarking                            │ Desktop
+│ Phase 3A: CPU Engine                       │ 2D. Dataset                                 │ CI/CD
+│ 3A.1-3.3 C kernel improvements             │                                             │
+│ 3A.4-3.6 Batching + stability              │ Phase 3B: GPU via MAX (Full Pipeline)       │
+│                                             ├─────────────────────────────────────────────┤
+│ Phase 3C: Auto-Tune (CPU)                  │ 3B.1 GPU Integration                         │
+│ 3C.1-3.3 Self-contained                    │ 3B.2 GPU Acceleration                        │
+│ 3C.4-3.5 Studio wizard                     │ 3B.3 Multi-GPU                               │
+│                                             │ 3B.4 GPU Formats & Quant                    │
+│                                             │ 3B.5 GPU Auto-Tune                          │
+│                                             │ 3B.6 Support Matrix                         │
+│                                             │ 3B.7 GPU Production                         │
+└──────────────────────┴──────────────────────┴──────────────────────┴──────────────────────┴──────────────►
 ```
 
 ## Architecture Coverage Roadmap
@@ -210,8 +274,12 @@ for remaining archs:           │ ✅ Command-R / Cohere    │
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| MAX engine GGUF compatibility gaps | Phase 3B blocked | Maintain llama.cpp fallback; upstream patches |
+| MAX engine GGUF compatibility gaps | Phase 3B.1 blocked | Maintain llama.cpp fallback; upstream patches to MAX |
+| GPU memory insufficient for model size | Phase 3B.4/3B.7 fails | Layer-by-layer CPU offload; quantize to FP8/INT4 for GPU |
 | Custom forward passes diverge from upstream | Perplexity regressions | Automated perplexity CI per arch |
 | Training on CPU is slow | Phase 2B perceived as useless | Focus on QLoRA (small adapters); leverage MAX GPU |
+| Multi-GPU scaling sublinear (<1.5× per GPU) | Phase 3B.3 underwhelming | Optimize all-reduce; use tensor parallelism with async comms |
+| CUDA graphs fragile to model changes | Phase 3B.2.4 breaks | Regenerate graphs on model load; fallback to eager mode |
+| Apple Metal GPU limited memory (unified) | Phase 3B.6 Apple perf low | Optimize for unified memory; use small models (7B max) |
 | Dataset format fragmentation | Phase 2D scope creep | Support top 5 HF formats only |
 | MXFP4 in C engine complex | Phase 3A.2 delayed | Ship Q8_0 input quant first (biggest win) |
