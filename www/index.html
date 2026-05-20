@@ -431,69 +431,172 @@ td .badge {
 }
 .step h3 { font-size: 1.1rem; }
 
-/* ── Roadmap Timeline ── */
-.roadmap { margin-top: var(--space-48); }
-.roadmap-phase {
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-lg);
-  margin-bottom: var(--space-16);
-  overflow: hidden;
-  transition: border-color var(--transition);
+/* ── Timeline Roadmap ── */
+.roadmap-timeline {
+  font-family: var(--font-body); font-size: 13px; color: var(--text-secondary);
+  width: 100%; margin: 32px 0; position: relative;
 }
-.roadmap-phase:hover { border-color: var(--border); }
-.roadmap-phase-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: var(--space-20) var(--space-24);
-  cursor: pointer;
-  background: var(--bg);
-  transition: background var(--transition);
-  user-select: none;
+.roadmap-timeline .periods-container,
+.roadmap-timeline .cards-container {
+  overflow: hidden; box-sizing: border-box; position: relative;
+  min-height: 80px; transition: height .4s ease-in-out;
 }
-.roadmap-phase-header:hover { background: var(--bg-alt); }
-.roadmap-phase-header .phase-left { display: flex; align-items: center; gap: var(--space-16); }
-.roadmap-phase-header .phase-icon {
-  width: 36px; height: 36px; border-radius: var(--radius);
+.roadmap-timeline .periods-container { margin-bottom: 0; }
+.roadmap-timeline .periods-container section,
+.roadmap-timeline .cards-container section {
+  width: 70%; position: absolute; margin-left: 15%;
+  box-sizing: border-box; transition: transform .35s ease, opacity .25s ease;
+  opacity: 0; border-radius: var(--radius-lg);
+}
+.roadmap-timeline .periods-container section {
+  border-bottom: 4px solid var(--border-light);
+  padding: 8px 1.5em 1.2em; background: var(--bg); bottom: 0;
+}
+.roadmap-timeline .periods-container section.active {
+  height: auto; opacity: 1; transform: translateX(0); z-index: 5;
+}
+.roadmap-timeline .periods-container section.active .title,
+.roadmap-timeline .periods-container section.active p { display: block; }
+.roadmap-timeline .periods-container section.prev {
+  height: auto; opacity: 0.3; transform: translateX(-100%); z-index: 0;
+}
+.roadmap-timeline .periods-container section.next {
+  height: auto; opacity: 0.3; transform: translateX(100%); z-index: 0;
+}
+.roadmap-timeline .periods-container section .year {
+  font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.06em; margin-bottom: 2px;
+}
+.roadmap-timeline .periods-container section .title {
+  font-size: 1.2rem; font-weight: 600; color: var(--text);
+  margin-bottom: 4px; display: none;
+}
+.roadmap-timeline .periods-container section p {
+  font-size: 0.85rem; line-height: 1.5; display: none; margin: 0;
+  color: var(--text-secondary);
+}
+.roadmap-timeline .periods-container .btn-back,
+.roadmap-timeline .periods-container .btn-next,
+.roadmap-timeline .timeline-container .btn-back,
+.roadmap-timeline .timeline-container .btn-next {
+  display: inline-block; width: 15%; height: 100%; position: absolute;
+  cursor: pointer; z-index: 10; transition: 0.3s ease; top: 0;
+  background: none; border: none; padding: 0;
+}
+.roadmap-timeline .periods-container .btn-back:hover,
+.roadmap-timeline .timeline-container .btn-back:hover { background: linear-gradient(to right, rgba(0,0,0,0.02), transparent); }
+.roadmap-timeline .periods-container .btn-next:hover,
+.roadmap-timeline .timeline-container .btn-next:hover { background: linear-gradient(to left, rgba(0,0,0,0.02), transparent); }
+.roadmap-timeline .periods-container .btn-back.hide,
+.roadmap-timeline .periods-container .btn-next.hide,
+.roadmap-timeline .timeline-container .btn-back.hide,
+.roadmap-timeline .timeline-container .btn-next.hide { display: none; }
+.roadmap-timeline .periods-container .btn-back { left: 0; }
+.roadmap-timeline .periods-container .btn-next { right: 0; }
+
+/* Timeline bar */
+.roadmap-timeline .timeline-container {
+  position: relative; width: 100%; height: 50px; overflow: hidden; margin: 4px 0;
+}
+.roadmap-timeline .timeline-container .timeline {
+  position: absolute; display: block; height: 50px;
+  transition: left .3s ease-in-out; left: 0;
+}
+.roadmap-timeline .timeline-container .timeline ol {
+  display: block; width: 100%; height: 2px;
+  background: var(--border-light); list-style: none; margin: 0;
+  padding: 24px 210px 24px 210px;
+}
+.roadmap-timeline .timeline-container .timeline ol li {
+  display: inline-block; width: 14px; height: 14px;
+  margin-top: -6px; margin-left: 60px;
+  border-radius: 50%; border: 3px solid var(--text-tertiary);
+  background: var(--bg); position: relative; cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0,0,0,.12); transition: all .2s;
+  vertical-align: middle;
+}
+.roadmap-timeline .timeline-container .timeline ol li:hover { transform: scale(1.2); }
+.roadmap-timeline .timeline-container .timeline ol li.active {
+  box-shadow: 0 0 0 3px rgba(108,60,225,0.2);
+}
+.roadmap-timeline .timeline-container .timeline ol li.active::before,
+.roadmap-timeline .timeline-container .timeline ol li.active::after {
+  content: ""; display: block; height: 20px; width: 2px;
+  position: absolute; left: 6px;
+}
+.roadmap-timeline .timeline-container .timeline ol li.active::before { top: -22px; }
+.roadmap-timeline .timeline-container .timeline ol li.active::after { bottom: -22px; }
+.roadmap-timeline .timeline-container .btn-back { left: 0.5em; }
+.roadmap-timeline .timeline-container .btn-next { right: 0.5em; }
+
+/* Cards */
+.roadmap-timeline .cards-container { min-height: 120px; }
+.roadmap-timeline .cards-container section {
+  padding: 1.5em; border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg); background: var(--bg);
+  box-shadow: 0 4px 16px rgba(0,0,0,.06);
+}
+.roadmap-timeline .cards-container section.active {
+  height: auto; opacity: 1; transform: translateX(0); z-index: 5;
+}
+.roadmap-timeline .cards-container section.prev {
+  height: auto; opacity: 0.3; transform: translateX(-105%); z-index: 0;
+}
+.roadmap-timeline .cards-container section.next {
+  height: auto; opacity: 0.3; transform: translateX(105%); z-index: 0;
+}
+.roadmap-timeline .cards-container section .year {
+  text-align: center; font-size: 0.7rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 4px;
+}
+.roadmap-timeline .cards-container section .title {
+  font-size: 1rem; font-weight: 600; color: var(--text);
+  margin-bottom: 8px; text-align: center;
+}
+.roadmap-timeline .cards-container section .subtitle {
+  font-size: 0.82rem; color: var(--text-secondary);
+  margin-bottom: 12px; text-align: center;
+}
+.roadmap-timeline .cards-container section .content { font-size: 0.85rem; color: var(--text-secondary); }
+.roadmap-timeline .cards-container section .items {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px;
+  list-style: none; padding: 0; margin: 0;
+}
+.roadmap-timeline .cards-container section .items li {
+  padding: 3px 0; font-size: 0.82rem; position: relative; padding-left: 14px;
+}
+.roadmap-timeline .cards-container section .items li::before {
+  content: ''; position: absolute; left: 0; top: 8px;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--dot-color, var(--mojo));
+}
+.roadmap-timeline .cards-container section .tag {
+  display: inline-block; font-size: 0.65rem; font-weight: 600;
+  padding: 2px 10px; border-radius: 100px; text-transform: uppercase;
+  letter-spacing: 0.04em; margin-bottom: 8px;
+}
+.tag-now { background: rgba(25,128,56,0.1); color: var(--success); }
+.tag-next { background: var(--mojo-subtle); color: var(--mojo-dark); }
+.tag-future { background: rgba(212,90,0,0.08); color: var(--orange); }
+
+/* Timeline nav arrows */
+.roadmap-timeline .tl-arrow {
+  display: inline-block; width: 30px; height: 30px; position: absolute;
+  top: 50%; transform: translateY(-50%); cursor: pointer; z-index: 11;
+  transition: all .2s; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
-  font-size: 1rem; flex-shrink: 0;
 }
-.phase-icon.p0 { background: rgba(25,128,56,0.1); }
-.phase-icon.p1 { background: var(--mojo-subtle); }
-.phase-icon.p2 { background: rgba(0,67,206,0.08); }
-.phase-icon.p3 { background: rgba(212,90,0,0.08); }
-.phase-icon.p4 { background: rgba(0,157,154,0.08); }
-.roadmap-phase-header .phase-title { font-size: 1rem; font-weight: 600; }
-.roadmap-phase-header .phase-subtitle { font-size: 0.82rem; color: var(--text-secondary); margin-top: 2px; }
-.roadmap-phase-header .phase-meta { text-align: right; flex-shrink: 0; }
-.roadmap-phase-header .phase-tag {
-  display: inline-block; font-size: 0.68rem; font-weight: 600;
-  padding: 2px 10px; border-radius: 100px;
-  text-transform: uppercase; letter-spacing: 0.04em;
+.roadmap-timeline .tl-arrow:hover { background: var(--bg-alt); }
+.roadmap-timeline .tl-arrow svg { fill: var(--text-tertiary); }
+.roadmap-timeline .tl-arrow.hide { display: none; }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .roadmap-timeline .periods-container section,
+  .roadmap-timeline .cards-container section { width: 86%; margin-left: 7%; }
+  .roadmap-timeline .timeline-container .timeline ol { padding: 24px 60px; }
+  .roadmap-timeline .cards-container section .items { grid-template-columns: 1fr; }
 }
-.phase-tag.now { background: rgba(25,128,56,0.1); color: var(--success); }
-.phase-tag.next { background: var(--mojo-subtle); color: var(--mojo-dark); }
-.phase-tag.future { background: rgba(212,90,0,0.08); color: var(--orange); }
-.roadmap-phase-header .phase-count { font-size: 0.75rem; color: var(--text-tertiary); margin-top: 3px; }
-.roadmap-phase-header .arrow {
-  font-size: 0.7rem; color: var(--text-tertiary);
-  transition: transform var(--transition);
-  margin-left: var(--space-12);
-}
-.roadmap-phase.open .roadmap-phase-header .arrow { transform: rotate(90deg); }
-.roadmap-phase-body { display: none; padding: 0 var(--space-24) var(--space-20); }
-.roadmap-phase.open .roadmap-phase-body { display: block; animation: fadeSlide 0.2s ease; }
-.roadmap-items { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-8); }
-.roadmap-item {
-  display: flex; align-items: flex-start; gap: var(--space-10);
-  padding: var(--space-8) var(--space-12);
-  border-radius: var(--radius-sm);
-  font-size: 0.85rem; color: var(--text-secondary);
-  transition: background var(--transition);
-}
-.roadmap-item:hover { background: var(--bg-alt); }
-.roadmap-item .check { color: var(--success); font-size: 0.8rem; margin-top: 2px; flex-shrink: 0; }
-.roadmap-item .bullet { color: var(--mojo); font-size: 0.6rem; margin-top: 5px; flex-shrink: 0; }
-.roadmap-link { text-align: center; margin-top: var(--space-24); }
-.roadmap-link a { font-size: 0.88rem; font-weight: 500; }
 
 /* ── CTA Banner ── */
 .cta-banner {
@@ -577,7 +680,7 @@ footer .copyright {
   footer .grid { grid-template-columns: 1fr 1fr; }
   nav .nav-links a:not(.btn-nav):not(.version-badge) { display: none; }
   .hero-terminal { display: none; }
-  .roadmap-items { grid-template-columns: 1fr; }
+  .roadmap-timeline .cards-container section .items { grid-template-columns: 1fr; }
 }
 @media (max-width: 480px) {
   .container { padding: 0 var(--space-16); }
@@ -857,162 +960,140 @@ footer .copyright {
 </div>
 
 <!-- ════ ROADMAP ════ -->
-<div class="section" id="roadmap">
+<div class="section section-alt" id="roadmap">
 <div class="container">
   <div class="section-label">Roadmap</div>
   <h2>What's coming next</h2>
-  <p>Major milestones across engine, studio, GPU, and platform. Click a phase to expand details.</p>
+  <p>Major milestones across engine, studio, GPU, and platform. Use the timeline dots or arrows to navigate.</p>
 
-  <div class="roadmap" id="roadmapContainer">
+  <div class="roadmap-timeline" id="mojoTimeline">
 
-    <div class="roadmap-phase open" id="phase0">
-      <div class="roadmap-phase-header" onclick="togglePhase('phase0')">
-        <div class="phase-left">
-          <div class="phase-icon p0">✅</div>
-          <div>
-            <div class="phase-title">Phase 0 — Foundation</div>
-            <div class="phase-subtitle">Current: 50+ archs, C engine, Studio, Docker</div>
-          </div>
-        </div>
-        <div class="phase-meta">
-          <span class="phase-tag now">NOW</span>
-          <div class="phase-count">6 areas shipped</div>
-        </div>
-        <span class="arrow">▶</span>
-      </div>
-      <div class="roadmap-phase-body">
-        <div class="roadmap-items">
-          <div class="roadmap-item"><span class="check">✓</span> C batched engine with AVX2+OMP quant matmul</div>
-          <div class="roadmap-item"><span class="check">✓</span> Python MoE engine — 2.26× vs llama.cpp</div>
-          <div class="roadmap-item"><span class="check">✓</span> 2 custom forward passes (Gemma 4, ZAYA1)</div>
-          <div class="roadmap-item"><span class="check">✓</span> Studio web UI — 14 panels</div>
-          <div class="roadmap-item"><span class="check">✓</span> Studio CLI — 25+ commands</div>
-          <div class="roadmap-item"><span class="check">✓</span> Docker deployment with auto-tune + HF download</div>
-        </div>
-      </div>
+    <!-- Periods (top) -->
+    <div class="periods-container">
+      <section class="period-single active" period="period0">
+        <div class="year" style="color:#198038;">Phase 0</div>
+        <div class="title">Foundation — shipped</div>
+        <p>C engine, Python MoE engine (2.26× vs llama.cpp), Studio (14 panels, 25+ CLI commands), Docker deployment. 60+ arch detection, 2 custom forward passes.</p>
+      </section>
+      <section class="period-single" period="period1">
+        <div class="year" style="color:#6C3CE1;">Phase 1</div>
+        <div class="title">Full HF Model Coverage</div>
+        <p>Custom forward passes for Falcon, Phi-3/4, DeepSeek V2/V3, Qwen2-VL, Command-R. Automated forward pass generator from GGUF metadata for remaining 40+ archs. Perplexity regression benchmark per arch.</p>
+      </section>
+      <section class="period-single" period="period2">
+        <div class="year" style="color:#0043CE;">Phase 2</div>
+        <div class="title">Studio: One-Stop ML App</div>
+        <p>Pure-Python quantizer, imatrix + dynamic 2-bit quantization. LoRA/QLoRA with true Python gradients. Capability benchmarks (MMLU, GSM8K, HumanEval). HF dataset integration + quality filters. Training loop UI with live charts.</p>
+      </section>
+      <section class="period-single" period="period3">
+        <div class="year" style="color:#D45A00;">Phase 3</div>
+        <div class="title">CPU + GPU Engine</div>
+        <p>Q8_0 input C quant (2-4×), MXFP4 C kernel (10×), continuous batching. MAX GPU: CUDA, ROCm, Metal backends. GPU attention, MoE dispatch, KV cache. Flash Attention + CUDA graphs. Multi-GPU tensor/pipeline parallelism. GPU auto-tune.</p>
+      </section>
+      <section class="period-single" period="period4">
+        <div class="year" style="color:#009D9A;">Phase 4</div>
+        <div class="title">Platform: Ship It</div>
+        <p>pip package with pre-built wheels (manylinux x86_64, aarch64). Tauri desktop app. CI/CD with benchmark regressions. API hardening (keys, rate limiting, hot-swap). Model registry + comprehensive test suite.</p>
+      </section>
+
+      <button class="btn-back tl-arrow hide" aria-label="Previous"><svg width="18" height="18" viewBox="0 0 30 30"><path d="M11.828 15l7.89-7.89-2.83-2.828L6.283 14.89l.11.11-.11.11L16.89 25.72l2.828-2.83"/></svg></button>
+      <button class="btn-next tl-arrow" aria-label="Next"><svg width="18" height="18" viewBox="0 0 30 30"><path d="M18.172 14.718l-7.89-7.89L13.112 4l10.606 10.607-.11.11.11.11-10.608 10.61-2.828-2.83 7.89-7.89"/></svg></button>
     </div>
 
-    <div class="roadmap-phase" id="phase1">
-      <div class="roadmap-phase-header" onclick="togglePhase('phase1')">
-        <div class="phase-left">
-          <div class="phase-icon p1">🔌</div>
-          <div>
-            <div class="phase-title">Phase 1 — Full HF Model Coverage</div>
-            <div class="phase-subtitle">Custom forward passes for all 60+ architectures</div>
-          </div>
-        </div>
-        <div class="phase-meta">
-          <span class="phase-tag next">NEXT</span>
-          <div class="phase-count">10 tasks • 4 weeks</div>
-        </div>
-        <span class="arrow">▶</span>
-      </div>
-      <div class="roadmap-phase-body">
-        <div class="roadmap-items">
-          <div class="roadmap-item"><span class="bullet">●</span> Falcon — parallel attention+FFN, fused QKV</div>
-          <div class="roadmap-item"><span class="bullet">●</span> Phi-3/4 — fused QKV, long RoPE (128K)</div>
-          <div class="roadmap-item"><span class="bullet">●</span> DeepSeek V2/V3 — Multi-head Latent Attention</div>
-          <div class="roadmap-item"><span class="bullet">●</span> Qwen2-VL — vision + language interop</div>
-          <div class="roadmap-item"><span class="bullet">●</span> Command-R / Cohere2 — Tanh-gated RoPE</div>
-          <div class="roadmap-item"><span class="bullet">●</span> Automated forward pass generator from GGUF metadata</div>
-          <div class="roadmap-item"><span class="bullet">●</span> BTLM / GLM — bidirectional hybrid</div>
-          <div class="roadmap-item"><span class="bullet">●</span> Perplexity regression benchmark per architecture</div>
-        </div>
-      </div>
+    <!-- Timeline (middle) -->
+    <div class="timeline-container">
+      <div class="timeline"></div>
+      <button class="btn-back tl-arrow hide" aria-label="Previous"><svg width="18" height="18" viewBox="0 0 30 30"><path d="M11.828 15l7.89-7.89-2.83-2.828L6.283 14.89l.11.11-.11.11L16.89 25.72l2.828-2.83"/></svg></button>
+      <button class="btn-next tl-arrow" aria-label="Next"><svg width="18" height="18" viewBox="0 0 30 30"><path d="M18.172 14.718l-7.89-7.89L13.112 4l10.606 10.607-.11.11.11.11-10.608 10.61-2.828-2.83 7.89-7.89"/></svg></button>
     </div>
 
-    <div class="roadmap-phase" id="phase2">
-      <div class="roadmap-phase-header" onclick="togglePhase('phase2')">
-        <div class="phase-left">
-          <div class="phase-icon p2">📊</div>
-          <div>
-            <div class="phase-title">Phase 2 — Studio: One-Stop ML App</div>
-            <div class="phase-subtitle">Quantization, training, benchmarking — all in-house, no external binaries</div>
-          </div>
-        </div>
-        <div class="phase-meta">
-          <span class="phase-tag next">NEXT</span>
-          <div class="phase-count">18 tasks • 6-8 weeks</div>
-        </div>
-        <span class="arrow">▶</span>
-      </div>
-      <div class="roadmap-phase-body">
-        <div class="roadmap-items">
-          <div class="roadmap-item"><span class="bullet">●</span> Pure-Python quantizer — Q4_K through Q8_0</div>
-          <div class="roadmap-item"><span class="bullet">●</span> Imatrix + dynamic 2-bit quantization</div>
-          <div class="roadmap-item"><span class="bullet">●</span> Studio quant wizard — pick model → quants → run</div>
-          <div class="roadmap-item"><span class="bullet">●</span> LoRA/QLoRA with true Python gradients</div>
-          <div class="roadmap-item"><span class="bullet">●</span> Training loop UI — loss charts, ETA, schedule</div>
-          <div class="roadmap-item"><span class="bullet">●</span> DPO/ORPO preference optimization</div>
-          <div class="roadmap-item"><span class="bullet">●</span> Capability benchmarks — MMLU, GSM8K, HumanEval</div>
-          <div class="roadmap-item"><span class="bullet">●</span> HF dataset integration + quality filters</div>
-          <div class="roadmap-item"><span class="bullet">●</span> Perplexity evaluation + benchmark history</div>
-        </div>
-      </div>
+    <!-- Cards (bottom) -->
+    <div class="cards-container">
+      <section class="card-single active" period="period0">
+        <span class="tag tag-now">Now</span>
+        <div class="year" style="color:#198038;">Phase 0</div>
+        <div class="title">Foundation</div>
+        <div class="subtitle">6 major areas shipped</div>
+        <ul class="items">
+          <li style="--dot:#198038;">C batched engine — AVX2+OMP quant matmul</li>
+          <li style="--dot:#198038;">Python MoE engine — 2.26× vs llama.cpp</li>
+          <li style="--dot:#198038;">2 custom forward passes (Gemma 4, ZAYA1)</li>
+          <li style="--dot:#198038;">Studio web UI — 14 panels</li>
+          <li style="--dot:#198038;">Studio CLI — 25+ commands</li>
+          <li style="--dot:#198038;">Docker with auto-tune + HF download</li>
+        </ul>
+      </section>
+      <section class="card-single" period="period1">
+        <span class="tag tag-next">Next</span>
+        <div class="year" style="color:#6C3CE1;">Phase 1</div>
+        <div class="title">Full HF Model Coverage</div>
+        <div class="subtitle">10 tasks · 4 weeks</div>
+        <ul class="items">
+          <li style="--dot:#6C3CE1;">Falcon — parallel attention+FFN, fused QKV</li>
+          <li style="--dot:#6C3CE1;">Phi-3/4 — fused QKV, long RoPE (128K)</li>
+          <li style="--dot:#6C3CE1;">DeepSeek V2/V3 — Multi-head Latent Attention</li>
+          <li style="--dot:#6C3CE1;">Qwen2-VL — vision + language interop</li>
+          <li style="--dot:#6C3CE1;">Command-R / Cohere2 — Tanh-gated RoPE</li>
+          <li style="--dot:#6C3CE1;">Automated forward pass generator from GGUF metadata</li>
+          <li style="--dot:#6C3CE1;">BTLM / GLM — bidirectional hybrid</li>
+          <li style="--dot:#6C3CE1;">Perplexity regression benchmark per arch</li>
+        </ul>
+      </section>
+      <section class="card-single" period="period2">
+        <span class="tag tag-next">Next</span>
+        <div class="year" style="color:#0043CE;">Phase 2</div>
+        <div class="title">Studio: One-Stop ML App</div>
+        <div class="subtitle">18 tasks · 6-8 weeks</div>
+        <ul class="items">
+          <li style="--dot:#0043CE;">Pure-Python quantizer — Q4_K through Q8_0</li>
+          <li style="--dot:#0043CE;">Imatrix + dynamic 2-bit quantization</li>
+          <li style="--dot:#0043CE;">Studio quant wizard — pick model → quants → run</li>
+          <li style="--dot:#0043CE;">LoRA/QLoRA with true Python gradients</li>
+          <li style="--dot:#0043CE;">Training loop UI — loss charts, ETA, schedule</li>
+          <li style="--dot:#0043CE;">DPO/ORPO preference optimization</li>
+          <li style="--dot:#0043CE;">Capability benchmarks — MMLU, GSM8K, HumanEval</li>
+          <li style="--dot:#0043CE;">HF dataset integration + quality filters</li>
+          <li style="--dot:#0043CE;">Perplexity evaluation + benchmark history</li>
+        </ul>
+      </section>
+      <section class="card-single" period="period3">
+        <span class="tag tag-future">Future</span>
+        <div class="year" style="color:#D45A00;">Phase 3</div>
+        <div class="title">CPU + GPU Engine</div>
+        <div class="subtitle">21 tasks · 8-12 weeks</div>
+        <ul class="items">
+          <li style="--dot:#D45A00;">Q8_0 input C quant — 2-4× matmul improvement</li>
+          <li style="--dot:#D45A00;">MXFP4 C kernel — 10× faster than Python</li>
+          <li style="--dot:#D45A00;">True continuous batching + PagedAttention</li>
+          <li style="--dot:#D45A00;">MAX GPU: CUDA, ROCm, Metal backends</li>
+          <li style="--dot:#D45A00;">GPU attention, MoE dispatch, KV cache</li>
+          <li style="--dot:#D45A00;">Flash Attention + CUDA graphs</li>
+          <li style="--dot:#D45A00;">Multi-GPU tensor + pipeline parallelism</li>
+          <li style="--dot:#D45A00;">GPU-native FP8/INT4 quantization</li>
+          <li style="--dot:#D45A00;">GPU auto-tune — layers, batch, concurrency</li>
+        </ul>
+      </section>
+      <section class="card-single" period="period4">
+        <span class="tag tag-future">Future</span>
+        <div class="year" style="color:#009D9A;">Phase 4</div>
+        <div class="title">Platform: Ship It</div>
+        <div class="subtitle">7 tasks · 4-6 weeks</div>
+        <ul class="items">
+          <li style="--dot:#009D9A;">pip package — manylinux x86_64, aarch64 wheels</li>
+          <li style="--dot:#009D9A;">Desktop app — Tauri wrapper for Studio</li>
+          <li style="--dot:#009D9A;">CI/CD — GitHub Actions, benchmark regressions</li>
+          <li style="--dot:#009D9A;">API hardening — keys, rate limiting, hot-swap</li>
+          <li style="--dot:#009D9A;">Model registry — local + HF Hub, one-click download</li>
+          <li style="--dot:#009D9A;">Comprehensive test suite</li>
+          <li style="--dot:#009D9A;">Auto-generated release notes</li>
+        </ul>
+      </section>
     </div>
 
-    <div class="roadmap-phase" id="phase3">
-      <div class="roadmap-phase-header" onclick="togglePhase('phase3')">
-        <div class="phase-left">
-          <div class="phase-icon p3">⚡</div>
-          <div>
-            <div class="phase-title">Phase 3 — Inference Engine: CPU + GPU</div>
-            <div class="phase-subtitle">C engine maturation + full MAX GPU pipeline</div>
-          </div>
-        </div>
-        <div class="phase-meta">
-          <span class="phase-tag future">FUTURE</span>
-          <div class="phase-count">21 tasks • 8-12 weeks</div>
-        </div>
-        <span class="arrow">▶</span>
-      </div>
-      <div class="roadmap-phase-body">
-        <div class="roadmap-items">
-          <div class="roadmap-item"><span class="bullet">●</span> Q8_0 input C quant — 2-4× matmul improvement</div>
-          <div class="roadmap-item"><span class="bullet">●</span> MXFP4 C kernel — native C, 10× faster than Python</div>
-          <div class="roadmap-item"><span class="bullet">●</span> True continuous batching + PagedAttention</div>
-          <div class="roadmap-item"><span class="bullet">●</span> MAX GPU: CUDA, ROCm, Metal backends</div>
-          <div class="roadmap-item"><span class="bullet">●</span> GPU attention, MoE dispatch, KV cache</div>
-          <div class="roadmap-item"><span class="bullet">●</span> Flash Attention + CUDA graphs</div>
-          <div class="roadmap-item"><span class="bullet">●</span> Multi-GPU: tensor + pipeline parallelism</div>
-          <div class="roadmap-item"><span class="bullet">●</span> GPU-native FP8/INT4 quantization</div>
-          <div class="roadmap-item"><span class="bullet">●</span> GPU auto-tune — layers, batch, concurrency sweep</div>
-        </div>
-      </div>
+    <div style="text-align:center; margin-top:24px;">
+      <a href="ROADMAP.md" style="font-size:0.88rem; font-weight:500;">View full roadmap →</a>
     </div>
 
-    <div class="roadmap-phase" id="phase4">
-      <div class="roadmap-phase-header" onclick="togglePhase('phase4')">
-        <div class="phase-left">
-          <div class="phase-icon p4">📦</div>
-          <div>
-            <div class="phase-title">Phase 4 — Platform: Ship It</div>
-            <div class="phase-subtitle">pip package, desktop app, CI/CD, production hardening</div>
-          </div>
-        </div>
-        <div class="phase-meta">
-          <span class="phase-tag future">FUTURE</span>
-          <div class="phase-count">7 tasks • 4-6 weeks</div>
-        </div>
-        <span class="arrow">▶</span>
-      </div>
-      <div class="roadmap-phase-body">
-        <div class="roadmap-items">
-          <div class="roadmap-item"><span class="bullet">●</span> pip package — pre-built wheels (manylinux x86_64, aarch64)</div>
-          <div class="roadmap-item"><span class="bullet">●</span> Desktop app — Tauri wrapper for Studio</div>
-          <div class="roadmap-item"><span class="bullet">●</span> CI/CD — GitHub Actions, benchmark regressions</div>
-          <div class="roadmap-item"><span class="bullet">●</span> API hardening — keys, rate limiting, hot-swap</div>
-          <div class="roadmap-item"><span class="bullet">●</span> Model registry — local + HF Hub, one-click download</div>
-          <div class="roadmap-item"><span class="bullet">●</span> Comprehensive test suite</div>
-          <div class="roadmap-item"><span class="bullet">●</span> Auto-generated release notes</div>
-        </div>
-      </div>
-    </div>
-
-  </div>
-
-  <div class="roadmap-link">
-    <a href="ROADMAP.md">View full roadmap →</a>
   </div>
 </div>
 </div>
@@ -1063,10 +1144,254 @@ footer .copyright {
 </footer>
 
 <script>
-function togglePhase(id) {
-  var el = document.getElementById(id);
-  if (el) el.classList.toggle('open');
-}
+(function() {
+  'use strict';
+
+  var COLORS = {
+    period0: '#198038',
+    period1: '#6C3CE1',
+    period2: '#0043CE',
+    period3: '#D45A00',
+    period4: '#009D9A'
+  };
+
+  function PRESTimeline(el) {
+    this.base = el;
+    this.periodContainer = el.querySelector('.periods-container');
+    this.cardContainer = el.querySelector('.cards-container');
+    this.timelineNodeContainer = el.querySelector('.timeline-container .timeline');
+    this.periodData = [];
+    this.cardData = [];
+    this.activePeriodIndex = 0;
+    this.activeCardIndex = 0;
+    this.timelineData = [];
+    this._parseData();
+    this._generateTimeline();
+    this._setStateClasses();
+    this._assignButtons();
+    this._adjustPeriodContainer();
+    this._adjustCardContainer();
+  }
+
+  PRESTimeline.prototype._parseData = function() {
+    var periods = this.periodContainer.querySelectorAll('section.period-single');
+    for (var i = 0; i < periods.length; i++) {
+      periods[i].period = periods[i].getAttribute('period');
+      periods[i].index = i;
+      this.periodData.push(periods[i]);
+    }
+    var cards = this.cardContainer.querySelectorAll('section.card-single');
+    for (var i = 0; i < cards.length; i++) {
+      cards[i].period = cards[i].getAttribute('period');
+      cards[i].index = i;
+      this.cardData.push(cards[i]);
+    }
+    this.activePeriod = this.periodData[0];
+    this.activeCard = this.cardData[0];
+  };
+
+  PRESTimeline.prototype._setStateClasses = function() {
+    var i, s, periodEls = this.periodContainer.querySelectorAll('section.period-single'),
+        cardEls = this.cardContainer.querySelectorAll('section.card-single');
+
+    for (i = 0; i < periodEls.length; i++) {
+      periodEls[i].classList.remove('active', 'prev', 'next');
+    }
+    this.activePeriod.classList.add('active');
+    if (this.activePeriod.previousElementSibling && this.activePeriod.previousElementSibling.tagName === 'SECTION') {
+      this.activePeriod.previousElementSibling.classList.add('prev');
+    }
+    if (this.activePeriod.nextElementSibling && this.activePeriod.nextElementSibling.tagName === 'SECTION') {
+      this.activePeriod.nextElementSibling.classList.add('next');
+    }
+
+    for (i = 0; i < cardEls.length; i++) {
+      cardEls[i].classList.remove('active', 'prev', 'next');
+    }
+    this.activeCard.classList.add('active');
+    var prevCard = this._prevCard();
+    if (prevCard) prevCard.classList.add('prev');
+    var nextCard = this._nextCard();
+    if (nextCard) nextCard.classList.add('next');
+
+    for (i = 0; i < this.timelineData.length; i++) {
+      this.timelineData[i].classList.remove('active');
+    }
+    this.timelineData[this.activeCardIndex].classList.add('active');
+
+    // hide/show back/next buttons
+    var tlB = this.base.querySelectorAll('.btn-back');
+    var tlN = this.base.querySelectorAll('.btn-next');
+    for (i = 0; i < tlB.length; i++) {
+      tlB[i].classList.toggle('hide', this.activeCardIndex === 0);
+    }
+    for (i = 0; i < tlN.length; i++) {
+      tlN[i].classList.toggle('hide', this.activeCardIndex >= this.cardData.length - 1);
+    }
+  };
+
+  PRESTimeline.prototype._prevCard = function() {
+    var idx = this.activeCardIndex;
+    for (var i = idx - 1; i >= 0; i--) {
+      return this.cardData[i];
+    }
+    return null;
+  };
+
+  PRESTimeline.prototype._nextCard = function() {
+    var idx = this.activeCardIndex;
+    for (var i = idx + 1; i < this.cardData.length; i++) {
+      return this.cardData[i];
+    }
+    return null;
+  };
+
+  PRESTimeline.prototype._generateTimeline = function() {
+    var html = '<ol></ol>';
+    this.timelineNodeContainer.innerHTML = html;
+    var wrap = this.timelineNodeContainer.querySelector('ol');
+    var numNode = this.cardData.length;
+    for (var i = 0; i < numNode; i++) {
+      var li = document.createElement('li');
+      li.className = this.cardData[i].period;
+      li.style.borderColor = COLORS[this.cardData[i].period];
+      wrap.appendChild(li);
+    }
+    var nodeW = 200;
+    wrap.style.width = (nodeW * numNode - 16) + 'px';
+    this.timelineData = wrap.querySelectorAll('li');
+  };
+
+  PRESTimeline.prototype._assignButtons = function() {
+    var self = this;
+    var periodPrev = this.base.querySelector('.periods-container .btn-back');
+    var periodNext = this.base.querySelector('.periods-container .btn-next');
+
+    periodPrev.addEventListener('click', function() {
+      if (self.activePeriodIndex > 0) {
+        self.activePeriodIndex--;
+        self.activePeriod = self.periodData[self.activePeriodIndex];
+        self._chainActions('period');
+        self._setStateClasses();
+      }
+      self._adjustPeriodContainer();
+    });
+    periodNext.addEventListener('click', function() {
+      if (self.activePeriodIndex < self.periodData.length - 1) {
+        self.activePeriodIndex++;
+        self.activePeriod = self.periodData[self.activePeriodIndex];
+        self._chainActions('period');
+        self._setStateClasses();
+      }
+      self._adjustPeriodContainer();
+    });
+
+    var tlPrev = this.base.querySelector('.timeline-container .btn-back');
+    var tlNext = this.base.querySelector('.timeline-container .btn-next');
+    tlPrev.addEventListener('click', function() {
+      if (self.activeCardIndex > 0) {
+        self.activeCardIndex--;
+        self.activeCard = self.cardData[self.activeCardIndex];
+        self._chainActions('timeline');
+        self._setStateClasses();
+      }
+      self._adjustCardContainer();
+      self._adjustPeriodContainer();
+    });
+    tlNext.addEventListener('click', function() {
+      if (self.activeCardIndex < self.cardData.length - 1) {
+        self.activeCardIndex++;
+        self.activeCard = self.cardData[self.activeCardIndex];
+        self._chainActions('timeline');
+        self._setStateClasses();
+      }
+      self._adjustCardContainer();
+      self._adjustPeriodContainer();
+    });
+
+    for (var i = 0; i < this.timelineData.length; i++) {
+      (function(idx) {
+        self.timelineData[idx].addEventListener('click', function() {
+          self.activeCardIndex = self.cardData[idx].index;
+          self.activeCard = self.cardData[self.activeCardIndex];
+          self._chainActions('timeline');
+          self._setStateClasses();
+          self._adjustCardContainer();
+          self._shiftTimeline();
+        });
+      })(i);
+    }
+
+    // Insert color styles
+    var sbstyle = document.createElement('style');
+    document.head.appendChild(sbstyle);
+    for (var p in COLORS) {
+      sbstyle.sheet.insertRule('li.' + p + '.active { background-color: ' + COLORS[p] + ' !important }', 0);
+      sbstyle.sheet.insertRule('li.' + p + '::before { background-color: ' + COLORS[p] + ' }', 0);
+      sbstyle.sheet.insertRule('li.' + p + '::after { background-color: ' + COLORS[p] + ' }', 0);
+    }
+
+    // Style the card list item dots
+    var allCards = this.cardContainer.querySelectorAll('section.card-single');
+    for (var c = 0; c < allCards.length; c++) {
+      var items = allCards[c].querySelectorAll('.items li');
+      var dotColor = COLORS[allCards[c].getAttribute('period')] || '#6C3CE1';
+      for (var li = 0; li < items.length; li++) {
+        items[li].style.setProperty('--dot-color', dotColor);
+      }
+    }
+  };
+
+  PRESTimeline.prototype._adjustPeriodContainer = function() {
+    var activeH = this.activePeriod.offsetHeight;
+    this.periodContainer.style.height = activeH + 'px';
+  };
+
+  PRESTimeline.prototype._adjustCardContainer = function() {
+    var activeH = this.activeCard.offsetHeight + 32;
+    this.cardContainer.style.height = activeH + 'px';
+  };
+
+  PRESTimeline.prototype._shiftTimeline = function() {
+    var timelineW = this.base.querySelector('.timeline-container').offsetWidth;
+    var timelinePadding = 210;
+    var activeNode = this.timelineData[this.activeCardIndex];
+    var activeNodeX = activeNode ? activeNode.offsetLeft : 0;
+    var finalPos = -activeNodeX + timelinePadding;
+    this.timelineNodeContainer.style.left = Math.min(0, finalPos) + 'px';
+  };
+
+  PRESTimeline.prototype._chainActions = function(state) {
+    if (state === 'period') {
+      if (this.activePeriod.period !== this.activeCard.period) {
+        for (var i = 0; i < this.cardData.length; i++) {
+          if (this.activePeriod.period === this.cardData[i].period) {
+            this.activeCard = this.cardData[i];
+            this.activeCardIndex = this.cardData[i].index;
+            break;
+          }
+        }
+      }
+    } else if (state === 'timeline') {
+      if (this.activeCard.period !== this.activePeriod.period) {
+        for (var i = 0; i < this.periodData.length; i++) {
+          if (this.activeCard.period === this.periodData[i].period) {
+            this.activePeriod = this.periodData[i];
+            this.activePeriodIndex = this.periodData[i].index;
+            break;
+          }
+        }
+      }
+    }
+    this._shiftTimeline();
+    this._adjustCardContainer();
+  };
+
+  document.addEventListener('DOMContentLoaded', function() {
+    var el = document.getElementById('mojoTimeline');
+    if (el) new PRESTimeline(el);
+  });
+})();
 </script>
 </body>
 </html>
