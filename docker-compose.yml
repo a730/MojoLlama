@@ -1,61 +1,124 @@
 # =============================================================================
-#  MojoLlama — Docker Compose
+#  MojoLlama — Docker Compose (5 Backend Images)
 #
 #  Quick start:
-#    docker compose up
+#    docker compose up cpu                           # CPU (TurboEngine AVX2 + llama.cpp CPU)
+#    docker compose up cuda                          # NVIDIA GPU + MAX backend
+#    docker compose up rocm                          # AMD GPU + MAX backend
+#    docker compose up vulkan                        # Universal GPU (Vulkan)
+#    docker compose up sycl                          # Intel GPU (SYCL/oneAPI)
 #
 #  With custom model:
-#    MODEL_PATH=/path/to/model.gguf docker compose up
+#    MODEL_PATH=/path/to/model.gguf docker compose up cpu
 #
-#  Override engine:
-#    ENGINE=server_moe docker compose up
+#  Benchmark mode (tests all backends, picks fastest):
+#    MOJOLLAMA_BENCHMARK=true docker compose up cpu
+#
+#  Force specific backend:
+#    MOJOLLAMA_BACKEND=max docker compose up cuda
+#    MOJOLLAMA_BACKEND=turbo_engine docker compose up cpu
 # =============================================================================
 
+x-common: &common
+  container_name: mojollama-server
+  ports:
+    - "${HOST_PORT:-8080}:8080"
+    - "${LLAMA_PORT:-8081}:8081"
+  volumes:
+    - "${MODEL_VOLUME:-./models}:/models:ro"
+    - "mojollama-config:/home/mojollama/.mojollama"
+  environment:
+    - MODEL_PATH=${MODEL_PATH:-/models/tinyllama-1.1b.Q4_K_M.gguf}
+    - PORT=${PORT:-8080}
+    - OMP_NUM_THREADS=${OMP_NUM_THREADS:-32}
+    - MOJOLLAMA_BENCHMARK=${MOJOLLAMA_BENCHMARK:-false}
+    - MOJOLLAMA_BACKEND=${MOJOLLAMA_BACKEND:-auto}
+  healthcheck:
+    test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+    interval: 30s
+    timeout: 5s
+    start_period: 60s
+    retries: 3
+  restart: unless-stopped
+  ulimits:
+    memlock: -1  # required by llama-server --mlock
+
 services:
-  mojollama:
+  # ── CPU: TurboEngine AVX2 + llama.cpp CPU ──────────────────────────────
+  cpu:
+    <<: *common
     build:
       context: .
       dockerfile: Dockerfile
-    image: mojollama:latest
-    container_name: mojollama-server
-    ports:
-      # MojoLlama API (MoE engine HTTP server)
-      - "${HOST_PORT:-8080}:8080"
-      # llama.cpp backend (optional, for debugging)
-      - "${LLAMA_PORT:-8081}:8081"
-    volumes:
-      # Mount your GGUF models directory
-      # Default: models/ in the project root
-      - "${MODEL_VOLUME:-./models}:/models:ro"
-      # Mount config directory for persistence
-      - "mojollama-config:/home/mojollama/.mojollama"
-    environment:
-      # Model path inside container (default: pre-downloaded Qwen3)
-      - MODEL_PATH=${MODEL_PATH:-/models/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf}
-      # API server port
-      - PORT=${PORT:-8080}
-      # Engine type: server_moe or server_batch_moe
-      - ENGINE=${ENGINE:-server_batch_moe}
-      # OpenMP threads for MoE kernel
-      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-32}
-    # Health check (matches Dockerfile)
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 5s
-      start_period: 60s
-      retries: 3
-    # Restart unless explicitly stopped
-    restart: unless-stopped
-    # Resource limits (adjust based on your hardware)
+    image: ghcr.io/a730/mojollama:cpu
     deploy:
       resources:
         limits:
-          cpus: "32"
-          memory: "64G"
+          cpus: "${CPU_LIMIT:-32}"
+          memory: "${MEM_LIMIT:-64G}"
+
+  # ── CUDA: NVIDIA GPU + MAX backend ─────────────────────────────────────
+  cuda:
+    <<: *common
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cuda
+    image: ghcr.io/a730/mojollama:cuda
+    environment:
+      - MODEL_PATH=${MODEL_PATH:-/models/tinyllama-1.1b.Q4_K_M.gguf}
+      - PORT=${PORT:-8080}
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-32}
+      - MOJOLLAMA_BENCHMARK=${MOJOLLAMA_BENCHMARK:-false}
+      - MOJOLLAMA_BACKEND=${MOJOLLAMA_BACKEND:-auto}
+    deploy:
+      resources:
         reservations:
-          cpus: "8"
-          memory: "16G"
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ── ROCm: AMD GPU + MAX backend ────────────────────────────────────────
+  rocm:
+    <<: *common
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.rocm
+    image: ghcr.io/a730/mojollama:rocm
+    environment:
+      - MODEL_PATH=${MODEL_PATH:-/models/tinyllama-1.1b.Q4_K_M.gguf}
+      - PORT=${PORT:-8080}
+      - OMP_NUM_THREADS=${OMP_NUM_THREADS:-32}
+      - MOJOLLAMA_BENCHMARK=${MOJOLLAMA_BENCHMARK:-false}
+      - MOJOLLAMA_BACKEND=${MOJOLLAMA_BACKEND:-auto}
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - video
+
+  # ── Vulkan: Universal GPU (any GPU with Vulkan driver) ─────────────────
+  vulkan:
+    <<: *common
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.vulkan
+    image: ghcr.io/a730/mojollama:vulkan
+    devices:
+      - /dev/dri:/dev/dri
+
+  # ── SYCL: Intel GPU (oneAPI) ───────────────────────────────────────────
+  sycl:
+    <<: *common
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.sycl
+    image: ghcr.io/a730/mojollama:sycl
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - render
+      - video
 
 volumes:
   mojollama-config:

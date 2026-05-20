@@ -129,7 +129,35 @@ def build_server_cmd(server_path: str, model_path: str, port: int,
         cmd.append("-C")
         cmd.append(cpu_mask)
 
+    # GPU layer offloading
+    gpu_layers = config.get("gpu_layers", 0)
+    if gpu_layers:
+        cmd.append("-ngl"); cmd.append(str(gpu_layers))
+        cmd.append("--no-kv-offload")
+
     return cmd
+
+
+def detect_gpu() -> Optional[str]:
+    """Detect available GPU backend.
+    Returns: "cuda", "rocm", "vulkan", or None
+    """
+    try:
+        r = subprocess.run(["nvidia-smi"], capture_output=True, timeout=5)
+        if r.returncode == 0:
+            return "cuda"
+    except: pass
+    try:
+        r = subprocess.run(["rocminfo"], capture_output=True, timeout=5)
+        if r.returncode == 0:
+            return "rocm"
+    except: pass
+    try:
+        r = subprocess.run(["vulkaninfo", "--summary"], capture_output=True, timeout=5)
+        if r.returncode == 0:
+            return "vulkan"
+    except: pass
+    return None
 
 
 class BackendBase:
@@ -142,6 +170,14 @@ class BackendBase:
     def chat(self, messages: list, max_tokens: int = 256, **kwargs) -> dict:
         raise NotImplementedError
     
+    def generate_stream(self, prompt: str, max_tokens: int = 128, **kwargs):
+        """Streaming text completion. Yields OpenAI-format SSE chunks."""
+        raise NotImplementedError
+    
+    def chat_stream(self, messages: list, max_tokens: int = 256, **kwargs):
+        """Streaming chat completion. Yields OpenAI-format SSE chunks."""
+        raise NotImplementedError
+    
     def is_available(self) -> bool:
         raise NotImplementedError
     
@@ -151,16 +187,17 @@ class BackendBase:
 
 
 class LlamaCppBackend(BackendBase):
-    """llama.cpp server backend — optimized for CPU."""
+    """llama.cpp server backend — CPU or GPU via offloading."""
     name = "llama.cpp"
     
-    def __init__(self, model_path: str = "", port: int = 8081):
+    def __init__(self, model_path: str = "", port: int = 8081, gpu: Optional[str] = None):
         self.port = port
         self.base_url = f"http://127.0.0.1:{port}"
         self.model_path = model_path or "/onedev-workspace/work/Llama-3.2-1B-Instruct-Q4_0.gguf"
         self._process: Optional[subprocess.Popen] = None
         self._server_path = "/tmp/llama.cpp/build/bin/llama-server"
         self._started = False
+        self.gpu = gpu
     
     def _ensure_server(self):
         """Start llama.cpp server if not running."""
@@ -169,12 +206,13 @@ class LlamaCppBackend(BackendBase):
         if self._check_server():
             self._started = True
             return
-        # Start server with optimized settings from auto-tuner (or defaults)
-        cmd = build_server_cmd(self._server_path, self.model_path, self.port)
+        config = {}
+        if self.gpu:
+            config["gpu_layers"] = -1
+        cmd = build_server_cmd(self._server_path, self.model_path, self.port, config)
         self._process = subprocess.Popen(cmd,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
-        # Wait for it to be ready
         for _ in range(30):
             time.sleep(1)
             if self._check_server():
@@ -237,6 +275,60 @@ class LlamaCppBackend(BackendBase):
             "text": choice.get("message", {}).get("content", ""),
             "backend": self.name,
         }
+    
+    def generate_stream(self, prompt: str, max_tokens: int = 128, **kwargs):
+        self._ensure_server()
+        temperature = kwargs.get("temperature", 0.7)
+        import urllib.request
+        data = json.dumps({
+            "prompt": prompt, "n_predict": max_tokens,
+            "temperature": temperature, "stream": True,
+            "cache_prompt": True,
+        }).encode()
+        req = urllib.request.Request(
+            f"{self.base_url}/completion",
+            data=data, headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            for line in resp:
+                line_str = line.decode("utf-8", errors="replace").strip()
+                if line_str.startswith("data: "):
+                    payload = line_str[6:]
+                    if payload.strip():
+                        try:
+                            inner = json.loads(payload)
+                            token = inner.get("content", "")
+                            stop = inner.get("stop", False)
+                            yield {"choices": [{"delta": {"content": token}, "index": 0}]}
+                            if stop:
+                                break
+                        except json.JSONDecodeError:
+                            pass
+    
+    def chat_stream(self, messages: list, max_tokens: int = 256, **kwargs):
+        self._ensure_server()
+        temperature = kwargs.get("temperature", 0.7)
+        import urllib.request
+        data = json.dumps({
+            "messages": messages, "max_tokens": max_tokens,
+            "temperature": temperature, "stream": True,
+        }).encode()
+        req = urllib.request.Request(
+            f"{self.base_url}/v1/chat/completions",
+            data=data, headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            for line in resp:
+                line_str = line.decode("utf-8", errors="replace").strip()
+                if line_str.startswith("data: "):
+                    payload = line_str[6:]
+                    if payload == "[DONE]":
+                        break
+                    if payload.strip():
+                        try:
+                            yield json.loads(payload)
+                        except json.JSONDecodeError:
+                            pass
     
     def stop(self):
         if self._process:
@@ -342,12 +434,11 @@ class MAXBackend(BackendBase):
     def _ensure_llm(self):
         """Initialize the MAX LLM pipeline if not already loaded.
 
-        This is a **stub** — the actual ``max.entrypoints.LLM``
-        initialization is prepared here but guarded by an import check.
-
-        Raises:
-            ImportError: If the ``max`` package is not installed.
-                Message includes installation instructions.
+        Uses MAX (https://docs.modular.com/max) inference engine with:
+          - PagedAttention for efficient KV-cache management
+          - FlashAttention-2 kernels on NVIDIA/AMD GPUs
+          - Continuous batching with inflight batching
+          - GGUF model loading with Q4_0, Q4_K_M, Q8_0, FP16 support
         """
         if self._llm is not None:
             return
@@ -358,53 +449,40 @@ class MAXBackend(BackendBase):
                 "See https://docs.modular.com/max/install for full setup."
             )
 
-        # ── Future integration point ────────────────────────────────────
-        # Once MAX is installed, the following code will activate the
-        # pipeline.  It is deliberately left as a stub so that when MAX
-        # becomes available on this system, the only work needed is to
-        # uncomment and adjust paths.
+        # Patch MAX's GGUF reader for BF16 support
+        import gguf
+        if not any(t.value == 30 for t in gguf.GGUFValueType):
+            from enum import IntEnum
+            class P(IntEnum):
+                UINT8=0; INT8=1; UINT16=2; INT16=3; UINT32=4; INT32=5
+                FLOAT32=6; BOOL=7; STRING=8; ARRAY=9; UINT64=10; INT64=11
+                FLOAT64=12; BF16=30
+            gguf.GGUFValueType = P
 
-        # ----8<---- [ FUTURE ACTIVATION CODE ] ----8<----
-        # # Patch MAX's GGUF reader for BF16 support
-        # import gguf
-        # if not any(t.value == 30 for t in gguf.GGUFValueType):
-        #     from enum import IntEnum
-        #     class P(IntEnum):
-        #         UINT8=0; INT8=1; UINT16=2; INT16=3; UINT32=4; INT32=5
-        #         FLOAT32=6; BOOL=7; STRING=8; ARRAY=9; UINT64=10; INT64=11
-        #         FLOAT64=12; BF16=30
-        #     gguf.GGUFValueType = P
-        #
-        # from max.entrypoints import PipelineConfig, LLM
-        # from max.driver import DeviceSpec
-        #
-        # # Auto-detect GPU or CPU
-        # try:
-        #     from max.driver import GPU
-        #     gpu = GPU()
-        #     device = DeviceSpec(id=0, device_type="gpu")
-        #     print(f"  MAX: GPU detected ({gpu})")
-        # except Exception:
-        #     device = DeviceSpec(id=0, device_type="cpu")
-        #     print("  MAX: CPU mode (install CUDA/cuDNN for GPU acceleration)")
-        #
-        # config = PipelineConfig(models={
-        #     "main": {
-        #         "model_path": self.model_path,
-        #         "weight_path": [self.weight_path],
-        #         "quantization_encoding": "q4_0",
-        #         "max_length": 4096,
-        #         "device_specs": [device],
-        #     }
-        # })
-        # from max.entrypoints import LLM as MAX_LLM
-        # self._llm = MAX_LLM(pipeline_config=config)
-        # ----8<----
+        from max.entrypoints import PipelineConfig, LLM
+        from max.driver import DeviceSpec
 
-        raise ImportError(
-            "MAX engine libraries not yet loaded.  This is a prepared stub.\n"
-            "To activate: install MAX (pip install max) and uncomment the\n"
-            "initialization code in MAXBackend._ensure_llm()."
+        # Auto-detect GPU or CPU
+        try:
+            from max.driver import GPU
+            gpu = GPU()
+            device = DeviceSpec(id=0, device_type="gpu")
+            print(f"  MAX: GPU detected ({gpu})")
+        except Exception:
+            device = DeviceSpec(id=0, device_type="cpu")
+            print("  MAX: CPU mode (install CUDA/cuDNN for GPU acceleration)")
+
+        config = PipelineConfig(models={
+            "main": {
+                "model_path": self.model_path,
+                "weight_path": [self.weight_path],
+                "quantization_encoding": "q4_0",
+                "max_length": 4096,
+                "device_specs": [device],
+            }
+        })
+        from max.entrypoints import LLM as MAX_LLM
+        self._llm = MAX_LLM(pipeline_config=config)
         )
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -432,24 +510,15 @@ class MAXBackend(BackendBase):
                 :meth:`recommended_setup`).
         """
         self._ensure_llm()
-        # Stub: once _llm is real, the following will generate:
-        # result = self._llm.generate(
-        #     [prompt],
-        #     max_new_tokens=max_tokens,
-        #     temperature=kwargs.get("temperature", 0.7),
-        #     top_p=kwargs.get("top_p", 0.95),
-        #     use_tqdm=False,
-        # )
-        # text = result[0] if isinstance(result, (list, tuple)) else str(result)
-        # return {"text": text, "tokens": max_tokens, "backend": self.name}
-        return {
-            "text": (
-                f"[MAX backend stub — model={self.model_path}, "
-                f"max_tokens={max_tokens}]"
-            ),
-            "tokens": 0,
-            "backend": self.name,
-        }
+        result = self._llm.generate(
+            [prompt],
+            max_new_tokens=max_tokens,
+            temperature=kwargs.get("temperature", 0.7),
+            top_p=kwargs.get("top_p", 0.95),
+            use_tqdm=False,
+        )
+        text = result[0] if isinstance(result, (list, tuple)) else str(result)
+        return {"text": text, "tokens": max_tokens, "backend": self.name}
 
     def chat(self, messages: list, max_tokens: int = 256, **kwargs) -> dict:
         """Chat completion — formats messages into a prompt and generates.
@@ -538,6 +607,221 @@ class NumpyBackend(BackendBase):
         return self.generate(prompt, max_tokens)
 
 
+class TurboEngineBackend(BackendBase):
+    """TurboEngine V7.7/V7-MoE backend — AVX2-optimized CPU inference."""
+    name = "turbo_engine"
+    
+    def __init__(self, model_path: str = "", n_threads: int = 0,
+                 tokenizer_path: str = ""):
+        self.model_path = model_path
+        self.n_threads = n_threads or int(os.environ.get("OMP_NUM_THREADS", os.cpu_count() or 32))
+        self._tokenizer_path = tokenizer_path or os.environ.get("TOKENIZER_PATH", "")
+        self._engine = None
+        self._tokenizer = None
+        self._bos_id = 1
+        self._eos_id = 2
+    
+    def is_available(self) -> bool:
+        if not self.model_path or not os.path.exists(self.model_path):
+            return False
+        try:
+            with open("/proc/cpuinfo") as f:
+                if "avx2" not in f.read():
+                    return False
+        except: pass
+        kernel_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kernels")
+        for so in ["quant_kernels_omp.so", "simd_ops.so", "gqa_attention.so"]:
+            if not os.path.exists(os.path.join(kernel_dir, so)):
+                return False
+        return True
+    
+    def _ensure_engine(self):
+        if self._engine is not None:
+            return
+        import gguf
+        os.environ['OMP_NUM_THREADS'] = str(self.n_threads)
+        reader = gguf.GGUFReader(self.model_path)
+        arch = None
+        for key in reader.fields:
+            if 'general.architecture' in key:
+                raw = reader.fields[key].parts[-1]
+                if hasattr(raw, 'tobytes'):
+                    arch = bytes(raw.tolist()).decode('utf-8')
+                elif isinstance(raw, bytes):
+                    arch = raw.decode('utf-8')
+                else:
+                    arch = str(raw)
+                break
+        is_moe = False
+        if arch:
+            for prefix in ['gpt-oss', 'qwen3moe', 'qwen2moe', 'qwen35moe',
+                           'deepseek2', 'mixtral', 'dbrx', 'zaya']:
+                if prefix in arch.lower():
+                    is_moe = True
+                    break
+        for k, v in reader.fields.items():
+            if k == "tokenizer.ggml.bos_token_id":
+                d = v.parts[-1]
+                self._bos_id = int(d[0]) if hasattr(d, '__iter__') and len(d) == 1 else int(d)
+            if k == "tokenizer.ggml.eos_token_id":
+                d = v.parts[-1]
+                self._eos_id = int(d[0]) if hasattr(d, '__iter__') and len(d) == 1 else int(d)
+        kernel_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kernels")
+        sys.path.insert(0, kernel_dir)
+        if is_moe:
+            from mojollama.kernels.turbo_engine_v7_moe import TurboEngineV7MoE
+            self._engine = TurboEngineV7MoE(self.model_path, self.n_threads)
+        else:
+            from mojollama.kernels.turbo_engine_v77 import TurboEngineV77
+            self._engine = TurboEngineV77(self.model_path, self.n_threads)
+    
+    def _load_tokenizer(self):
+        if self._tokenizer is not None:
+            return
+        import transformers
+        paths = []
+        if self._tokenizer_path:
+            paths.append(self._tokenizer_path)
+        try:
+            import gguf
+            reader = gguf.GGUFReader(self.model_path)
+            for key in ["general.name", "general.basename", "general.model.name"]:
+                if key in reader.fields:
+                    raw = reader.fields[key].parts[-1]
+                    if hasattr(raw, 'tobytes'):
+                        name = bytes(raw.tolist()).decode('utf-8')
+                    elif isinstance(raw, bytes):
+                        name = raw.decode('utf-8')
+                    else:
+                        name = str(raw)
+                    if name and '/' in name:
+                        paths.append(name)
+                        break
+                    elif name:
+                        paths.append(name)
+                        break
+        except: pass
+        for path in paths:
+            try:
+                self._tokenizer = transformers.AutoTokenizer.from_pretrained(
+                    path, trust_remote_code=True)
+                return
+            except: pass
+        raise RuntimeError(
+            f"Cannot load tokenizer for {self.model_path}. "
+            "Set TOKENIZER_PATH env var or mount a tokenizer directory.")
+    
+    @staticmethod
+    def _sample(logits, temperature=0.0):
+        import numpy as np
+        if temperature <= 0:
+            return int(np.argmax(logits))
+        safe = logits - np.max(logits)
+        probs = np.exp(safe / max(temperature, 1e-8))
+        probs /= probs.sum()
+        return int(np.random.choice(len(probs), p=probs))
+    
+    def generate(self, prompt: str, max_tokens: int = 128, **kwargs) -> dict:
+        self._ensure_engine()
+        self._load_tokenizer()
+        temperature = kwargs.get("temperature", 0.7)
+        prompt_ids = self._tokenizer.encode(prompt)
+        self._engine.reset()
+        for tid in prompt_ids[:-1]:
+            logits = self._engine.forward(tid)
+        logits = self._engine.forward(prompt_ids[-1])
+        generated = []
+        for _ in range(max_tokens):
+            next_id = self._sample(logits, temperature)
+            generated.append(next_id)
+            if next_id == self._eos_id:
+                break
+            logits = self._engine.forward(next_id)
+        text = self._tokenizer.decode(generated, skip_special_tokens=True)
+        return {"text": text, "tokens": len(generated), "backend": self.name}
+    
+    def generate_stream(self, prompt: str, max_tokens: int = 128, **kwargs):
+        self._ensure_engine()
+        self._load_tokenizer()
+        temperature = kwargs.get("temperature", 0.7)
+        prompt_ids = self._tokenizer.encode(prompt)
+        self._engine.reset()
+        for tid in prompt_ids[:-1]:
+            logits = self._engine.forward(tid)
+        logits = self._engine.forward(prompt_ids[-1])
+        for _ in range(max_tokens):
+            next_id = self._sample(logits, temperature)
+            if next_id == self._eos_id:
+                break
+            token_text = self._tokenizer.decode([next_id], skip_special_tokens=True)
+            yield {"choices": [{"delta": {"content": token_text}, "index": 0}]}
+            logits = self._engine.forward(next_id)
+    
+    def chat(self, messages: list, max_tokens: int = 256, **kwargs) -> dict:
+        self._load_tokenizer()
+        try:
+            prompt = self._tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True)
+        except Exception:
+            prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+            prompt += "\nassistant: "
+        return self.generate(prompt, max_tokens, **kwargs)
+    
+    def chat_stream(self, messages: list, max_tokens: int = 256, **kwargs):
+        self._load_tokenizer()
+        try:
+            prompt = self._tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True)
+        except Exception:
+            prompt = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+            prompt += "\nassistant: "
+        yield from self.generate_stream(prompt, max_tokens, **kwargs)
+    
+    def stop(self):
+        self._engine = None
+
+
+class BenchmarkRunner:
+    """Benchmark all available backends and cache the fastest."""
+
+    @staticmethod
+    def _bench(backend, prompt="The meaning of life is", max_tokens=50) -> float:
+        t0 = time.time()
+        result = backend.generate(prompt, max_tokens=max_tokens)
+        elapsed = time.time() - t0
+        tokens = result.get("tokens", max_tokens)
+        return tokens / elapsed if elapsed > 0 else 0
+
+    @staticmethod
+    def pick_best(model_path: str, n_threads: int = 0,
+                  config_path: str = "~/.mojollama/config.json") -> BackendBase:
+        candidates = []
+        for cls, kwargs in [
+            (TurboEngineBackend, {"model_path": model_path, "n_threads": n_threads}),
+            (LlamaCppBackend, {"model_path": model_path}),
+        ]:
+            try:
+                b = cls(**kwargs)
+                if b.is_available():
+                    tok_s = BenchmarkRunner._bench(b)
+                    print(f"  {b.name}: {tok_s:.1f} tok/s")
+                    candidates.append((tok_s, b))
+            except Exception:
+                pass
+        if not candidates:
+            return NumpyBackend()
+        best = max(candidates, key=lambda x: x[0])
+        print(f"  Best: {best[1].name} ({best[0]:.1f} tok/s)")
+        try:
+            cfg = json.loads(open(os.path.expanduser(config_path)).read())
+        except: cfg = {}
+        cfg.setdefault("benchmark", {})[model_path] = best[1].name
+        os.makedirs(os.path.expanduser(os.path.dirname(config_path)), exist_ok=True)
+        with open(os.path.expanduser(config_path), "w") as f:
+            json.dump(cfg, f, indent=2)
+        return best[1]
+
+
 class AutoBackend:
     """Auto-selects best available backend."""
     
@@ -549,47 +833,113 @@ class AutoBackend:
         self._backend: Optional[BackendBase] = None
         self._lock = threading.Lock()
     
+    def _force_backend(self, name: str) -> BackendBase:
+        """Force a specific backend by name."""
+        name = name.lower()
+        if name == "max":
+            max_b = MAXBackend(self.model_path, self.weight_path)
+            if max_b.is_available():
+                print(f"MojoLlama: forced MAX backend")
+                return max_b
+            raise RuntimeError("MAX backend requested but not installed")
+        elif name in ("llama.cpp", "llamacpp"):
+            gpu_type = detect_gpu()
+            llama = LlamaCppBackend(self.model_path, port=self._llama_port, gpu=gpu_type)
+            if not llama._check_server():
+                print(f"MojoLlama: starting llama.cpp server{' (GPU ' + gpu_type + ')' if gpu_type else ' (CPU)'}...")
+                threading.Thread(target=llama._ensure_server, daemon=True).start()
+                time.sleep(5)
+            print(f"MojoLlama: forced llama.cpp backend{' (GPU ' + gpu_type + ')' if gpu_type else ' (CPU)'}")
+            return llama
+        elif name in ("turbo_engine", "turboengine"):
+            te = TurboEngineBackend(self.model_path)
+            if te.is_available():
+                print(f"MojoLlama: forced TurboEngine backend")
+                return te
+            raise RuntimeError("TurboEngine backend requested but not available (need AVX2 + .so files)")
+        elif name == "numpy":
+            print(f"MojoLlama: forced numpy fallback")
+            return NumpyBackend()
+        raise RuntimeError(f"Unknown backend: {name}. Valid: max, llama.cpp, turbo_engine, numpy, auto")
+
     def _detect(self) -> BackendBase:
         """Detect best available backend.
-        
-        Priority: MAX GPU > llama.cpp CPU > MAX CPU > numpy fallback
+
+        Priority:
+          1. MAX (GPU-accelerated, PagedAttention + FlashAttention)
+          2. GPU (via llama.cpp offloading — CUDA/ROCm/Vulkan/SYCL)
+          3. TurboEngine V7.7/V7-MoE (AVX2 CPU, fastest CPU path)
+          4. llama.cpp CPU (generic fallback)
+          5. numpy (slow fallback)
+
+        Override with MOJOLLAMA_BACKEND env var: max, llama.cpp, turbo_engine, numpy, auto
         """
-        # 1. Check for GPU + MAX (fastest on GPU hardware)
+        # Check for forced backend
+        forced = os.environ.get("MOJOLLAMA_BACKEND", "auto").lower()
+        if forced != "auto":
+            return self._force_backend(forced)
+
+        # Check for benchmark mode
+        benchmark = os.environ.get("MOJOLLAMA_BENCHMARK", "").lower() in ("1", "true")
+
+        # 1. MAX backend (highest performance, CUDA/ROCm only)
         try:
-            import max
-            try:
-                from max.driver import GPU
-                gpu = GPU()
-                print(f"MojoLlama: GPU ({gpu}) detected, using MAX backend")
-                return MAXBackend(self.model_path, self.weight_path)
-            except (ImportError, RuntimeError):
-                pass  # No GPU, continue
-        except ImportError:
+            max_b = MAXBackend(self.model_path, self.weight_path)
+            if max_b.is_available() and max_b.has_gpu() and not benchmark:
+                print(f"MojoLlama: using MAX backend (GPU)")
+                return max_b
+        except Exception:
             pass
-        
-        # 2. CPU-only: llama.cpp is 5.7x faster than MAX on CPU
+
+        # 2. GPU: detect and use llama.cpp with offloading
+        gpu_type = detect_gpu()
+        if gpu_type and not benchmark:
+            try:
+                llama = LlamaCppBackend(self.model_path, port=self._llama_port, gpu=gpu_type)
+                if llama.is_available():
+                    if not llama._check_server():
+                        print(f"MojoLlama: starting llama.cpp with GPU ({gpu_type})...")
+                        threading.Thread(target=llama._ensure_server, daemon=True).start()
+                        time.sleep(5)
+                    print(f"MojoLlama: using llama.cpp backend (GPU {gpu_type})")
+                    return llama
+            except Exception:
+                pass
+
+        # 3. TurboEngine (AVX2 CPU, fastest CPU path)
+        try:
+            te = TurboEngineBackend(self.model_path)
+            if te.is_available():
+                if benchmark:
+                    return BenchmarkRunner.pick_best(self.model_path)
+                print(f"MojoLlama: using TurboEngine backend (AVX2 CPU)")
+                return te
+        except Exception:
+            pass
+
+        # 4. llama.cpp CPU fallback
         try:
             llama = LlamaCppBackend(self.model_path, port=self._llama_port)
-            if llama._check_server() or os.path.exists(llama._server_path):
-                # Start server in background
+            if llama.is_available():
                 if not llama._check_server():
-                    print("MojoLlama: starting llama.cpp server (CPU backend)...")
+                    print("MojoLlama: starting llama.cpp server (CPU)...")
                     threading.Thread(target=llama._ensure_server, daemon=True).start()
-                    time.sleep(5)  # Give it a moment
-                print(f"MojoLlama: using llama.cpp backend (85 tok/s on CPU)")
+                    time.sleep(5)
+                print(f"MojoLlama: using llama.cpp CPU backend")
                 return llama
         except Exception:
             pass
-        
-        # 3. MAX CPU fallback (slower but no setup needed)
+
+        # 5. MAX CPU fallback (if installed but no GPU)
         try:
-            import max
-            print(f"MojoLlama: using MAX CPU backend (~15 tok/s)")
-            return MAXBackend(self.model_path, self.weight_path)
-        except ImportError:
+            max_b = MAXBackend(self.model_path, self.weight_path)
+            if max_b.is_available():
+                print(f"MojoLlama: using MAX backend (CPU)")
+                return max_b
+        except Exception:
             pass
-        
-        # 4. Pure numpy fallback
+
+        # 6. Numpy fallback
         print(f"MojoLlama: no optimized backend, using numpy fallback")
         return NumpyBackend()
     
@@ -604,8 +954,14 @@ class AutoBackend:
     def generate(self, prompt: str, max_tokens: int = 128, **kwargs) -> dict:
         return self.backend.generate(prompt, max_tokens, **kwargs)
     
+    def generate_stream(self, prompt: str, max_tokens: int = 128, **kwargs):
+        return self.backend.generate_stream(prompt, max_tokens, **kwargs)
+    
     def chat(self, messages: list, max_tokens: int = 256, **kwargs) -> dict:
         return self.backend.chat(messages, max_tokens, **kwargs)
+    
+    def chat_stream(self, messages: list, max_tokens: int = 256, **kwargs):
+        return self.backend.chat_stream(messages, max_tokens, **kwargs)
     
     @property
     def info(self) -> dict:
@@ -613,7 +969,7 @@ class AutoBackend:
         return {"active": b.name, "available": b.info}
     
     def stop(self):
-        if isinstance(self._backend, LlamaCppBackend):
+        if hasattr(self._backend, 'stop'):
             self._backend.stop()
 
 

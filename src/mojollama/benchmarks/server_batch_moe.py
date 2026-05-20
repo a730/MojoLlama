@@ -15,7 +15,7 @@ PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 8080
 B_MAX = 4  # maximum concurrent sequences in a batch
 
 # ── Engine ──
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kernels'))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'kernels'))
 from turbo_engine_v7_moe import TurboEngineV7MoE
 e = TurboEngineV7MoE(MODEL_PATH, 32)
 L=e.n_layers; N=e.n_embd; NH=e.n_head; NKH=e.n_kv_head; HD=e.head_dim; FF=e.n_ff; V=e.vocab_size
@@ -24,7 +24,7 @@ S = max(N, NH*HD, FF, NKH*HD, moe_int); BOS=1; EOS=2
 print(f"Engine: {L}L/{N}D/{FF}FF/{NH}H/{NKH}KV | MoE {NE}×{NK} | V={V} | B_MAX={B_MAX}", flush=True)
 
 # ── C library ──
-lib = ctypes.CDLL(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'kernels', 'cengine_batch_instr.so'))
+lib = ctypes.CDLL(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'kernels', 'cengine_batch_instr.so'))
 cv=ctypes.c_void_p; ci=ctypes.c_int; cf=ctypes.c_float
 
 # ── PagedAttention-backed KVBlock (Python side matches C struct) ──

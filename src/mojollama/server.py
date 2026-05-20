@@ -24,7 +24,6 @@ import threading
 import subprocess
 import re
 import queue
-import http.client
 import concurrent.futures
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -50,9 +49,6 @@ _export_jobs_lock = threading.Lock()
 _training_queues = []
 _training_queues_lock = threading.Lock()
 
-# Connection pool to llama.cpp backend (thread-safe queue)
-_llama_conn_pool = queue.Queue()
-_llama_pool_size = 32  # max concurrent connections to backend (match max_workers)
 _metrics_lock = threading.Lock()
 _request_times = []  # rolling window of request latencies (seconds)
 _metrics_max_samples = 1000
@@ -64,23 +60,6 @@ def _record_latency(t0):
         _request_times.append(elapsed)
         if len(_request_times) > _metrics_max_samples:
             _request_times.pop(0)
-
-def _get_llama_conn():
-    """Get a persistent HTTP connection from the pool (or create new)."""
-    try:
-        return _llama_conn_pool.get_nowait()
-    except queue.Empty:
-        llama_port = backend.backend.port if hasattr(backend.backend, 'port') else 8081
-        return http.client.HTTPConnection("127.0.0.1", llama_port, timeout=300)
-
-def _return_llama_conn(conn):
-    """Return connection to pool (or close if pool is full)."""
-    try:
-        _llama_conn_pool.put_nowait(conn)
-    except queue.Full:
-        try:
-            conn.close()
-        except: pass
 
 LLAMA_SERVER_PATH = "/tmp/llama.cpp/build/bin/llama-server"
 CONVERTER_PATH = "/tmp/llama.cpp/convert_hf_to_gguf.py"
@@ -196,14 +175,6 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
 
-    def _proxy_stream_from_llamacpp(self, request_data):
-        """Proxy streaming through llama.cpp /completion?stream=true.
-
-        Reads the SSE stream from llama.cpp line-by-line (buffered readline)
-        and re-emits as OpenAI-format SSE events. Uses pooled HTTP connection.
-        """
-        prompt = request_data.get("prompt", "")
-
     def _build_tools_prompt(self, tools, tool_choice="auto"):
         """Build a system-level instruction from OpenAI tool definitions.
 
@@ -284,62 +255,6 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
             except (json.JSONDecodeError, TypeError):
                 pass
         return None, None
-
-    def _proxy_stream_from_llamacpp(self, request_data):
-        """Proxy streaming through llama.cpp /completion?stream=true.
-
-        Reads the SSE stream from llama.cpp line-by-line (buffered readline)
-        and re-emits as OpenAI-format SSE events. Uses pooled HTTP connection.
-        """
-        prompt = request_data.get("prompt", "")
-        max_tokens = request_data.get("max_tokens", 256)
-        temperature = request_data.get("temperature", 0.7)
-
-        llama_data = json.dumps({
-            "prompt": prompt,
-            "n_predict": max_tokens,
-            "temperature": temperature,
-            "stream": True,
-            "cache_prompt": True,
-        }).encode()
-
-        conn = _get_llama_conn()
-        conn.request(
-            "POST", "/completion",
-            body=llama_data,
-            headers={"Content-Type": "application/json"},
-        )
-        resp = conn.getresponse()
-        try:
-            while True:
-                line = resp.readline()
-                if not line:
-                    break
-                line_str = line.decode("utf-8", errors="replace").strip()
-                # Parse llama.cpp SSE format: data: {"content":"...","stop":false}
-                if line_str.startswith("data: "):
-                    payload = line_str[6:]
-                    if payload.strip():
-                        try:
-                            inner = json.loads(payload)
-                            token = inner.get("content", "")
-                            stop = inner.get("stop", False)
-
-                            # Emit OpenAI-format SSE
-                            self._sse_send({
-                                "choices": [{
-                                    "delta": {"content": token},
-                                    "index": 0,
-                                }]
-                            })
-
-                            if stop:
-                                break
-                        except json.JSONDecodeError:
-                            pass
-        finally:
-            resp.close()
-            _return_llama_conn(conn)
 
     # ── HTTP Methods ────────────────────────────────────────────────
 
@@ -606,44 +521,36 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
                 _record_latency(t0)
                 return result
 
-            # Non-streaming: proxy directly to llama.cpp's /v1/chat/completions
-            llama_chat_data = json.dumps({
-                "messages": messages,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "stream": False,
-            }).encode()
-
-            conn = _get_llama_conn()
+            # Non-streaming: use backend.chat()
             try:
-                conn.request(
-                    "POST", "/v1/chat/completions",
-                    body=llama_chat_data,
-                    headers={"Content-Type": "application/json"},
-                )
-                resp = conn.getresponse()
-                raw = resp.read()
-                resp.close()
-
-                if resp.status >= 400:
-                    self._send_error(
-                        f"llama.cpp error: {resp.status} {raw.decode('utf-8', errors='replace')}",
-                        resp.status,
-                    )
-                    _record_latency(t0)
-                    return
-
-                result = json.loads(raw.decode("utf-8"))
+                result = backend.chat(messages, max_tokens=max_tokens, temperature=temperature)
                 prompts_served += 1
+
+                # Build OpenAI-format response
+                response = {
+                    "id": f"chatcmpl-{prompts_served}",
+                    "object": "chat.completion",
+                    "created": int(time.time()),
+                    "model": "mojollama",
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": result.get("text", "")},
+                        "finish_reason": "stop",
+                    }],
+                    "usage": {
+                        "completion_tokens": result.get("tokens", 0),
+                        "total_tokens": result.get("tokens", 0),
+                    },
+                    "backend": result.get("backend"),
+                }
 
                 # Check if tools were provided — try to parse a function call
                 if tools:
-                    content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    content = response["choices"][0]["message"]["content"]
                     fn_name, fn_args = self._parse_tool_call_response(content)
                     if fn_name and fn_args:
-                        # Convert to tool_calls format
-                        result["choices"][0]["message"]["content"] = None
-                        result["choices"][0]["message"]["tool_calls"] = [{
+                        response["choices"][0]["message"]["content"] = None
+                        response["choices"][0]["message"]["tool_calls"] = [{
                             "id": f"call_{uuid.uuid4().hex[:12]}",
                             "type": "function",
                             "function": {
@@ -651,17 +558,13 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
                                 "arguments": json.dumps(fn_args),
                             },
                         }]
-                        result["choices"][0]["finish_reason"] = "tool_calls"
+                        response["choices"][0]["finish_reason"] = "tool_calls"
 
-                # Preserve the model name from the backend response
-                if "model" not in result:
-                    result["model"] = "mojollama-llama-3.2-1b"
-                self._send_json(result)
+                self._send_json(response)
             except Exception as e:
-                self._send_error(f"Failed to proxy chat completion: {e}", 502)
+                self._send_error(f"Chat completion failed: {e}", 502)
             finally:
                 _record_latency(t0)
-                _return_llama_conn(conn)
 
         # ── Studio API: /api/chat (streaming for web UI) ─────────
         elif path == "/api/chat":
@@ -808,10 +711,7 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
     # ── Streaming Helpers ─────────────────────────────────────────
 
     def _handle_streaming_chat_completion(self, messages, max_tokens, temperature):
-        """Handle SSE streaming for chat completions."""
-        # Build a prompt from messages for llama.cpp
-        prompt = self._messages_to_prompt(messages)
-
+        """Handle SSE streaming for chat completions using backend.chat_stream()."""
         self.send_response(200)
         self._set_cors()
         self.send_header("Content-Type", "text/event-stream")
@@ -820,18 +720,13 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
         try:
-            self._proxy_stream_from_llamacpp({
-                "prompt": prompt,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-            })
+            for chunk in backend.chat_stream(messages, max_tokens=max_tokens,
+                                              temperature=temperature):
+                self._sse_send(chunk)
         except Exception as e:
             try:
                 self._sse_send({
-                    "choices": [{
-                        "delta": {"content": f"\n[Error: {e}]"},
-                        "index": 0,
-                    }]
+                    "choices": [{"delta": {"content": f"\n[Error: {e}]"}, "index": 0}]
                 })
             except (BrokenPipeError, ConnectionResetError):
                 pass
@@ -844,7 +739,7 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
             pass
 
     def _handle_streaming_completion(self, prompt, max_tokens, temperature):
-        """Handle SSE streaming for text completions."""
+        """Handle SSE streaming for text completions using backend.generate_stream()."""
         self.send_response(200)
         self._set_cors()
         self.send_header("Content-Type", "text/event-stream")
@@ -853,18 +748,13 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
         try:
-            self._proxy_stream_from_llamacpp({
-                "prompt": prompt,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-            })
+            for chunk in backend.generate_stream(prompt, max_tokens=max_tokens,
+                                                  temperature=temperature):
+                self._sse_send(chunk)
         except Exception as e:
             try:
                 self._sse_send({
-                    "choices": [{
-                        "text": f"\n[Error: {e}]",
-                        "index": 0,
-                    }]
+                    "choices": [{"text": f"\n[Error: {e}]", "index": 0}]
                 })
             except (BrokenPipeError, ConnectionResetError):
                 pass

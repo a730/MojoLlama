@@ -35,7 +35,6 @@ pnpm-lock.yaml
 build/
 dist/
 *.egg-info/
-*.so
 
 # Virtual environments
 env/

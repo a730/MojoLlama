@@ -24,7 +24,7 @@ try:
 except Exception:
     pass
 
-sys.path.insert(0,os.path.join(os.path.dirname(os.path.abspath(__file__)),'kernels'))
+sys.path.insert(0,os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),'kernels'))
 from turbo_engine_v7_moe import TurboEngineV7MoE
 e = TurboEngineV7MoE(MODEL_PATH, _moe_threads)
 L=e.n_layers; N=e.n_embd; NH=e.n_head; NKH=e.n_kv_head; HD=e.head_dim; FF=e.n_ff; V=e.vocab_size
@@ -33,7 +33,7 @@ S = max(N, NH*HD, FF, NKH*HD, moe_int); BOS=1; EOS=2
 print(f"Engine: {L}L/{N}D/{FF}FF/{NH}H/{NKH}KV | MoE {NE}×{NK} | int={moe_int} | V={V}", flush=True)
 
 cv=ctypes.c_void_p; ci=ctypes.c_int; cf=ctypes.c_float
-lib=ctypes.CDLL(os.path.join(os.path.dirname(os.path.abspath(__file__)),'kernels','cengine_batch_instr.so'))
+lib=ctypes.CDLL(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),'kernels','cengine_batch_instr.so'))
 
 class BC(ctypes.Structure):
     _fields_ = [("L",ci),("N",ci),("NH",ci),("NKH",ci),("HD",ci),("FF",ci),("V",ci),("eps",cf),
