@@ -288,8 +288,8 @@ class TurboEngineV7MoE:
                 in_dim, out_dim = int(t.shape[0]), int(t.shape[1])
                 
                 if name in skip_f32 and qtype in C_KERNEL_TYPES:
-                    # Raw quantized only — use C kernel
-                    raw = np.ascontiguousarray(t.data.reshape(-1), dtype=np.uint8).copy()
+                    # Raw quantized only — use C kernel (no copy — mmap view for multiprocessing sharing)
+                    raw = np.ascontiguousarray(t.data.reshape(-1), dtype=np.uint8)
                     self.raw_weights[name] = raw
                     self.weight_info[name] = (out_dim, in_dim, BLOCK_SIZES.get(qtype, 0), qtype)
                 else:
@@ -298,7 +298,7 @@ class TurboEngineV7MoE:
                     f32 = f32.reshape(out_dim, in_dim)
                     self.weights[name] = np.ascontiguousarray(f32)
                     if qtype in C_KERNEL_TYPES:
-                        raw = np.ascontiguousarray(t.data.reshape(-1), dtype=np.uint8).copy()
+                        raw = np.ascontiguousarray(t.data.reshape(-1), dtype=np.uint8)
                         self.raw_weights[name] = raw
                         self.weight_info[name] = (out_dim, in_dim, BLOCK_SIZES.get(qtype, 0), qtype)
 
@@ -306,7 +306,7 @@ class TurboEngineV7MoE:
                 # MoE 3D: store raw quantized only (no F32 dequant)
                 in_dim, out_dim, n_exp = int(t.shape[0]), int(t.shape[1]), int(t.shape[2])
                 if qtype in C_KERNEL_TYPES:
-                    raw = np.ascontiguousarray(t.data.reshape(-1), dtype=np.uint8).copy()
+                    raw = np.ascontiguousarray(t.data.reshape(-1), dtype=np.uint8)
                     self.raw_weights[name] = raw
                     self.weight_info[name] = (out_dim, in_dim, BLOCK_SIZES.get(qtype, 0), qtype, n_exp)
                 else:
