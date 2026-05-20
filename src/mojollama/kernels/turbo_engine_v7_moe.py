@@ -197,7 +197,7 @@ class TurboEngineV7MoE:
         self.eps = float(_get(f'{arch}.attention.layer_norm_rms_epsilon') or 1e-6)
         self.vocab_size = int(_get(f'{arch}.vocab_size') or 0)
         self.n_experts = _get(f'{arch}.expert_count')
-        self.n_experts_per_tok = _get(f'{arch}.expert_used_count')
+        self.n_experts_per_tok = _get(f'{arch}.expert_used_count') or _get(f'{arch}.experts_used_count')
         self.n_ff_expert = int(_get(f'{arch}.expert_feed_forward_length') or self.n_ff)
         self.is_moe = self.n_experts is not None
         if not self.is_moe:
@@ -374,7 +374,7 @@ class TurboEngineV7MoE:
         # Token embedding: must dequantize for lookup
         print(f"  Loading token embedding...", flush=True)
         for t in self.reader.tensors:
-            if t.name == 'token_embd.weight':
+            if t.name in ('token_embd.weight', 'model.embed_tokens.weight'):
                 qtype = QT(t.tensor_type).value
                 f32 = gguf.dequantize(t.data, t.tensor_type).astype(np.float32)
                 if len(t.shape) == 2:
@@ -388,7 +388,7 @@ class TurboEngineV7MoE:
                 break
 
         # Output weight
-        self.out_w_name = 'output.weight' if 'output.weight' in self.raw_weights or 'output.weight' in self.weights else 'token_embd.weight'
+        self.out_w_name = 'output.weight' if 'output.weight' in self.raw_weights or 'output.weight' in self.weights else 'token_embd.weight' if 'token_embd.weight' in self.raw_weights or 'token_embd.weight' in self.weights else 'model.embed_tokens.weight'
         out_info = self.weight_info.get(self.out_w_name)
         if out_info is not None and self._kern is not None and self.arch_name != 'zaya':
             # Skip requantization for arch-specific forward passes that use np.dot
@@ -399,6 +399,10 @@ class TurboEngineV7MoE:
                 print(f"  Converting output: {QTYPE_NAMES.get(out_info[3], out_info[3])} → Q8_0...", flush=True)
                 self._out_raw = self._requantize_output(self.raw_weights[self.out_w_name], out_info)
                 self._out_qt = ctypes.c_int(8)
+            elif out_info[3] == 1:  # F16 → requantize to Q8_0
+                print(f"  Converting output: F16 → Q8_0 for C matmul...", flush=True)
+                self._out_raw = self._requantize_output(self.raw_weights[self.out_w_name], out_info)
+                self._out_qt = ctypes.c_int(8)
             else:
                 self._out_raw = self.raw_weights[self.out_w_name].ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
                 self._out_qt = out_info[3]
@@ -407,7 +411,28 @@ class TurboEngineV7MoE:
             self._out_f32 = self.weights[self.out_w_name]
             self._out_use_c = False
 
-        self._out_norm_w = self.weights['output_norm.weight']
+        self._out_norm_w = self.weights.get('output_norm.weight')
+        if self._out_norm_w is None and 'model.final_norm.weight' in self.weights:
+            self._out_norm_w = self.weights['model.final_norm.weight']
+            self.weights['output_norm.weight'] = self._out_norm_w
+
+        # ZAYA MXFP4 naming adapter: map model.layers.N.zaya_block. → blk.N.
+        if self.arch_name == 'zaya' and 'model.layers.0.zaya_block.attn_k.weight' in self.raw_weights:
+            print("  Detected HF naming convention — adding blk.N aliases...", flush=True)
+            import re as _re
+            for old_name in list(self.weights.keys()):
+                m = _re.match(r'model\.layers\.(\d+)\.zaya_block\.(.+)', old_name)
+                if m:
+                    new_name = f'blk.{m.group(1)}.{m.group(2)}'
+                    self.weights[new_name] = self.weights[old_name]
+            for old_name in list(self.raw_weights.keys()):
+                m = _re.match(r'model\.layers\.(\d+)\.zaya_block\.(.+)', old_name)
+                if m:
+                    new_name = f'blk.{m.group(1)}.{m.group(2)}'
+                    self.raw_weights[new_name] = self.raw_weights[old_name]
+                    info = self.weight_info.get(old_name)
+                    if info:
+                        self.weight_info[new_name] = info
 
         if self._arch_forward is not None:
             self._arch_forward.init_weights(self.weights, self.raw_weights, self.weight_info, self.weight_qtypes)
@@ -435,6 +460,9 @@ class TurboEngineV7MoE:
                 ptr = ctypes.cast(ctypes.addressof(raw_ptr.contents) + off, ctypes.POINTER(ctypes.c_uint8))
                 self._kern.q4_k_dequantize_row(
                     ptr, f32[r].ctypes.data_as(ctypes.POINTER(ctypes.c_float)), ctypes.c_int(n_cols))
+        elif orig_qt == 1:  # F16 — view as float16 then convert to float32
+            raw_u16 = np.frombuffer(bytes(raw_weights[:n_rows*n_cols*2]), dtype=np.uint16).reshape(n_rows, n_cols)
+            f32 = raw_u16.astype(np.float32).view(np.float32)
         else:
             raise NotImplementedError(f"Requantize from type {orig_qt}")
         

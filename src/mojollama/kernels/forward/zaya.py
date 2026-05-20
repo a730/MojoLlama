@@ -26,7 +26,7 @@ class ForwardZaya(ArchitectureForwardPass):
     def init_weights(self, weights, raw_weights, weight_info, weight_qtypes):
         e = self.engine
         for t in e.reader.tensors:
-            if t.name == 'token_embd.weight':
+            if t.name in ('token_embd.weight', 'model.embed_tokens.weight'):
                 f32 = gguf.dequantize(t.data, t.tensor_type).astype(np.float32)
                 in_dim, out_dim = int(t.shape[0]), int(t.shape[1])
                 e.emb = np.ascontiguousarray(f32.reshape(out_dim, in_dim))
