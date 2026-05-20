@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MojoLlama Documentation</title>
+<meta name="description" content="MojoLlama documentation: CLI reference, Docker guide, model support, troubleshooting, and API reference.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ══════════════════════════════════════════════
+   MojoLlama Documentation — IBM Docs Inspired
+   ══════════════════════════════════════════════ */
+:root {
+  --mojo: #6C3CE1; --mojo-dark: #5228B5; --mojo-light: #8B5CF6;
+  --mojo-subtle: rgba(108,60,225,0.08);
+  --bg: #FFFFFF; --bg-alt: #F4F4F4;
+  --sidebar-bg: #F4F4F4; --sidebar-hover: #E8E8E8;
+  --sidebar-active: #FFFFFF;
+  --border: #E0E0E0; --border-light: #EDEDED;
+  --text: #161616; --text-secondary: #525252;
+  --text-tertiary: #8D8D8D; --text-inverse: #FFFFFF;
+  --success: #198038; --warning: #DA1E28; --info: #0043CE;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --radius-sm: 4px; --radius: 8px; --radius-lg: 12px;
+  --transition: 0.15s cubic-bezier(0.2, 0, 0, 1);
+  --toc-width: 280px;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; -webkit-font-smoothing: antialiased; }
+body { font-family: var(--font-body); background: var(--bg); color: var(--text); line-height: 1.6; font-size: 16px; }
+::selection { background: var(--mojo-subtle); }
+a { color: var(--mojo); text-decoration: none; transition: color var(--transition); }
+a:hover { color: var(--mojo-dark); }
+img { max-width: 100%; }
+
+/* ─── Top Nav ─── */
+nav.top {
+  position: fixed; top: 0; width: 100%; z-index: 100;
+  background: rgba(255,255,255,0.95); backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border-light); height: 48px;
+  display: flex; align-items: center; padding: 0 24px;
+}
+nav.top .inner { max-width: 1440px; margin: 0 auto; width: 100%; display: flex; align-items: center; gap: 16px; }
+nav.top .logo { font-weight: 700; font-size: 1rem; color: var(--text); }
+nav.top .logo span { color: var(--mojo); }
+nav.top .logo:hover { color: var(--text); }
+nav.top .breadcrumb { color: var(--text-tertiary); font-size: 0.82rem; display: flex; align-items: center; gap: 6px; }
+nav.top .breadcrumb a { color: var(--text-tertiary); }
+nav.top .breadcrumb a:hover { color: var(--mojo); }
+nav.top .breadcrumb .sep { color: var(--border); }
+
+/* ─── Layout ─── */
+.wrap { display: flex; max-width: 1440px; margin: 48px auto 0; min-height: calc(100vh - 48px); }
+
+/* ─── Sidebar TOC ─── */
+.toc {
+  width: var(--toc-width); flex-shrink: 0;
+  background: var(--sidebar-bg);
+  border-right: 1px solid var(--border);
+  padding: 0; overflow-y: auto;
+  position: sticky; top: 48px; height: calc(100vh - 48px);
+}
+.toc-header { padding: 20px 20px 12px; border-bottom: 1px solid var(--border); }
+.toc-header h3 { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-tertiary); margin-bottom: 8px; }
+.toc-search { width: 100%; }
+.toc-search input {
+  width: 100%; padding: 6px 10px; font-size: 0.8rem;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg); font-family: inherit; color: var(--text);
+  outline: none; transition: border-color var(--transition);
+}
+.toc-search input:focus { border-color: var(--mojo); }
+.toc-nav { padding: 8px 0; }
+.toc-section { margin-bottom: 2px; }
+.toc-section-title {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 20px 8px 16px; cursor: pointer;
+  font-size: 0.82rem; font-weight: 600; color: var(--text);
+  transition: background var(--transition);
+  border-left: 3px solid transparent;
+}
+.toc-section-title:hover { background: var(--sidebar-hover); }
+.toc-section-title.active { background: var(--sidebar-active); border-left-color: var(--mojo); color: var(--mojo); }
+.toc-section-title .arrow { font-size: 0.6rem; color: var(--text-tertiary); transition: transform 0.2s; }
+.toc-section-title.open .arrow { transform: rotate(90deg); }
+.toc-items { display: none; }
+.toc-items.open { display: block; }
+.toc-item {
+  display: block; padding: 5px 20px 5px 28px;
+  font-size: 0.8rem; color: var(--text-secondary);
+  border-left: 2px solid transparent;
+  transition: all var(--transition);
+}
+.toc-item:hover { color: var(--text); background: var(--sidebar-hover); }
+.toc-item.active { color: var(--mojo); border-left-color: var(--mojo); background: var(--sidebar-active); font-weight: 500; }
+
+/* ─── Content ─── */
+.content { flex: 1; min-width: 0; padding: 32px 48px 80px; max-width: 960px; }
+.content h1 { font-size: 2.2rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 0.5rem; }
+.content h1 .tagline { display: block; font-size: 1rem; font-weight: 400; color: var(--text-secondary); margin-top: 4px; }
+.content .last-updated { font-size: 0.78rem; color: var(--text-tertiary); margin-bottom: 32px; }
+
+.content h2 { font-size: 1.5rem; font-weight: 600; margin: 40px 0 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border-light); }
+.content h3 { font-size: 1.15rem; font-weight: 600; margin: 28px 0 10px; }
+.content h4 { font-size: 1rem; font-weight: 600; margin: 20px 0 8px; }
+.content p { color: var(--text-secondary); margin-bottom: 16px; max-width: 720px; }
+.content ul, .content ol { color: var(--text-secondary); margin: 8px 0 16px 24px; }
+.content li { margin-bottom: 4px; }
+.content hr { border: none; border-top: 1px solid var(--border-light); margin: 32px 0; }
+
+/* Code */
+.content code {
+  font-family: var(--font-mono); font-size: 0.85em;
+  background: var(--mojo-subtle); padding: 2px 6px; border-radius: var(--radius-sm); color: var(--mojo-dark);
+}
+.content pre {
+  background: #1a1a2e; color: #e0e0e0; border-radius: var(--radius-lg);
+  padding: 16px 20px; font-family: var(--font-mono); font-size: 0.82rem;
+  line-height: 1.7; overflow-x: auto; margin: 16px 0; max-width: 720px;
+}
+.content pre .prompt { color: var(--mojo-light); }
+.content pre .comment { color: #6f6f8f; font-style: italic; }
+.content pre .cmd { color: #e0e0f0; }
+.content pre .result { color: #6fcf97; }
+.content pre .err { color: #f85149; }
+.content kbd {
+  background: var(--bg-alt); border: 1px solid var(--border);
+  border-radius: 3px; padding: 1px 5px; font-size: 0.78rem;
+  font-family: var(--font-mono);
+}
+
+/* Callouts */
+.callout { border-radius: var(--radius); padding: 12px 16px; margin: 16px 0; font-size: 0.9rem; max-width: 720px; }
+.callout.tip { background: rgba(25,128,56,0.06); border-left: 3px solid var(--success); }
+.callout.tip strong { color: var(--success); }
+.callout.note { background: var(--mojo-subtle); border-left: 3px solid var(--mojo); }
+.callout.note strong { color: var(--mojo); }
+.callout.warning { background: rgba(218,30,40,0.04); border-left: 3px solid var(--warning); }
+.callout.warning strong { color: var(--warning); }
+
+/* Tables */
+.content .table-wrap { overflow-x: auto; border: 1px solid var(--border-light); border-radius: var(--radius-lg); margin: 16px 0; max-width: 720px; }
+.content table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+.content th { padding: 10px 16px; text-align: left; font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary); background: var(--bg-alt); border-bottom: 1px solid var(--border-light); }
+.content td { padding: 10px 16px; border-bottom: 1px solid var(--border-light); color: var(--text-secondary); }
+.content tr:last-child td { border-bottom: none; }
+.content tr:hover td { background: var(--mojo-subtle); }
+.content td:first-child { font-family: var(--font-mono); font-size: 0.82rem; color: var(--text); white-space: nowrap; }
+.content td strong { color: var(--text); }
+
+/* Topics grid (IBM docs style) */
+.topics-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin: 24px 0; }
+.topic-card {
+  padding: 20px; border: 1px solid var(--border-light); border-radius: var(--radius);
+  transition: all var(--transition); cursor: pointer;
+}
+.topic-card:hover { border-color: var(--mojo); box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
+.topic-card h3 { font-size: 1rem; font-weight: 600; margin: 0 0 6px; }
+.topic-card h3 a { color: var(--text); }
+.topic-card h3 a:hover { color: var(--mojo); }
+.topic-card p { font-size: 0.85rem; color: var(--text-secondary); margin: 0; max-width: 100%; }
+.topic-card .tag {
+  display: inline-block; font-size: 0.7rem; font-weight: 600;
+  padding: 2px 8px; border-radius: 100px; margin-bottom: 10px;
+}
+.tag-cli { background: var(--mojo-subtle); color: var(--mojo); }
+.tag-docker { background: rgba(0,67,206,0.08); color: var(--info); }
+.tag-models { background: rgba(25,128,56,0.08); color: var(--success); }
+.tag-guide { background: rgba(212,90,0,0.08); color: var(--warning); }
+
+/* ─── Footer ─── */
+.doc-footer { margin-top: 48px; padding-top: 24px; border-top: 1px solid var(--border-light); font-size: 0.82rem; color: var(--text-tertiary); display: flex; justify-content: space-between; }
+
+/* ─── Responsive ─── */
+@media (max-width: 1100px) { .toc { width: 220px; } .content { padding: 24px 32px 60px; } }
+@media (max-width: 768px) {
+  .toc { display: none; }
+  .content { padding: 20px 20px 48px; max-width: 100%; }
+  .topics-grid { grid-template-columns: 1fr; }
+  .content h1 { font-size: 1.6rem; }
+  .content h2 { font-size: 1.25rem; }
+}
+@media (max-width: 480px) { .content { padding: 16px; } }
+</style>
+</head>
+<body>
+
+<nav class="top">
+<div class="inner">
+  <a href="../index.html" class="logo">Mojo<span>Llama</span></a>
+  <div class="breadcrumb">
+    <a href="../index.html">Home</a>
+    <span class="sep">/</span>
+    <span>Documentation</span>
+  </div>
+</div>
+</nav>
+
+<div class="wrap">
+<!-- ═══ SIDEBAR TOC ═══ -->
+<aside class="toc">
+  <div class="toc-header">
+    <h3>Documentation</h3>
+    <div class="toc-search">
+      <input type="text" id="tocFilter" placeholder="Filter topics..." oninput="filterToc(this.value)">
+    </div>
+  </div>
+  <nav class="toc-nav" id="tocNav">
+
+    <div class="toc-section">
+      <div class="toc-section-title open" onclick="toggleSection(this)">
+        <span>Getting Started</span>
+        <span class="arrow">▶</span>
+      </div>
+      <div class="toc-items open">
+        <a href="#install" class="toc-item">Installation</a>
+        <a href="#quickstart" class="toc-item">Quick start</a>
+        <a href="#cli-overview" class="toc-item">CLI overview</a>
+      </div>
+    </div>
+
+    <div class="toc-section">
+      <div class="toc-section-title open" onclick="toggleSection(this)">
+        <span>CLI Reference</span>
+        <span class="arrow">▶</span>
+      </div>
+      <div class="toc-items open">
+        <a href="#cli-chat" class="toc-item">chat</a>
+        <a href="#cli-serve" class="toc-item">serve</a>
+        <a href="#cli-bench" class="toc-item">bench</a>
+        <a href="#cli-convert" class="toc-item">convert</a>
+        <a href="#cli-quantize" class="toc-item">quantize</a>
+        <a href="#cli-autotune" class="toc-item">autotune</a>
+        <a href="#cli-info" class="toc-item">info</a>
+      </div>
+    </div>
+
+    <div class="toc-section">
+      <div class="toc-section-title open" onclick="toggleSection(this)">
+        <span>Docker Guide</span>
+        <span class="arrow">▶</span>
+      </div>
+      <div class="toc-items open">
+        <a href="#docker-quickstart" class="toc-item">Quick start</a>
+        <a href="#docker-profiles" class="toc-item">Profiles</a>
+        <a href="#docker-env" class="toc-item">Environment variables</a>
+        <a href="#docker-models" class="toc-item">Model download</a>
+        <a href="#docker-autotune" class="toc-item">Auto-tune</a>
+      </div>
+    </div>
+
+    <div class="toc-section">
+      <div class="toc-section-title open" onclick="toggleSection(this)">
+        <span>Model Support</span>
+        <span class="arrow">▶</span>
+      </div>
+      <div class="toc-items open">
+        <a href="#arch-support" class="toc-item">Architecture table</a>
+        <a href="#quant-types" class="toc-item">Quantization types</a>
+        <a href="#model-tips" class="toc-item">Model tips</a>
+      </div>
+    </div>
+
+    <div class="toc-section">
+      <div class="toc-section-title open" onclick="toggleSection(this)">
+        <span>Troubleshooting</span>
+        <span class="arrow">▶</span>
+      </div>
+      <div class="toc-items open">
+        <a href="#ts-cli" class="toc-item">CLI issues</a>
+        <a href="#ts-docker" class="toc-item">Docker issues</a>
+        <a href="#ts-performance" class="toc-item">Performance</a>
+        <a href="#ts-models" class="toc-item">Model loading</a>
+        <a href="#ts-nan" class="toc-item">NaN values</a>
+      </div>
+    </div>
+
+    <div class="toc-section">
+      <div class="toc-section-title" onclick="toggleSection(this)">
+        <span>API Reference</span>
+        <span class="arrow">▶</span>
+      </div>
+      <div class="toc-items">
+        <a href="#api-openai" class="toc-item">OpenAI-compatible API</a>
+        <a href="#api-chat" class="toc-item">Chat completions</a>
+        <a href="#api-models" class="toc-item">Model listing</a>
+      </div>
+    </div>
+
+  </nav>
+</aside>
+
+<!-- ═══ CONTENT ═══ -->
+<main class="content">
+
+<h1>MojoLlama Documentation <span class="tagline">CLI reference, Docker guide, model support, and troubleshooting</span></h1>
+<p class="last-updated">v0.5.0 — Last updated May 2026</p>
+
+<!-- ═══════ RECOMMENDED TOPICS ═══════ -->
+<h2>Recommended topics</h2>
+<div class="topics-grid">
+  <div class="topic-card">
+    <span class="tag tag-guide">Quick start</span>
+    <h3><a href="#quickstart">Get started in 5 minutes</a></h3>
+    <p>Install MojoLlama, download a model, and run your first inference.</p>
+  </div>
+  <div class="topic-card">
+    <span class="tag tag-cli">CLI</span>
+    <h3><a href="#cli-serve">Serving models via API</a></h3>
+    <p>Start an OpenAI-compatible API server with concurrent users.</p>
+  </div>
+  <div class="topic-card">
+    <span class="tag tag-docker">Docker</span>
+    <h3><a href="#docker-quickstart">Docker deployment guide</a></h3>
+    <p>Run MojoLlama in containers with auto-tune and model download.</p>
+  </div>
+  <div class="topic-card">
+    <span class="tag tag-models">Models</span>
+    <h3><a href="#arch-support">Architecture support</a></h3>
+    <p>Supported model architectures and quantization types.</p>
+  </div>
+  <div class="topic-card">
+    <span class="tag tag-cli">CLI</span>
+    <h3><a href="#cli-bench">Benchmark models</a></h3>
+    <p>Measure tok/s throughput and compare against llama.cpp.</p>
+  </div>
+  <div class="topic-card">
+    <span class="tag tag-guide">Guide</span>
+    <h3><a href="#ts-cli">Troubleshooting</a></h3>
+    <p>Common issues and solutions for CLI and Docker.</p>
+  </div>
+</div>
+
+<!-- ═══════ GETTING STARTED ═══════ -->
+<h2 id="install">Getting Started</h2>
+
+<h3>Installation</h3>
+<p>Clone the repository and install with pip in development mode:</p>
+<pre><span class="prompt">$</span> <span class="cmd">git clone https://github.com/a730/MojoLlama.git</span>
+<span class="prompt">$</span> <span class="cmd">cd MojoLlama/src && pip install -e .</span></pre>
+<p>Verify the installation:</p>
+<pre><span class="prompt">$</span> <span class="cmd">mojollama --version</span>
+<span class="result">mojollama v0.5.0</span></pre>
+
+<h3 id="quickstart">Quick start</h3>
+<p>Download a GGUF model and run chat inference:</p>
+<pre><span class="prompt">$</span> <span class="cmd">mojollama convert --hf meta-llama/Llama-3.2-1B --outtype q4_0</span>
+<span class="prompt">$</span> <span class="cmd">mojollama chat -m model.gguf</span></pre>
+<p>Or use an existing GGUF file:</p>
+<pre><span class="prompt">$</span> <span class="cmd">mojollama chat -m /path/to/model.gguf</span></pre>
+
+<h3 id="cli-overview">CLI overview</h3>
+<p>The <code>mojollama</code> command provides a unified interface for all operations:</p>
+<pre><span class="prompt">$</span> <span class="cmd">mojollama</span>
+<span class="comment">  chat       Interactive chat with a model</span>
+<span class="comment">  serve      OpenAI-compatible API server</span>
+<span class="comment">  bench      Run benchmarks (tok/s, latency)</span>
+<span class="comment">  convert    HuggingFace → GGUF conversion</span>
+<span class="comment">  quantize   Quantize models (Q4_0, Q8_0, etc.)</span>
+<span class="comment">  autotune   Hardware auto-tuning sweep</span>
+<span class="comment">  info       Display model metadata</span>
+<span class="comment">  eval       Run evaluation benchmarks</span>
+<span class="comment">  train      LoRA fine-tuning</span>
+<span class="comment">  export     Export to safetensors, ONNX</span>
+<span class="comment">  hub        HuggingFace Hub operations</span></pre>
+
+<!-- ═══════ CLI REFERENCE ═══════ -->
+<h2 id="cli-chat">CLI Reference</h2>
+
+<h3><code>mojollama chat</code></h3>
+<p>Interactive chat session with a loaded model.</p>
+<pre><span class="prompt">$</span> <span class="cmd">mojollama chat -m model.gguf</span>
+<span class="prompt">$</span> <span class="cmd">mojollama chat -m model.gguf --temp 0.8 --max-tokens 2048</span></pre>
+<table>
+  <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+  <tr><td>-m, --model</td><td>—</td><td>Path to GGUF model file (required)</td></tr>
+  <tr><td>--temp</td><td>0.7</td><td>Sampling temperature (0–2)</td></tr>
+  <tr><td>--max-tokens</td><td>512</td><td>Maximum generation tokens</td></tr>
+  <tr><td>--top-p</td><td>0.9</td><td>Top-p nucleus sampling</td></tr>
+  <tr><td>--repeat-penalty</td><td>1.1</td><td>Repeat penalty</td></tr>
+</table>
+
+<h3 id="cli-serve"><code>mojollama serve</code></h3>
+<p>Start an OpenAI-compatible API server for concurrent requests.</p>
+<pre><span class="prompt">$</span> <span class="cmd">mojollama serve -m model.gguf -p 8080</span>
+<span class="prompt">$</span> <span class="cmd">mojollama serve -m model.gguf -p 8080 --workers 4</span>
+<span class="result">✓ Server started on http://0.0.0.0:8080</span></pre>
+<table>
+  <tr><th>Flag</th><th>Default</th><th>Description</th></tr>
+  <tr><td>-p, --port</td><td>8080</td><td>Server port</td></tr>
+  <tr><td>--workers</td><td>1</td><td>Number of worker processes</td></tr>
+  <tr><td>--batch-size</td><td>1</td><td>Batch size for inference</td></tr>
+  <tr><td>--cors-allow-origin</td><td>—</td><td>CORS origin (use * for all)</td></tr>
+</table>
+
+<h3 id="cli-bench"><code>mojollama bench</code></h3>
+<p>Measure throughput and compare against llama.cpp.</p>
+<pre><span class="prompt">$</span> <span class="cmd">mojollama bench -m model.gguf</span>
+<span class="prompt">$</span> <span class="cmd">mojollama bench -m model.gguf --prompt-tokens 512 --gen-tokens 128</span>
+<span class="prompt">$</span> <span class="cmd">mojollama bench -m model.gguf --compare</span>  <span class="comment"># vs llama.cpp</span></pre>
+
+<h3 id="cli-convert"><code>mojollama convert</code></h3>
+<p>Convert a HuggingFace model to GGUF format.</p>
+<pre><span class="prompt">$</span> <span class="cmd">mojollama convert --hf meta-llama/Llama-3.2-1B --outtype q4_0</span>
+<span class="prompt">$</span> <span class="cmd">mojollama convert --hf mistralai/Mistral-7B --outtype q4_k_m</span></pre>
+
+<h3 id="cli-quantize"><code>mojollama quantize</code></h3>
+<p>Quantize an existing GGUF model to a different precision.</p>
+<pre><span class="prompt">$</span> <span class="cmd">mojollama quantize -m model.gguf -t q4_k_m</span>
+<span class="prompt">$</span> <span class="cmd">mojollama quantize -m model.gguf -t q8_0 -o model-q8.gguf</span></pre>
+
+<h3 id="cli-autotune"><code>mojollama autotune</code></h3>
+<p>Sweep hardware parameters to find optimal settings for your model:</p>
+<pre><span class="prompt">$</span> <span class="cmd">mojollama autotune -m model.gguf</span>
+<span class="prompt">$</span> <span class="cmd">mojollama autotune -m model.gguf --quick</span>
+<span class="result">✓ Optimal: threads=32, batch=512, concurrency=10</span></pre>
+
+<h3 id="cli-info"><code>mojollama info</code></h3>
+<p>Display model metadata, architecture, and tensor layout without running inference.</p>
+<pre><span class="prompt">$</span> <span class="cmd">mojollama info -m model.gguf</span>
+<span class="comment">  Architecture:    llama</span>
+<span class="comment">  Parameters:      7.24B</span>
+<span class="comment">  Quantization:    Q4_K_M</span>
+<span class="comment">  Context length:  8192</span>
+<span class="comment">  Tensors:         291</span></pre>
+
+<!-- ═══════ DOCKER ═══════ -->
+<h2 id="docker-quickstart">Docker Guide</h2>
+
+<h3>Quick start</h3>
+<p>Pull the latest image and run with a model:</p>
+<pre><span class="prompt">$</span> <span class="cmd">docker pull ghcr.io/a730/mojollama:latest</span>
+<span class="prompt">$</span> <span class="cmd">docker run -e MODEL=/models/model.gguf -v /path/to/model.gguf:/models/model.gguf \</span>
+  <span class="cmd">ghcr.io/a730/mojollama:latest mojollama chat</span></pre>
+
+<h3 id="docker-profiles">Docker Compose profiles</h3>
+<table>
+  <tr><th>Profile</th><th>Command</th><th>Description</th></tr>
+  <tr><td>mojollama</td><td><code>docker compose --profile mojollama up</code></td><td>API server</td></tr>
+  <tr><td>chat</td><td><code>docker compose --profile chat up</code></td><td>Interactive chat</td></tr>
+  <tr><td>bench</td><td><code>docker compose --profile bench up</code></td><td>Run benchmarks</td></tr>
+  <tr><td>quantize</td><td><code>docker compose --profile quantize up</code></td><td>Quantize models</td></tr>
+  <tr><td>autotune</td><td><code>docker compose --profile autotune up</code></td><td>Hardware auto-tune</td></tr>
+  <tr><td>llama-cpp</td><td><code>docker compose --profile llama-cpp up</code></td><td>llama.cpp fallback</td></tr>
+</table>
+
+<h3 id="docker-env">Environment variables</h3>
+<table>
+  <tr><th>Variable</th><th>Default</th><th>Description</th></tr>
+  <tr><td><code>MODEL</code></td><td><code>/models/model.gguf</code></td><td>Path to the GGUF model file</td></tr>
+  <tr><td><code>PORT</code></td><td><code>8080</code></td><td>Server port</td></tr>
+  <tr><td><code>OMP_NUM_THREADS</code></td><td><code>32</code></td><td>OpenMP threads for inference</td></tr>
+  <tr><td><code>AUTO_TUNE</code></td><td><code>true</code></td><td>Enable hardware auto-tune</td></tr>
+  <tr><td><code>HF_REPO</code></td><td>—</td><td>HuggingFace repo for model download</td></tr>
+  <tr><td><code>HF_FILE</code></td><td>—</td><td>GGUF filename in the HF repo</td></tr>
+  <tr><td><code>HF_TOKEN</code></td><td>—</td><td>HuggingFace token for gated models</td></tr>
+</table>
+
+<h3 id="docker-models">Model auto-download</h3>
+<p>The entrypoint script downloads models from HuggingFace on first run. Set <code>HF_REPO</code> and <code>HF_FILE</code> to auto-download:</p>
+<pre><span class="prompt">$</span> <span class="cmd">docker run -e HF_REPO=QuantFactory/Meta-Llama-3-8B-GGUF \</span>
+  <span class="cmd">-e HF_FILE=Meta-Llama-3-8B.Q4_K_M.gguf \</span>
+  <span class="cmd">-e MODEL=/models/Meta-Llama-3-8B.Q4_K_M.gguf \</span>
+  <span class="cmd">ghcr.io/a730/mojollama:latest mojollama chat</span></pre>
+
+<h3 id="docker-autotune">Hardware auto-tune</h3>
+<p>Set <code>AUTO_TUNE=true</code> (default) to run a hardware sweep on first model load. Results are cached per-model hash in <code>/root/.cache/mojollama/</code> so subsequent runs use the optimal config immediately.</p>
+
+<!-- ═══════ MODEL SUPPORT ═══════ -->
+<h2 id="arch-support">Model Support</h2>
+
+<h3>Supported architectures</h3>
+<p>MojoLlama supports 50+ model architectures through architecture-specific forward passes.</p>
+
+<div class="table-wrap">
+<table>
+  <tr><th>Architecture</th><th>Status</th><th>Notable features</th></tr>
+  <tr><td>Llama 2/3/4, Mistral</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>Dense, GQA, SwiGLU, RoPE</td></tr>
+  <tr><td>Qwen2, Qwen3</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>TNT embedding, partial rotary</td></tr>
+  <tr><td>GPT-OSS</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>MoE 32 experts, bias attention — 2.26× vs llama.cpp</td></tr>
+  <tr><td>Qwen3 MoE</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>128 experts top-8, shared expert, SwiGLU</td></tr>
+  <tr><td>Qwen3.6-35B</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>Hybrid SSM+Attention, MXFP4, 256 experts</td></tr>
+  <tr><td>Gemma 4</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>Per-layer proj, GeGLU, sliding window, softcapping</td></tr>
+  <tr><td>ZAYA1-8B</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>80 layers, ATTN/CCA/SSM + MoE+MoD</td></tr>
+  <tr><td>DeepSeek V2/V3</td><td>Supported</td><td>Multi-head Latent Attention, DeepSeekMoE</td></tr>
+  <tr><td>Mixtral, DBRX</td><td>Supported</td><td>Standard MoE with gated FFN</td></tr>
+  <tr><td>Falcon</td><td>In development</td><td>Parallel attention+FFN, fused QKV</td></tr>
+  <tr><td>Phi-3/4</td><td>In development</td><td>Fused QKV, long RoPE</td></tr>
+</table>
+</div>
+
+<h3 id="quant-types">Quantization types</h3>
+<table>
+  <tr><th>Type</th><th>Bits</th><th>Description</th></tr>
+  <tr><td>Q4_0</td><td>4</td><td>4-bit, no K-quant (fast, compact)</td></tr>
+  <tr><td>Q4_K_M</td><td>4</td><td>4-bit K-quant medium (recommended)</td></tr>
+  <tr><td>Q5_K</td><td>5</td><td>5-bit K-quant</td></tr>
+  <tr><td>Q6_K</td><td>6</td><td>6-bit K-quant (near lossless)</td></tr>
+  <tr><td>Q8_0</td><td>8</td><td>8-bit (accurate)</td></tr>
+  <tr><td>MXFP4</td><td>4</td><td>4-bit MXFP4 (expert weights)</td></tr>
+</table>
+
+<h3 id="model-tips">Model tips</h3>
+<ul>
+  <li><strong>Small models (&lt;10B):</strong> Use 1 thread — OpenMP overhead kills performance on small matrix multiplications (e.g., ZAYA1-8B optimal at 1 thread)</li>
+  <li><strong>Large models (&gt;10B):</strong> Use all physical cores (e.g., 32 threads on Threadripper 3970X)</li>
+  <li><strong>MoE models:</strong> MojoLlama excels here — GPT-OSS reaches 2.26× llama.cpp throughput</li>
+  <li><strong>Check architecture:</strong> Use <code>mojollama info -m model.gguf</code> to verify a model is recognized</li>
+</ul>
+
+<!-- ═══════ TROUBLESHOOTING ═══════ -->
+<h2 id="ts-cli">Troubleshooting</h2>
+
+<h3>CLI issues</h3>
+
+<h4><code>mojollama</code> command not found</h4>
+<p>Install the package in your active Python environment:</p>
+<pre><span class="prompt">$</span> <span class="cmd">cd MojoLlama/src && pip install -e .</span>
+<span class="prompt">$</span> <span class="cmd">mojollama --version</span>
+<span class="result">mojollama v0.5.0</span></pre>
+
+<div class="callout tip"><strong>Tip:</strong> If using a virtual environment, activate it first: <code>source .venv/bin/activate</code></div>
+
+<h4><code>ImportError: No module named 'mojollama'</code></h4>
+<p>Run from the <code>src/</code> directory or reinstall with <code>pip install -e .</code></p>
+
+<h4>Benchmark crashes or shows 0 tok/s</h4>
+<ul>
+  <li>Verify the model file path is correct and accessible</li>
+  <li>Check it's a valid GGUF: <code>head -c 4 model.gguf | xxd</code> should show <code>46474755</code> ("GGUF")</li>
+  <li>MXFP4 models require the MXFP4 engine path</li>
+</ul>
+
+<h4>Server fails to start (address in use)</h4>
+<pre><span class="prompt">$</span> <span class="cmd">lsof -i :8080</span>
+<span class="prompt">$</span> <span class="cmd">kill -9 &lt;PID&gt;</span>
+<span class="prompt">$</span> <span class="cmd">mojollama serve -m model.gguf -p 8081</span>  <span class="comment"># use different port</span></pre>
+
+<h4>Chat UI can't connect</h4>
+<ol>
+  <li>Ensure server is running: <code>mojollama serve -m model.gguf -p 8080</code></li>
+  <li>Open <code>studio.html</code> and enter the server URL in the connection bar</li>
+  <li>Click <strong>Connect</strong> — status should turn green</li>
+</ol>
+<div class="callout warning"><strong>Note:</strong> If using a browser from a different machine, use the server's IP/hostname. For cross-origin access, start the server with <code>--cors-allow-origin "*"</code>.</div>
+
+<h3 id="ts-docker">Docker issues</h3>
+
+<h4>Container exits immediately</h4>
+<p>Check the logs:</p>
+<pre><span class="prompt">$</span> <span class="cmd">docker logs &lt;container-name&gt;</span>
+<span class="prompt">$</span> <span class="cmd">docker compose logs mojollama</span></pre>
+<p>Common causes:</p>
+<ul>
+  <li><strong>No model specified</strong> — set <code>MODEL</code> env var or mount a GGUF at <code>/models/</code></li>
+  <li><strong>Model file not found</strong> — verify the path in <code>MODEL</code></li>
+  <li><strong>Out of memory</strong> — model requires more RAM than available</li>
+</ul>
+
+<h4>Model auto-download fails</h4>
+<ul>
+  <li>Check internet: <code>docker run --rm ghcr.io/a730/mojollama:latest curl -I https://huggingface.co</code></li>
+  <li>Gated models need <code>HF_TOKEN</code> env var set</li>
+  <li>File names are case-sensitive on HuggingFace</li>
+</ul>
+
+<h3 id="ts-performance">Performance issues</h3>
+<table>
+  <tr><th>Problem</th><th>Fix</th></tr>
+  <tr><td>OMP_NUM_THREADS too low</td><td>Set to number of physical cores (e.g., 32 for Threadripper 3970X)</td></tr>
+  <tr><td>OMP_NUM_THREADS too high</td><td>For models &lt;10B, 1 thread is optimal (OpenMP overhead)</td></tr>
+  <tr><td>Slow first token</td><td>First inference includes model load time. Subsequent tokens faster.</td></tr>
+  <tr><td>CPU throttling</td><td>Monitor: <code>watch -n1 "grep MHz /proc/cpuinfo"</code></td></tr>
+  <tr><td>Low throughput</td><td>Run <code>mojollama autotune --quick</code> for optimized config</td></tr>
+</table>
+
+<h3 id="ts-models">Model loading</h3>
+<h4>"Unknown architecture" error</h4>
+<p>Check what architecture the model reports:</p>
+<pre><span class="prompt">$</span> <span class="cmd">mojollama info -m model.gguf | grep architecture</span></pre>
+<p>If unsupported, MojoLlama falls back to a generic forward pass — results may be incorrect. See the <a href="#arch-support">architecture table</a> for supported list.</p>
+
+<h3 id="ts-nan">NaN values in output</h3>
+<p>NaN indicates a computation error. Common causes:</p>
+<ul>
+  <li><strong>Attention softmax</strong> — overflow/underflow. Try smaller context or non-zero attention mask</li>
+  <li><strong>RMSNorm</strong> — near-zero variance. MojoLlama clamps RMS sum to [-1000, 1000]</li>
+  <li><strong>MXFP4</strong> — scale overflow in 4-bit arithmetic</li>
+  <li><strong>Unsupported architecture</strong> — needs a specialized forward pass</li>
+</ul>
+
+<!-- ═══════ API REFERENCE ═══════ -->
+<h2 id="api-openai">API Reference</h2>
+
+<h3>OpenAI-compatible API</h3>
+<p>MojoLlama serves an OpenAI-compatible API at <code>/v1/chat/completions</code>, compatible with the OpenAI Python client, LangChain, and any OpenAI SDK.</p>
+
+<h4 id="api-chat">Chat Completions</h4>
+<pre><span class="prompt">$</span> <span class="cmd">curl http://localhost:8080/v1/chat/completions \</span>
+  <span class="cmd">-H "Content-Type: application/json" \</span>
+  <span class="cmd">-d '{"model":"default","messages":[{"role":"user","content":"Hello!"}]}'</span>
+<span class="result">{"id":"chat-...","choices":[{"index":0,"message":{"role":"assistant","content":"Hi there!"},"finish_reason":"stop"}],"usage":...}</span></pre>
+
+<h4 id="api-models">Model listing</h4>
+<pre><span class="prompt">$</span> <span class="cmd">curl http://localhost:8080/v1/models</span>
+<span class="result">{"object":"list","data":[{"id":"default","object":"model","created":...,"owned_by":"mojollama"}]}</span></pre>
+
+<div class="callout note"><strong>Note:</strong> The API supports streaming (<code>stream: true</code>), temperature, top_p, max_tokens, frequency_penalty, and presence_penalty parameters.</div>
+
+<hr>
+<div class="doc-footer">
+  <span>MojoLlama v0.5.0 — Apache 2.0 License</span>
+  <a href="https://github.com/a730/MojoLlama/issues">Report an issue</a>
+</div>
+
+</main>
+</div>
+
+<script>
+function toggleSection(el) {
+  el.classList.toggle('open');
+  var items = el.nextElementSibling;
+  if (items) items.classList.toggle('open');
+}
+function filterToc(val) {
+  val = val.toLowerCase();
+  document.querySelectorAll('.toc-item').forEach(function(item) {
+    item.style.display = item.textContent.toLowerCase().includes(val) ? 'block' : 'none';
+  });
+  document.querySelectorAll('.toc-section-title').forEach(function(title) {
+    var hasVisible = false;
+    var items = title.nextElementSibling;
+    if (items) {
+      items.querySelectorAll('.toc-item').forEach(function(item) {
+        if (item.style.display !== 'none') hasVisible = true;
+      });
+    }
+    if (val && !hasVisible) title.style.display = 'none';
+    else title.style.display = 'flex';
+  });
+}
+// Highlight active TOC item on scroll
+var tocItems = document.querySelectorAll('.toc-item');
+var sections = [];
+tocItems.forEach(function(a) {
+  var id = a.getAttribute('href').substring(1);
+  var el = document.getElementById(id);
+  if (el) sections.push({el: el, link: a});
+});
+window.addEventListener('scroll', function() {
+  var scrollY = window.scrollY + 120;
+  var active = null;
+  sections.forEach(function(s) {
+    if (s.el.offsetTop <= scrollY) active = s;
+  });
+  tocItems.forEach(function(a) { a.classList.remove('active'); });
+  if (active) active.link.classList.add('active');
+});
+</script>
+</body>
+</html>
