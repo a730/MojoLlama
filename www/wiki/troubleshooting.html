@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Troubleshooting — MojoLlama Wiki</title>
+<meta name="description" content="Troubleshooting guide for MojoLlama CLI and Docker deployment.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --mojo: #6C3CE1;
+  --mojo-dark: #5228B5;
+  --mojo-light: #8B5CF6;
+  --mojo-subtle: rgba(108, 60, 225, 0.08);
+  --bg: #FFFFFF;
+  --bg-alt: #F4F4F4;
+  --border: #E0E0E0;
+  --border-light: #EDEDED;
+  --text: #161616;
+  --text-secondary: #525252;
+  --text-tertiary: #8D8D8D;
+  --success: #198038;
+  --warning: #DA1E28;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --max-width: 960px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --transition: 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; -webkit-font-smoothing: antialiased; }
+body { font-family: var(--font-body); background: var(--bg); color: var(--text); line-height: 1.6; font-size: 16px; }
+a { color: var(--mojo); text-decoration: none; }
+a:hover { color: var(--mojo-dark); }
+::selection { background: var(--mojo-subtle); }
+h1, h2, h3 { font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; }
+h1 { font-size: 2.5rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 0.5rem; }
+h2 { font-size: 1.5rem; margin: 2rem 0 0.75rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-light); }
+h3 { font-size: 1.1rem; margin: 1.5rem 0 0.5rem; }
+p { color: var(--text-secondary); margin-bottom: 1rem; max-width: 720px; }
+code {
+  font-family: var(--font-mono); font-size: 0.85em;
+  background: var(--mojo-subtle); padding: 2px 6px;
+  border-radius: 4px; color: var(--mojo-dark);
+}
+pre {
+  background: #1a1a2e; color: #e0e0e0;
+  border-radius: var(--radius-lg); padding: 16px 20px;
+  font-family: var(--font-mono); font-size: 0.82rem;
+  line-height: 1.7; overflow-x: auto; margin: 1rem 0;
+}
+pre .prompt { color: var(--mojo-light); }
+pre .comment { color: #6f6f8f; font-style: italic; }
+pre .cmd { color: #e0e0f0; }
+pre .result { color: #6fcf97; }
+pre .err { color: #f85149; }
+.container { max-width: var(--max-width); margin: 0 auto; padding: 0 24px; }
+nav {
+  position: fixed; top: 0; width: 100%; z-index: 100;
+  background: rgba(255,255,255,0.92); backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border-light);
+}
+nav .container { display: flex; align-items: center; justify-content: space-between; height: 56px; }
+nav .logo { font-weight: 700; font-size: 1.1rem; color: var(--text); }
+nav .logo span { color: var(--mojo); }
+nav a { font-size: 0.875rem; font-weight: 500; color: var(--text-secondary); margin-left: 24px; }
+nav a:hover { color: var(--text); }
+main { padding: 96px 0 48px; }
+ul, ol { margin: 0.5rem 0 1rem 1.5rem; color: var(--text-secondary); }
+li { margin-bottom: 0.3rem; }
+hr { border: none; border-top: 1px solid var(--border-light); margin: 2rem 0; }
+.tip, .warning, .error-box {
+  border-radius: var(--radius); padding: 12px 16px; margin: 1rem 0;
+  font-size: 0.9rem; max-width: 720px;
+}
+.tip { background: rgba(25,128,56,0.08); border-left: 3px solid var(--success); color: var(--text); }
+.tip strong { color: var(--success); }
+.warning { background: rgba(218,30,40,0.06); border-left: 3px solid var(--warning); color: var(--text); }
+.warning strong { color: var(--warning); }
+.error-box { background: rgba(218,30,40,0.1); border-left: 3px solid var(--warning); color: var(--text); }
+.error-box strong { color: var(--warning); }
+table { width: 100%; border-collapse: collapse; font-size: 0.88rem; margin: 1rem 0; }
+th { padding: 10px 16px; text-align: left; font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-tertiary); background: var(--bg-alt); border-bottom: 1px solid var(--border-light); }
+td { padding: 10px 16px; border-bottom: 1px solid var(--border-light); color: var(--text-secondary); }
+td:first-child { font-family: var(--font-mono); font-size: 0.82rem; color: var(--text); white-space: nowrap; }
+tr:hover td { background: var(--mojo-subtle); }
+footer { padding: 32px 0; border-top: 1px solid var(--border-light); text-align: center; font-size: 0.8rem; color: var(--text-tertiary); }
+.toc { background: var(--bg-alt); border-radius: var(--radius-lg); padding: 20px 24px; margin: 1.5rem 0; }
+.toc h3 { margin-top: 0; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-tertiary); }
+.toc a { display: block; font-size: 0.9rem; margin: 4px 0; }
+@media (max-width: 768px) { h1 { font-size: 1.8rem; } }
+</style>
+</head>
+<body>
+<nav>
+<div class="container">
+  <a href="index.html" class="logo">Mojo<span>Llama</span></a>
+  <div>
+    <a href="index.html">Home</a>
+    <a href="chat.html">Chat</a>
+    <a href="https://github.com/a730/MojoLlama">GitHub</a>
+  </div>
+</div>
+</nav>
+<main class="container">
+<h1>Troubleshooting</h1>
+<p>Common issues when using MojoLlama CLI and Docker, with solutions.</p>
+
+<div class="toc">
+<h3>On this page</h3>
+<a href="#cli">CLI Issues</a>
+<a href="#docker">Docker Issues</a>
+<a href="#models">Model Loading</a>
+<a href="#performance">Performance</a>
+<a href="#docker-compose">Docker Compose Reference</a>
+</div>
+
+<!-- ═══════ CLI ═══════ -->
+<h2 id="cli">CLI Issues</h2>
+
+<h3><code>mojollama</code> command not found</h3>
+<p>Ensure the package is installed in your active Python environment:</p>
+<pre><span class="prompt">$</span> <span class="cmd">cd MojoLlama/src && pip install -e .</span>
+<span class="prompt">$</span> <span class="cmd">mojollama --version</span>
+<span class="result">mojollama v0.5.0</span></pre>
+<p>If using a virtual environment, activate it first:</p>
+<pre><span class="prompt">$</span> <span class="cmd">source .venv/bin/activate  # or .\venv\Scripts\activate on Windows</span></pre>
+
+<h3><code>ImportError: No module named 'mojollama'</code></h3>
+<p>Run from the <code>src/</code> directory or use <code>pip install -e .</code> to install in development mode:</p>
+<pre><span class="prompt">$</span> <span class="cmd">cd MojoLlama/src && pip install -e .</span></pre>
+
+<h3><code>mojollama bench</code> crashes or shows 0 tok/s</h3>
+<p>Causes: missing GGUF file, wrong path, or incompatible quantization.</p>
+<pre><span class="prompt">$</span> <span class="cmd">mojollama bench -m /path/to/model.gguf</span>
+<span class="err">Error: model file not found</span></pre>
+<p>Solutions:</p>
+<ul>
+  <li>Check the file path — use absolute paths</li>
+  <li>Verify the file is a valid GGUF:<br>
+    <code>head -c 4 model.gguf | xxd</code> should show <code>46474755</code> ("GGUF")</li>
+  <li>Check quantization type — MXFP4 requires the MXFP4 engine path</li>
+</ul>
+
+<div class="tip"><strong>Tip:</strong> Use <code>mojollama info -m model.gguf</code> to inspect a model's metadata, architecture, and tensor layout before running benchmarks.</div>
+
+<h3><code>mojollama serve</code> fails to start</h3>
+<pre><span class="prompt">$</span> <span class="cmd">mojollama serve -m model.gguf -p 8080</span>
+<span class="err">Error: Address already in use</span></pre>
+<p>Another process is using port 8080. Either kill it or use a different port:</p>
+<pre><span class="prompt">$</span> <span class="cmd">lsof -i :8080</span>
+<span class="prompt">$</span> <span class="cmd">kill -9 &lt;PID&gt;</span>
+<span class="prompt">#</span> <span class="cmd">or use a different port:</span>
+<span class="prompt">$</span> <span class="cmd">mojollama serve -m model.gguf -p 8081</span></pre>
+
+<h3>Chat UI can't connect to server</h3>
+<p>The <code>chat.html</code> page sends requests to a MojoLlama server via the OpenAI-compatible API.</p>
+<ol>
+  <li>Make sure the server is running: <code>mojollama serve -m model.gguf -p 8080</code></li>
+  <li>Enter the server URL in the chat UI (default: <code>http://localhost:8080</code>)</li>
+  <li>Click <strong>Connect</strong> — the status indicator turns green</li>
+  <li>If connecting from a different machine, use the server's IP/hostname instead of <code>localhost</code></li>
+  <li>Check that the server port is not blocked by a firewall</li>
+</ol>
+<div class="warning"><strong>CORS note:</strong> If accessing the chat UI from a different origin (e.g., GitHub Pages), the server must include CORS headers. Start the server with <code>--cors-allow-origin "*"</code> if needed.</div>
+
+<h2 id="docker">Docker Issues</h2>
+
+<h3>Container exits immediately</h3>
+<p>Check logs:</p>
+<pre><span class="prompt">$</span> <span class="cmd">docker logs &lt;container-name&gt;</span>
+<span class="prompt">$</span> <span class="cmd">docker compose logs mojollama</span></pre>
+<p>Common causes:</p>
+<ul>
+  <li><strong>No model specified</strong> — set <code>MODEL</code> env var or mount a GGUF file at <code>/models/</code></li>
+  <li><strong>Model file not found</strong> — check the path in <code>MODEL</code> env var</li>
+  <li><strong>Out of memory</strong> — the model requires more RAM than available</li>
+</ul>
+
+<h3>Model auto-download fails</h3>
+<p>The entrypoint script downloads models from HuggingFace using <code>HF_REPO</code> and <code>HF_FILE</code> env vars.</p>
+<pre><span class="prompt">$</span> <span class="cmd">docker run -e HF_REPO=QuantFactory/Meta-Llama-3-8B-GGUF \</span>
+  <span class="cmd">-e HF_FILE=Meta-Llama-3-8B.Q4_K_M.gguf \</span>
+  <span class="cmd">-e MODEL=/models/Meta-Llama-3-8B.Q4_K_M.gguf \</span>
+  <span class="cmd">ghcr.io/a730/mojollama:latest mojollama chat</span></pre>
+<p>If download fails:</p>
+<ul>
+  <li>Check internet connectivity from within the container:<br>
+    <code>docker run --rm ghcr.io/a730/mojollama:latest curl -I https://huggingface.co</code></li>
+  <li>Some models require authentication — set <code>HF_TOKEN</code> env var for gated models</li>
+  <li>Verify the file name — HuggingFace file names are case-sensitive</li>
+</ul>
+
+<h3>Container runs but inference is very slow</h3>
+<p>Update these env vars:</p>
+<ul>
+  <li><code>OMP_NUM_THREADS</code> — set to number of physical cores (not logical threads)</li>
+  <li><code>AUTO_TUNE=true</code> — runs hardware auto-tune on first model load</li>
+</ul>
+<pre><span class="prompt">$</span> <span class="cmd">docker run -e OMP_NUM_THREADS=16 -e AUTO_TUNE=true \</span>
+  <span class="cmd">-e MODEL=/models/model.gguf ghcr.io/a730/mojollama:latest mojollama chat</span></pre>
+
+<div class="tip"><strong>Tip:</strong> Auto-tune results are cached per model hash in <code>/root/.cache/mojollama/</code> so subsequent runs use the optimal config.</div>
+
+<h3>GPU not used / CUDA not available</h3>
+<p>MojoLlama is a <strong>CPU-first</strong> engine. It does not use CUDA or GPU acceleration. If you need GPU inference, use llama.cpp with the <code>--n-gpu-layers</code> flag via the llama.cpp fallback profile.</p>
+
+<h2 id="models">Model Loading</h2>
+
+<h3>"Unknown architecture" error</h3>
+<p>If MojoLlama doesn't recognize your model's architecture:</p>
+<ul>
+  <li>Check what architecture the model reports: <code>mojollama info -m model.gguf | grep architecture</code></li>
+  <li>Supported: Llama, Mistral, Qwen2, Qwen3, GPT-OSS, DeepSeek V2/V3, DBRX, Mixtral, Gemma 4, ZAYA1, Falcon (dev), Phi-3/4 (dev)</li>
+  <li>For unsupported architectures, MojoLlama falls back to a generic forward pass — results may be incorrect</li>
+</ul>
+
+<h3>"Unsupported quantization" error</h3>
+<p>Supported quantization types:</p>
+<table>
+  <tr><th>Type</th><th>Description</th></tr>
+  <tr><td>Q4_0</td><td>4-bit, no K-quant</td></tr>
+  <tr><td>Q4_K_M</td><td>4-bit K-quant medium</td></tr>
+  <tr><td>Q5_K</td><td>5-bit K-quant</td></tr>
+  <tr><td>Q6_K</td><td>6-bit K-quant</td></tr>
+  <tr><td>Q8_0</td><td>8-bit</td></tr>
+  <tr><td>MXFP4</td><td>4-bit MXFP4 (expert weights)</td></tr>
+</table>
+
+<h2 id="performance">Performance</h2>
+
+<h3>Lower throughput than expected</h3>
+<table>
+  <tr><th>Problem</th><th>Fix</th></tr>
+  <tr><td>OMP_NUM_THREADS too low</td><td>Set to number of physical cores (e.g., 32 for Threadripper 3970X)</td></tr>
+  <tr><td>OMP_NUM_THREADS too high</td><td>More threads != faster. For small models (ZAYA1-8B, &lt;10B), 1 thread is optimal</td></tr>
+  <tr><td>Slow first token</td><td>First inference includes model load time. Subsequent tokens are faster</td></tr>
+  <tr><td>Small model on many threads</td><td>OpenMP overhead dominates. Reduce threads for models under 10B params</td></tr>
+  <tr><td>CPU throttling</td><td>Check CPU temperature and power limits: <code>watch -n1 "grep MHz /proc/cpuinfo"</code></td></tr>
+</table>
+
+<h3>NaN values in output</h3>
+<p>NaN indicates a computation error, typically in:</p>
+<ul>
+  <li><strong>Attention</strong> — softmax overflow or underflow. Try non-zero attention mask or smaller model context</li>
+  <li><strong>LayerNorm / RMSNorm</strong> — division by near-zero variance. MojoLlama clamps RMS sum to <code>[-1000, 1000]</code></li>
+  <li><strong>MXFP4 matmul</strong> — scale overflow in 4-bit twos-complement arithmetic</li>
+  <li><strong>Unsupported architecture</strong> — model architecture may need a specialized forward pass</li>
+</ul>
+
+<h2 id="docker-compose">Docker Compose Reference</h2>
+
+<p>Available profiles for <code>docker compose</code>:</p>
+<table>
+  <tr><th>Profile</th><th>Command</th><th>Description</th></tr>
+  <tr><td>mojollama</td><td><code>docker compose --profile mojollama up</code></td><td>API server with default config</td></tr>
+  <tr><td>chat</td><td><code>docker compose --profile chat up</code></td><td>Interactive chat session</td></tr>
+  <tr><td>bench</td><td><code>docker compose --profile bench up</code></td><td>Run benchmarks on the model</td></tr>
+  <tr><td>quantize</td><td><code>docker compose --profile quantize up</code></td><td>Quantize a model to GGUF</td></tr>
+  <tr><td>autotune</td><td><code>docker compose --profile autotune up</code></td><td>Hardware auto-tune sweep</td></tr>
+  <tr><td>llama-cpp</td><td><code>docker compose --profile llama-cpp up</code></td><td>Fallback to llama.cpp for unsupported models</td></tr>
+</table>
+
+<p>Key environment variables:</p>
+<table>
+  <tr><th>Variable</th><th>Default</th><th>Description</th></tr>
+  <tr><td><code>MODEL</code></td><td><code>/models/model.gguf</code></td><td>Path to the GGUF model file</td></tr>
+  <tr><td><code>PORT</code></td><td><code>8080</code></td><td>Server port</td></tr>
+  <tr><td><code>OMP_NUM_THREADS</code></td><td><code>32</code></td><td>OpenMP threads for parallel computation</td></tr>
+  <tr><td><code>AUTO_TUNE</code></td><td><code>true</code></td><td>Enable hardware auto-tune on first load</td></tr>
+  <tr><td><code>HF_REPO</code></td><td>—</td><td>HuggingFace repo for auto-download (e.g., <code>QuantFactory/Meta-Llama-3-8B-GGUF</code>)</td></tr>
+  <tr><td><code>HF_FILE</code></td><td>—</td><td>GGUF filename in the HF repo</td></tr>
+  <tr><td><code>HF_TOKEN</code></td><td>—</td><td>HuggingFace token for gated models</td></tr>
+</table>
+
+<hr>
+<p>Still stuck? <a href="https://github.com/a730/MojoLlama/issues">Open a GitHub issue</a> with your logs and hardware details.</p>
+</main>
+<footer>MojoLlama v0.5.0 — Apache 2.0 License</footer>
+</body>
+</html>
