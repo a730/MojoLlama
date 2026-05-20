@@ -546,7 +546,7 @@ footer .copyright {
     <div class="hero-text">
       <div class="hero-badge">v0.5.0 — Open source</div>
       <h1>CPU-first LLM inference,<br><span class="gradient">engineered for performance</span></h1>
-      <p>MojoLlama is a high-throughput inference engine for CPU. GGUF native, MoE-optimized, with support for 50+ architectures — from Llama to Gemma 4 to hybrid SSM models.</p>
+      <p>MojoLlama is a high-throughput inference engine for CPU, built on <a href="https://www.modular.com/max" style="color:inherit;text-decoration:underline;text-decoration-color:var(--mojo-subtle);text-underline-offset:3px;">Modular MAX</a>. GGUF native, MoE-optimized, with support for 50+ architectures — from Llama to Gemma 4 to hybrid SSM models. GPU acceleration via MAX engine for supported models.</p>
       <div class="hero-btns">
         <a href="https://github.com/a730/MojoLlama" class="btn btn-primary">Get started →</a>
         <a href="studio.html" class="btn btn-secondary">Try chat</a>
@@ -625,6 +625,11 @@ footer .copyright {
       <p>Interactive chat UI, benchmark tables, architecture support matrix, and getting-started guide deployed to GitHub Pages on every push.</p>
     </div>
     <div class="release-card">
+      <span class="release-tag release-tag-infra">MAX</span>
+      <h3>MAX GPU acceleration</h3>
+      <p>GPU inference via Modular MAX engine — CUDA, ROCm, and Metal backends. Offload compute to GPU while keeping MojoLlama's CPU-optimized pipeline for unsupported layers.</p>
+    </div>
+    <div class="release-card">
       <span class="release-tag release-tag-new">Studio</span>
       <h3>MojoLlama Studio dashboard</h3>
       <p>Full-featured dashboard with chat, training, benchmarking, auto-tune, quantization, dataset tools, and HuggingFace Hub integration.</p>
@@ -665,6 +670,12 @@ footer .copyright {
       <div class="icon">🔋</div>
       <h3>GGUF native</h3>
       <p>All quantization types: Q4_0, Q4_K, Q5_K, Q6_K, Q8_0, MXFP4. Full K-quant support including Q5_K and MXFP4 for expert weights.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">🎮</div>
+      <h3>MAX GPU engine</h3>
+      <p>Built on <strong>Modular MAX</strong> — GPU acceleration via MAX engine for supported models. Leverages CUDA, ROCm, and Metal backends through MAX's hardware abstraction layer.</p>
+      <span class="tag">GPU acceleration</span>
     </div>
     <div class="feature-card">
       <div class="icon">🔄</div>
@@ -798,7 +809,7 @@ footer .copyright {
   <div class="grid">
     <div>
       <div style="font-weight:700; font-size:1.1rem; margin-bottom:var(--space-12);">Mojo<span style="color:var(--mojo);">Llama</span></div>
-      <p style="font-size:0.85rem; line-height:1.6;">CPU-first LLM inference, fine-tuning, quantization, and serving — engineered in Mojo+MAX. Fully open source under Apache 2.0.</p>
+      <p style="font-size:0.85rem; line-height:1.6;">CPU-first LLM inference built on Modular MAX. GPU acceleration available via MAX engine. Fully open source under Apache 2.0.</p>
     </div>
     <div>
       <h4>Product</h4>
@@ -815,7 +826,8 @@ footer .copyright {
     </div>
     <div>
       <h4>Ecosystem</h4>
-      <a href="https://www.modular.com/max">MAX</a>
+      <a href="https://www.modular.com/max"><strong>MAX Platform</strong></a>
+      <a href="https://www.modular.com">Modular</a>
       <a href="https://github.com/ggml-org/gguf">GGUF</a>
       <a href="https://github.com/ggml-org/llama.cpp">llama.cpp</a>
     </div>
