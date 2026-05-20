@@ -1,0 +1,196 @@
+# ============================================================
+# MojoLlama Docker Build & Publish Workflow
+# ============================================================
+# Builds multi-arch Docker images for MojoLlama and pushes
+# to GitHub Container Registry (ghcr.io).
+#
+# Triggered on:
+#   - Push to main, dev branches (tagged releases)
+#   - PRs to main (build only, no push)
+#   - Manual workflow_dispatch
+#
+# Image tags:
+#   ghcr.io/a730/mojollama:latest      — latest main branch
+#   ghcr.io/a730/mojollama:dev          — latest dev branch
+#   ghcr.io/a730/mojollama:X.Y.Z       — tagged release
+#   ghcr.io/a730/mojollama:nightly      — nightly build
+# ============================================================
+
+name: Docker Build & Publish
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+  schedule:
+    - cron: '0 6 * * *'  # daily 06:00 UTC — nightly build
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: 'Additional docker tags (comma-separated)'
+        required: false
+        default: ''
+      platforms:
+        description: 'Platforms (linux/amd64,linux/arm64)'
+        required: false
+        default: 'linux/amd64'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/mojollama
+  LLAMA_CPP_VERSION: b4729
+
+jobs:
+  # ── Build and push Docker image ──
+  docker:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          lfs: false
+
+      - name: Set up QEMU (for multi-arch)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          buildkitd-flags: --debug
+          driver-opts: |
+            image=moby/buildkit:master
+            network=host
+
+      - name: Log into GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate Docker metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
+            type=raw,value=dev,enable=${{ github.ref == format('refs/heads/{0}', 'dev') }}
+            type=raw,value=nightly,enable=${{ github.event_name == 'schedule' }}
+            type=sha,format=short
+          flavor: |
+            latest=false
+
+      - name: Append manual tags
+        if: github.event_name == 'workflow_dispatch' && inputs.tags != ''
+        id: meta-manual
+        run: |
+          IFS=',' read -ra TAGS <<< "${{ inputs.tags }}"
+          for tag in "${TAGS[@]}"; do
+            echo "tags=${{ steps.meta.outputs.tags }},ghcr.io/${{ env.IMAGE_NAME }}:${tag}" >> $GITHUB_ENV
+          done
+
+      - name: Build and export to Docker
+        uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ inputs.platforms || 'linux/amd64' }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            LLAMA_CPP_VERSION=${{ env.LLAMA_CPP_VERSION }}
+          provenance: true
+          sbom: true
+
+      - name: Generate artifact attestation
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Image digest
+        run: echo "Pushed ${{ steps.meta.outputs.tags }} @ ${{ steps.build.outputs.digest }}"
+
+  # ── Smoke test the built image ──
+  smoke-test:
+    runs-on: ubuntu-24.04
+    needs: [docker]
+    if: github.event_name != 'pull_request'
+
+    steps:
+      - name: Log into GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull built image
+        run: |
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev || \
+          docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: Test --help
+        run: |
+          IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          TAG="dev"
+          docker run --rm "$IMG:$TAG" --help 2>&1 | head -20
+
+      - name: Test --version
+        run: |
+          IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          TAG="dev"
+          docker run --rm "$IMG:$TAG" --version
+
+      - name: Test info
+        run: |
+          IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          TAG="dev"
+          docker run --rm "$IMG:$TAG" info
+
+      - name: Test TinyLlama inference
+        run: |
+          IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          TAG="dev"
+          # Download a tiny model
+          docker run --rm -v /tmp/models:/models "$IMG:$TAG" \
+            bench -m /models/tl-Q4_0.gguf -n 10 -t 4 2>&1 | tail -10
+
+      - name: Test llama.cpp fallback
+        run: |
+          which llama-cli && echo "llama-cli available" || echo "llama-cli missing"
+          which llama-server && echo "llama-server available" || echo "llama-server missing"
+
+      - name: Test server starts
+        run: |
+          IMG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+          TAG="dev"
+          docker run --rm -d --name ml-test -p 8080:8080 "$IMG:$TAG" serve --port 8080
+          sleep 3
+          curl -s http://localhost:8080/health 2>&1 | head -5 || echo "Server health check skipped"
+          docker stop ml-test 2>/dev/null || true

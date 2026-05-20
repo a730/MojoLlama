@@ -1,0 +1,25 @@
+# Files not needed in Docker image
+.git/
+.gitignore
+.gitattributes
+.github/
+.hermes/
+.workspace-state.md
+.coding-context
+.coding-memory
+moe-plan.md
+benchmarks/
+tests/
+kernels/legacy-engine/
+kernels/legacy-c/
+kernels/dsv4/
+kernels/tests/
+kernels/benchmarks/
+__pycache__/
+*.pyc
+**/__pycache__/
+**/*.pyc
+*.swp
+*.swo
+*~
+.DS_Store

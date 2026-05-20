@@ -28,7 +28,25 @@ from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".mojollama"
 CONFIG_PATH = CONFIG_DIR / "config.json"
-BENCH_BIN = "/tmp/llama.cpp/build/bin/llama-bench"
+BENCH_BIN = None  # resolved at runtime via shutil.which()
+
+def _find_bench():
+    """Locate llama-bench: check PATH, then build tree, then common locations."""
+    global BENCH_BIN
+    if BENCH_BIN is not None:
+        return BENCH_BIN
+    import shutil
+    candidates = [
+        shutil.which("llama-bench"),
+        "/tmp/llama.cpp/build/bin/llama-bench",
+        "/usr/local/bin/llama-bench",
+        "llama-bench",
+    ]
+    for c in candidates:
+        if c and os.path.exists(c) and os.access(c, os.X_OK):
+            BENCH_BIN = c
+            return BENCH_BIN
+    return None
 
 
 def detect_cpu():
@@ -75,7 +93,7 @@ def run_bench(model, threads, threads_batch, batch_size, ubatch_size,
               cpu_mask=""):
     """Run a single llama-bench test and return results."""
     cmd = [
-        BENCH_BIN, "-m", str(model),
+        _find_bench(), "-m", str(model),
         "-p", str(n_prompt), "-n", str(n_gen),
         "-t", str(threads), "-b", str(batch_size), "-ub", str(ubatch_size),
         "-r", "1",  # single rep for speed during sweep
@@ -93,7 +111,11 @@ def run_bench(model, threads, threads_batch, batch_size, ubatch_size,
     except subprocess.TimeoutExpired:
         return None
     except FileNotFoundError:
-        print(f"  ❌ llama-bench not found at {BENCH_BIN}")
+        b = _find_bench()
+        if b is None:
+            print(f"  ❌ llama-bench not found in PATH or build tree")
+        else:
+            print(f"  ❌ llama-bench not found at {b}")
         return None
 
     # Parse results from markdown table
@@ -214,9 +236,18 @@ def bench_concurrency(model_path, quick=False):
     import concurrent.futures
     import socket
 
-    server_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server_moe.py")
-    if not os.path.exists(server_script):
-        print(f"  ⚠ server_moe.py not found at {server_script}")
+    # Find server script (moved to benchmarks/ in workspace reorganization)
+    server_script = None
+    for candidate in [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "benchmarks", "server_moe.py"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "server_moe.py"),
+        "server_moe.py",
+    ]:
+        if os.path.exists(candidate):
+            server_script = candidate
+            break
+    if server_script is None:
+        print(f"  ⚠ server_moe.py not found — cannot test concurrency")
         return None
 
     PORT = 8080
@@ -467,14 +498,14 @@ def autotune(model, quick=False, mojollama=False):
         print(f"❌ Model not found: {model}")
         return None
 
-    if not os.path.exists(BENCH_BIN):
+    if _find_bench() is None:
         if mojollama:
             print("⚠ llama-bench not found — Phases 1-5 (llama.cpp tuning) will be skipped")
         else:
-            print(f"❌ llama-bench not found at {BENCH_BIN}")
+            print("❌ llama-bench not found — install llama.cpp or use --mojollama")
             return None
 
-    skip_bench = mojollama and not os.path.exists(BENCH_BIN)
+    skip_bench = mojollama and _find_bench() is None
 
     # Defaults used when llama-bench phases are skipped
     optimal_threads = physical
@@ -761,22 +792,76 @@ def main():
         
         from mojollama.backends import build_server_cmd
         cmd = build_server_cmd("llama-server", "model.gguf", 8081, config.get("llama_server"))
-        print(' '.join(cmd))
+        print(" ".join(cmd))
         return
 
-    print("╔══════════════════════════════════════════════╗")
-    print("║      MojoLlama AutoTuner v0.2.0              ║")
-    print("╚══════════════════════════════════════════════╝")
-    print()
 
-    config = autotune(args.model, quick=args.quick, mojollama=args.mojollama)
+# ═══════════════════════════════════════════════════════════════════════
+# Auto-tune on first model load
+# ═══════════════════════════════════════════════════════════════════════
 
-    if config:
-        save_config(config)
-        print_config(config)
-    else:
-        print("❌ Auto-tuning failed")
-        sys.exit(1)
+_AUTO_TUNE_CACHE = {}  # model_path -> config
+
+
+def auto_tune_for_model(model_path: str, quick: bool = True) -> dict:
+    """Run a fast MojoLlama engine tune for *model_path* on first load.
+
+    Caches per model path.  Returns config dict with:
+      - omp_threads  — optimal OMP_NUM_THREADS for this model+hardware
+      - concurrency  — optimal number of parallel workers
+      - strategy     — 'process' or 'thread' based on hardware topology
+
+    Only runs the MojoLlama engine phases (skips llama-bench).
+    """
+    global _AUTO_TUNE_CACHE
+    cache_key = os.path.abspath(model_path)
+    if cache_key in _AUTO_TUNE_CACHE:
+        return _AUTO_TUNE_CACHE[cache_key]
+
+    print(f"\n{'='*50}")
+    print(f"  MojoLlama AutoTune — first load of {os.path.basename(model_path)}")
+    print(f"  Sweeping threads + concurrency for optimal settings...")
+    print(f"{'='*50}")
+
+    config = autotune(model_path, quick=quick, mojollama=True)
+
+    if config is None:
+        # Fallback defaults
+        import multiprocessing as mp
+        n_cores = mp.cpu_count() or 32
+        config = {
+            "autotune_date": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "model_tuned_on": str(model_path),
+            "mojollama_engine": {
+                "omp_threads": min(32, n_cores),
+                "concurrency": min(8, max(1, n_cores // 4)),
+                "strategy": "process",
+            },
+            "hardware": {
+                "cores": n_cores,
+            }
+        }
+
+    save_config(config)
+    _AUTO_TUNE_CACHE[cache_key] = config
+
+    print(f"  ✓ Saved to {CONFIG_PATH}")
+    if "mojollama_engine" in config:
+        me = config["mojollama_engine"]
+        print(f"  → {me.get('omp_threads', '?')} OMP threads, "
+              f"{me.get('concurrency', '?')} workers ({me.get('strategy', 'process')})")
+    print(f"{'='*50}\n")
+    return config
+
+
+def get_tuned_setting(model_path: str, key: str, default=None):
+    """Get a single auto-tuned setting for *model_path*.
+
+    Runs auto-tune if not cached.  Example:
+      threads = get_tuned_setting('/models/model.gguf', 'omp_threads', 32)
+    """
+    config = auto_tune_for_model(model_path, quick=True)
+    return config.get("mojollama_engine", {}).get(key, default)
 
 
 if __name__ == "__main__":

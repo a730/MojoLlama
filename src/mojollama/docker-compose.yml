@@ -1,0 +1,170 @@
+# ============================================================
+# MojoLlama Docker Compose
+# ============================================================
+# Start:  docker compose up -d
+# Build:  docker compose build
+# Tail:   docker compose logs -f
+#
+# Environment variables (all optional — set in .env or shell):
+#
+# === Model & Server ===
+#   MODEL           GGUF model path (default: /models/tl-Q4_0.gguf)
+#   PORT            API server port (default: 8080)
+#   HOST            Bind address (default: 0.0.0.0)
+#
+# === Performance ===
+#   OMP_NUM_THREADS OpenMP threads (default: auto-tuned, fallback: nproc)
+#   CPU_LIMIT       Docker CPU limit (default: host CPU count)
+#   MEM_LIMIT       Docker memory limit (default: 128G)
+#   MOJOLLAMA_DEVICE  Device override: cpu | cuda | auto (default: auto)
+#
+# === Tuning ===
+#   AUTO_TUNE       Run autotune on container start: true|false (default: true)
+#   TUNE_QUICK      Fast tuning mode: true|false (default: true)
+#
+# === Storage ===
+#   MODELS_VOLUME   Path to models directory (default: ./models)
+#   CONFIG_VOLUME   Path to config directory (default: ./config)
+#   CACHE_VOLUME    Path to HF cache (default: ./cache/huggingface)
+#   HF_TOKEN        HuggingFace token for gated models
+#
+# === Advanced ===
+#   LLAMA_CPP_DIR   llama.cpp build path (default: /tmp/llama.cpp)
+#   MOJOLLAMA_DEBUG Enable debug output: true|false
+# ============================================================
+
+version: "3.9"
+
+x-common: &common
+  image: ghcr.io/a730/mojollama:latest
+  environment:
+    # ── Model ──
+    MODEL_PATH: "${MODEL:-/models/tl-Q4_0.gguf}"
+    PORT: "${PORT:-8080}"
+    HOST: "${HOST:-0.0.0.0}"
+
+    # ── Performance ──
+    OMP_NUM_THREADS: "${OMP_NUM_THREADS:-}"
+    MOJOLLAMA_DEVICE: "${MOJOLLAMA_DEVICE:-auto}"
+
+    # ── Debugging ──
+    MOJOLLAMA_DEBUG: "${MOJOLLAMA_DEBUG:-false}"
+
+    # ── HuggingFace ──
+    HF_TOKEN: "${HF_TOKEN:-}"
+    HUGGINGFACE_TOKEN: "${HF_TOKEN:-}"
+    HF_HOME: "${HF_HOME:-/cache/huggingface}"
+    HUGGINGFACE_HUB_CACHE: "${HUGGINGFACE_HUB_CACHE:-/cache/huggingface/hub}"
+
+    # ── Advanced ──
+    LLAMA_CPP_DIR: "${LLAMA_CPP_DIR:-/tmp/llama.cpp}"
+    MOJOLLAMA_EXPERIMENTS_DB: "${MOJOLLAMA_EXPERIMENTS_DB:-/data/experiments.db}"
+
+  volumes:
+    - "${MODELS_VOLUME:-./models}:/models:ro"
+    - "${CONFIG_VOLUME:-./config}:/root/.mojollama"
+    - "${CACHE_VOLUME:-./cache}:/cache"
+    - "${DATA_VOLUME:-./data}:/data"
+  deploy:
+    resources:
+      limits:
+        cpus: "${CPU_LIMIT:-0}"
+        memory: "${MEM_LIMIT:-128G}"
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "curl", "-sf", "http://localhost:${PORT:-8080}/health"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 20s
+
+services:
+  # ── Main: API Server ──
+  mojollama:
+    <<: *common
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-8080}:${PORT:-8080}"
+    command: ["serve", "-m", "${MODEL:-/models/tl-Q4_0.gguf}", "-p", "${PORT:-8080}", "--host", "${HOST:-0.0.0.0}"]
+    profiles: [""]  # default profile
+
+  # ── Interactive Chat ──
+  chat:
+    <<: *common
+    ports:
+      - "${CHAT_PORT:-8081}:8081"
+    command: ["chat", "-m", "${MODEL:-/models/tl-Q4_0.gguf}", "--web", "-p", "8081"]
+    profiles: [chat]
+
+  # ─── Batch inference ──
+  bench:
+    <<: *common
+    command: ["bench", "-m", "${MODEL:-/models/tl-Q4_0.gguf}", "-n", "${BENCH_TOKENS:-100}", "-t", "${OMP_NUM_THREADS:-32}"]
+    profiles: [bench]
+    restart: "no"
+    healthcheck: disable
+
+  # ─── One-shot query ──
+  query:
+    <<: *common
+    command: ["chat", "-q", "${QUERY:-Hello, who are you?}", "-m", "${MODEL:-/models/tl-Q4_0.gguf}"]
+    profiles: [query]
+    restart: "no"
+    healthcheck: disable
+
+  # ─── Quantization worker ──
+  quantize:
+    <<: *common
+    volumes:
+      - "${MODELS_VOLUME:-./models}:/models:rw"  # need write for output
+      - "${CONFIG_VOLUME:-./config}:/root/.mojollama"
+      - "${CACHE_VOLUME:-./cache}:/cache"
+    command: ["quantize", "${MODEL:-/models/tl-Q4_0.gguf}", "-t", "${QUANT_TYPE:-Q4_K_M}", "-o", "${QUANT_OUTPUT:-/models/quantized.gguf}"]
+    profiles: [quantize]
+    restart: "no"
+    healthcheck: disable
+
+  # ─── Auto-tuner ──
+  autotune:
+    <<: *common
+    command: ["autotune", "-m", "${MODEL:-/models/tl-Q4_0.gguf}", "--quick", "--mojollama"]
+    profiles: [autotune]
+    restart: "no"
+    healthcheck: disable
+
+  # ─── Information / diagnostics ──
+  info:
+    <<: *common
+    command: ["info"]
+    profiles: [info]
+    restart: "no"
+    healthcheck: disable
+
+  # ─── llama.cpp fallback server ──
+  llama-cpp:
+    <<: *common
+    ports:
+      - "${LLAMA_PORT:-8082}:8080"
+    entrypoint: ["llama-server"]
+    command: ["-m", "${MODEL:-/models/tl-Q4_0.gguf}", "--port", "8080", "--host", "0.0.0.0",
+              "-t", "${OMP_NUM_THREADS:-32}", "-b", "${BATCH:-4096}", "-ub", "${UBATCH:-1024}",
+              "-np", "${N_PARALLEL:-4}", "--mlock", "--cont-batching"]
+    profiles: [fallback]
+
+  # ─── MAX engine server (GPU) ──
+  max:
+    <<: *common
+    ports:
+      - "${MAX_PORT:-8083}:8080"
+    entrypoint: ["mojo_engine"]
+    command: ["--model", "${MODEL:-/models/tl-Q4_0.gguf}", "--port", "8080", "--threads", "${OMP_NUM_THREADS:-32}"]
+    profiles: [max]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
