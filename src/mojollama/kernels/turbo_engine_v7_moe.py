@@ -131,7 +131,7 @@ class TurboEngineV7MoE:
                             return int(data[0])
                         return data
         arch = 'llama'
-        for prefix in ['gpt-oss', 'qwen35moe', 'qwen3moe', 'qwen2moe', 'llama', 'mistral']:
+        for prefix in ['gpt-oss', 'qwen35moe', 'qwen3moe', 'qwen2moe', 'qwen2', 'llama', 'mistral']:
             for key in fields:
                 if f'{prefix}.block_count' in key:
                     arch = prefix; break
@@ -795,6 +795,9 @@ class TurboEngineV7MoE:
             lw = self._layers[i]
             is_ssm_layer = (self.layer_types is not None and self.layer_types[i] == 1)
 
+            # NaN clamp: prevent FP32 overflow (critical for Lance, Qwen3.6)
+            np.clip(b_x, -1000.0, 1000.0, out=b_x)
+            
             # Residual copy
             np.copyto(b_r, b_x)
 
@@ -940,6 +943,7 @@ class TurboEngineV7MoE:
 
             # ── FFN ──
             np.copyto(b_r, b_x)
+            np.clip(b_x, -1000.0, 1000.0, out=b_x)
             simd.rms_norm(p_xn, p_x,
                           lw.ffn_norm_w.ctypes.data_as(cf),
                           N, eps_f)
@@ -987,6 +991,7 @@ class TurboEngineV7MoE:
                     b_x[:N] = b_r[:N] + (lw.ffn_down_f32 @ b_silu[:lw.ffn_down_nc.value])[:N]
 
         # Final norm
+        np.clip(b_x, -1000.0, 1000.0, out=b_x)
         simd.rms_norm(p_xn, p_x,
                       self._out_norm_w.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
                       N, eps_f)
