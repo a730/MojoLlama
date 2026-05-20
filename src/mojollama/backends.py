@@ -674,41 +674,109 @@ class TurboEngineBackend(BackendBase):
             from mojollama.kernels.turbo_engine_v77 import TurboEngineV77
             self._engine = TurboEngineV77(self.model_path, self.n_threads)
     
+    # Known model names that don't contain a '/' (full HF ID) mapped to their
+    # HuggingFace repo paths. Extend this list for new models.
+    _MODEL_TOKENIZER_HINTS = {
+        "tinyllama": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        "tinylama": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        "llama-3.2": "meta-llama/Llama-3.2-1B",
+        "llama-3.1": "meta-llama/Llama-3.1-8B",
+        "llama-3": "meta-llama/Llama-3.2-1B",
+        "zaya": "Zyphra/ZAYA1-8B",
+    }
+
     def _load_tokenizer(self):
         if self._tokenizer is not None:
             return
         import transformers
+        import os
         paths = []
+
+        # 1. Explicit TOKENIZER_PATH env var
         if self._tokenizer_path:
             paths.append(self._tokenizer_path)
+
+        # 2. Look for a tokenizer directory next to the model file
+        model_dir = os.path.dirname(os.path.abspath(self.model_path))
+        model_base = os.path.splitext(os.path.basename(self.model_path))[0]
+        for candidate in [
+            os.path.join(model_dir, "tokenizer"),
+            os.path.join(model_dir, model_base + "-tokenizer"),
+            os.path.join("/models", "tokenizer"),
+            os.path.join("/models", model_base + "-tokenizer"),
+        ]:
+            if os.path.isdir(candidate):
+                paths.append(candidate)
+                break
+
+        # 3. Read GGUF metadata fields to find HF model name
         try:
             import gguf
             reader = gguf.GGUFReader(self.model_path)
+            model_name = None
             for key in ["general.name", "general.basename", "general.model.name"]:
                 if key in reader.fields:
                     raw = reader.fields[key].parts[-1]
                     if hasattr(raw, 'tobytes'):
-                        name = bytes(raw.tolist()).decode('utf-8')
+                        name = bytes(raw.tolist()).decode('utf-8', errors='replace')
                     elif isinstance(raw, bytes):
-                        name = raw.decode('utf-8')
+                        name = raw.decode('utf-8', errors='replace')
                     else:
                         name = str(raw)
-                    if name and '/' in name:
-                        paths.append(name)
+                    model_name = name
+                    break
+            # Also read architecture for fallback matching
+            arch = None
+            if "general.architecture" in reader.fields:
+                raw = reader.fields["general.architecture"].parts[-1]
+                if hasattr(raw, 'tobytes'):
+                    arch = bytes(raw.tolist()).decode('utf-8', errors='replace')
+                elif isinstance(raw, bytes):
+                    arch = raw.decode('utf-8', errors='replace')
+                else:
+                    arch = str(raw)
+            # Try the name as a full HF ID (contains '/')
+            if model_name and '/' in model_name:
+                paths.append(model_name)
+            elif model_name:
+                paths.append(model_name)
+            # Try architecture name
+            if arch and arch != model_name:
+                paths.append(arch)
+            # Apply hints map — match by prefix
+            if model_name:
+                for key, hf_id in self._MODEL_TOKENIZER_HINTS.items():
+                    if key in model_name.lower() or (arch and key in arch.lower()):
+                        paths.append(hf_id)
                         break
-                    elif name:
-                        paths.append(name)
+            elif arch:
+                for key, hf_id in self._MODEL_TOKENIZER_HINTS.items():
+                    if key in arch.lower():
+                        paths.append(hf_id)
                         break
         except: pass
+
+        # 4. Try each path — download from HF if needed
+        last_err = None
         for path in paths:
             try:
                 self._tokenizer = transformers.AutoTokenizer.from_pretrained(
                     path, trust_remote_code=True)
+                # Cache the tokenizer locally if it was downloaded from HF
+                if '/' in str(path) and not os.path.isdir(str(path)):
+                    cache_path = os.path.join("/models", "tokenizers",
+                        path.replace("/", "_").replace("\\", "_"))
+                    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                    self._tokenizer.save_pretrained(cache_path)
+                    os.environ["TOKENIZER_PATH"] = cache_path
                 return
-            except: pass
+            except Exception as e:
+                last_err = e
+                continue
         raise RuntimeError(
             f"Cannot load tokenizer for {self.model_path}. "
-            "Set TOKENIZER_PATH env var or mount a tokenizer directory.")
+            "Set TOKENIZER_PATH env var or mount a tokenizer directory "
+            f"(tried {len(paths)} paths). Last error: {last_err}")
     
     @staticmethod
     def _sample(logits, temperature=0.0):

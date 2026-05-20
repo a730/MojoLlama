@@ -413,52 +413,108 @@ void q5_k_batch_matmul(const uint8_t *W, const float *x, float *out,
     }
 }
 
-/* Batched MXFP4 matmul: 32-element blocks, 4-bit two's complement mantissas + E8M0 scale */
+/* Batched MXFP4 matmul: 32-element blocks, 4-bit two's complement mantissas + E8M0 scale
+ *
+ * Optimizations:
+ *   1. powf(2.0f, n) → integer bit manipulation (E8M0 exponent maps directly to IEEE754 float32)
+ *   2. Vertical accumulation (B=1) — one hsum_ps per row, not per block
+ *   3. FMA instructions (_mm256_fmadd_ps) instead of mul + add
+ *   4. Software prefetch of next weight blocks
+ */
 void mxfp4_batch_matmul(const uint8_t *W, const float *x, float *out,
                          int n_rows, int nc, int B) {
     int bpr = nc / 32;
     #pragma omp parallel for schedule(static, 8)
     for (int r = 0; r < n_rows; r++) {
-        float *acc = (float*)__builtin_alloca(B * sizeof(float));
-        for (int b = 0; b < B; b++) acc[b] = 0.0f;
-        for (int blk = 0; blk < bpr; blk++) {
-            const uint8_t *bp = W + ((size_t)r * bpr + blk) * sizeof(block_mxfp4);
-            float scale = powf(2.0f, (int)bp[16] - 127);
-            __m128i packed = _mm_loadu_si128((const __m128i*)bp);
-            __m128i lo = _mm_and_si128(packed, _mm_set1_epi8(0x0F));
-            __m128i hi = _mm_and_si128(_mm_srli_epi16(packed, 4), _mm_set1_epi8(0x0F));
-            __m128i sign_lo = _mm_cmpgt_epi8(lo, _mm_set1_epi8(7));
-            __m128i sign_hi = _mm_cmpgt_epi8(hi, _mm_set1_epi8(7));
-            lo = _mm_sub_epi8(lo, _mm_and_si128(sign_lo, _mm_set1_epi8(16)));
-            hi = _mm_sub_epi8(hi, _mm_and_si128(sign_hi, _mm_set1_epi8(16)));
-            /* Interleave lo and hi to restore natural order: lo0,hi0,lo1,hi1,... */
-            __m128i vals_lo = _mm_unpacklo_epi8(lo, hi);
-            __m128i vals_hi = _mm_unpackhi_epi8(lo, hi);
-            __m256 sv = _mm256_set1_ps(scale);
-            /* First 16 values → x[0..15] */
-            __m256i i32_0 = _mm256_cvtepi8_epi32(vals_lo);
-            __m256i i32_1 = _mm256_cvtepi8_epi32(_mm_srli_si128(vals_lo, 8));
-            __m256 blk0 = _mm256_mul_ps(_mm256_cvtepi32_ps(i32_0), sv);
-            __m256 blk1 = _mm256_mul_ps(_mm256_cvtepi32_ps(i32_1), sv);
-            /* Second 16 values → x[16..31] */
-            __m256i i32_2 = _mm256_cvtepi8_epi32(vals_hi);
-            __m256i i32_3 = _mm256_cvtepi8_epi32(_mm_srli_si128(vals_hi, 8));
-            __m256 blk2 = _mm256_mul_ps(_mm256_cvtepi32_ps(i32_2), sv);
-            __m256 blk3 = _mm256_mul_ps(_mm256_cvtepi32_ps(i32_3), sv);
-            int o = blk * 32;
-            for (int b = 0; b < B; b++) {
-                const float *xb = x + (size_t)b * nc + o;
-                __m256 p0 = _mm256_mul_ps(blk0, _mm256_loadu_ps(xb));
-                __m256 p1 = _mm256_mul_ps(blk1, _mm256_loadu_ps(xb + 8));
-                __m256 p2 = _mm256_mul_ps(blk2, _mm256_loadu_ps(xb + 16));
-                __m256 p3 = _mm256_mul_ps(blk3, _mm256_loadu_ps(xb + 24));
-                __m256 s01 = _mm256_add_ps(p0, p1);
-                __m256 s23 = _mm256_add_ps(p2, p3);
-                __m256 s = _mm256_add_ps(s01, s23);
-                acc[b] += hsum_ps(s);
+        if (B == 1) {
+            /* ── Fast path (B=1): vertical accumulation, 1 hsum per row ── */
+            __m256 acc0 = _mm256_setzero_ps();
+            __m256 acc1 = _mm256_setzero_ps();
+            __m256 acc2 = _mm256_setzero_ps();
+            __m256 acc3 = _mm256_setzero_ps();
+
+            for (int blk = 0; blk < bpr; blk++) {
+                const uint8_t *bp = W + ((size_t)r * bpr + blk) * sizeof(block_mxfp4);
+                /* Prefetch weight blocks 2 ahead (17 B/block → ~34 B ahead) */
+                _mm_prefetch(bp + 2 * (int)sizeof(block_mxfp4), _MM_HINT_NTA);
+
+                /* E8M0 exponent → IEEE754 float32: 2^(e-127) = float with bits (e << 23) */
+                union { uint32_t u; float f; } sc = { .u = ((uint32_t)bp[16]) << 23 };
+                __m256 sv = _mm256_set1_ps(sc.f);
+
+                __m128i packed = _mm_loadu_si128((const __m128i*)bp);
+                /* Extract lower/upper 4-bit nibbles from 16 packed bytes */
+                __m128i lo = _mm_and_si128(packed, _mm_set1_epi8(0x0F));
+                __m128i hi = _mm_and_si128(_mm_srli_epi16(packed, 4), _mm_set1_epi8(0x0F));
+                /* Sign extend 4-bit to signed int8: nibble >= 8 → nibble - 16 */
+                __m128i sign_lo = _mm_cmpgt_epi8(lo, _mm_set1_epi8(7));
+                __m128i sign_hi = _mm_cmpgt_epi8(hi, _mm_set1_epi8(7));
+                lo = _mm_sub_epi8(lo, _mm_and_si128(sign_lo, _mm_set1_epi8(16)));
+                hi = _mm_sub_epi8(hi, _mm_and_si128(sign_hi, _mm_set1_epi8(16)));
+                /* Interleave lo/hi to restore natural order */
+                __m128i vals_lo = _mm_unpacklo_epi8(lo, hi);
+                __m128i vals_hi = _mm_unpackhi_epi8(lo, hi);
+                /* Dequant: sign-extend int8 → int32 → float, multiply by scale */
+                __m256 d0 = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(vals_lo)), sv);
+                __m256 d1 = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(vals_lo, 8))), sv);
+                __m256 d2 = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(vals_hi)), sv);
+                __m256 d3 = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(vals_hi, 8))), sv);
+
+                int o = blk * 32;
+                const float *xb = x + o;
+                /* FMA + vertical accumulate into 4 registers */
+                acc0 = _mm256_fmadd_ps(d0, _mm256_loadu_ps(xb), acc0);
+                acc1 = _mm256_fmadd_ps(d1, _mm256_loadu_ps(xb + 8), acc1);
+                acc2 = _mm256_fmadd_ps(d2, _mm256_loadu_ps(xb + 16), acc2);
+                acc3 = _mm256_fmadd_ps(d3, _mm256_loadu_ps(xb + 24), acc3);
             }
+            /* Single reduction per row */
+            __m256 total = _mm256_add_ps(_mm256_add_ps(acc0, acc1),
+                                         _mm256_add_ps(acc2, acc3));
+            out[r] = hsum_ps(total);
+
+        } else {
+            /* ── Batch path (B>1): per-block hsum, but still benefits from powf fix + FMA + prefetch ── */
+            float *acc = (float*)__builtin_alloca(B * sizeof(float));
+            for (int b = 0; b < B; b++) acc[b] = 0.0f;
+
+            for (int blk = 0; blk < bpr; blk++) {
+                const uint8_t *bp = W + ((size_t)r * bpr + blk) * sizeof(block_mxfp4);
+                _mm_prefetch(bp + 2 * (int)sizeof(block_mxfp4), _MM_HINT_NTA);
+
+                union { uint32_t u; float f; } sc = { .u = ((uint32_t)bp[16]) << 23 };
+                __m256 sv = _mm256_set1_ps(sc.f);
+
+                __m128i packed = _mm_loadu_si128((const __m128i*)bp);
+                __m128i lo = _mm_and_si128(packed, _mm_set1_epi8(0x0F));
+                __m128i hi = _mm_and_si128(_mm_srli_epi16(packed, 4), _mm_set1_epi8(0x0F));
+                __m128i sign_lo = _mm_cmpgt_epi8(lo, _mm_set1_epi8(7));
+                __m128i sign_hi = _mm_cmpgt_epi8(hi, _mm_set1_epi8(7));
+                lo = _mm_sub_epi8(lo, _mm_and_si128(sign_lo, _mm_set1_epi8(16)));
+                hi = _mm_sub_epi8(hi, _mm_and_si128(sign_hi, _mm_set1_epi8(16)));
+                __m128i vals_lo = _mm_unpacklo_epi8(lo, hi);
+                __m128i vals_hi = _mm_unpackhi_epi8(lo, hi);
+
+                __m256 d0 = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(vals_lo)), sv);
+                __m256 d1 = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(vals_lo, 8))), sv);
+                __m256 d2 = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(vals_hi)), sv);
+                __m256 d3 = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(vals_hi, 8))), sv);
+
+                int o = blk * 32;
+                for (int b = 0; b < B; b++) {
+                    const float *xb = x + (size_t)b * nc + o;
+                    __m256 p0 = _mm256_fmadd_ps(d0, _mm256_loadu_ps(xb), _mm256_setzero_ps());
+                    __m256 p1 = _mm256_fmadd_ps(d1, _mm256_loadu_ps(xb + 8), _mm256_setzero_ps());
+                    __m256 p2 = _mm256_fmadd_ps(d2, _mm256_loadu_ps(xb + 16), _mm256_setzero_ps());
+                    __m256 p3 = _mm256_fmadd_ps(d3, _mm256_loadu_ps(xb + 24), _mm256_setzero_ps());
+                    __m256 s01 = _mm256_add_ps(p0, p1);
+                    __m256 s23 = _mm256_add_ps(p2, p3);
+                    __m256 s = _mm256_add_ps(s01, s23);
+                    acc[b] += hsum_ps(s);
+                }
+            }
+            for (int b = 0; b < B; b++) out[(size_t)b * n_rows + r] = acc[b];
         }
-        for (int b = 0; b < B; b++) out[(size_t)b * n_rows + r] = acc[b];
     }
 }
 

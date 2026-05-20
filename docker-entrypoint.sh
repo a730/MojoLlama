@@ -55,6 +55,21 @@ if [[ -n "$MODEL_PATH" ]]; then
         warn "Mount GGUF models at ${YELLOW}/models${NC} or set MODEL_PATH env var."
     else
         log "Using model: ${BLUE}${MODEL_PATH}${NC}"
+        # Auto-detect tokenizer directory next to the model
+        MODEL_DIR="$(dirname "$MODEL_PATH")"
+        MODEL_BASE="$(basename "$MODEL_PATH" .gguf)"
+        if [[ -z "$TOKENIZER_PATH" ]]; then
+            for tok_dir in "${MODEL_DIR}/tokenizer" "${MODEL_DIR}/${MODEL_BASE}-tokenizer" "/models/tokenizer" "/models/zaya-tokenizer" "/models/tinyllama-tokenizer"; do
+                if [[ -d "$tok_dir" && -f "${tok_dir}/tokenizer.json" ]]; then
+                    log "Auto-detected tokenizer: ${BLUE}${tok_dir}${NC}"
+                    export TOKENIZER_PATH="$tok_dir"
+                    break
+                fi
+            done
+            if [[ -z "$TOKENIZER_PATH" ]]; then
+                log "No tokenizer directory found, will auto-download from HuggingFace"
+            fi
+        fi
     fi
     export MODEL_PATH
 fi

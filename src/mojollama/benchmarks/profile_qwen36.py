@@ -2,7 +2,7 @@
 """Profile Qwen3.6 MXFP4 by instrumenting the actual forward pass."""
 import sys, os, time, numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'kernels'))
+sys.path.insert(0, '/onedev-workspace/work/src/mojollama/kernels')
 MODEL = "/tmp/models/qwen3.6-mxfp4.gguf"
 
 # Monkey-patch timing into actual engine

@@ -11,6 +11,7 @@
  *  12  = Q4_K   (144 bytes/256 vals)
  *  13  = Q5_K   (176 bytes/256 vals)
  *  14  = Q6_K   (210 bytes/256 vals)
+ *  39  = MXFP4  (17 bytes/32 vals)
  *
  * Compile: gcc -O3 -mavx2 -mfma -mf16c -fopenmp -shared -fPIC \
  *          -o quant_kernels_omp.so quant_kernels_omp.c -lm
@@ -407,24 +408,245 @@ void q8_0_matmul_omp(const uint8_t *restrict W, const float *restrict x,
 }
 
 /* ═════════════════════════════════════════════════════════════════════════
- * Q6_K matmul  (210 bytes per 256 values)
+ * MXFP4 matmul  (17 bytes per 32 values)
  *
  * Block layout:
- *   offset 0:   ql[128]   — lower 4 bits (2 nibbles/byte)
- *   offset 128: qh[64]    — upper 2 bits (4 values/byte, 2 bits each)
- *   offset 192: scales[16] — signed 6-bit per-sub-block scales
- *   offset 208: d         (fp16, 2 bytes) — super-block scale
+ *   q[16]    — 32 × 4-bit twos-complement mantissas packed into 16 bytes
+ *   e[1]     — E8M0 scale exponent (unsigned, bias=127)
  *
- * Dequantization (from ggml):
- *   For each 128-element half-block (n=0,128):
- *     for l in 0..31:
- *       is = l/16
- *       q1 = ((ql[l] & 0xF) | ((qh[l] >> 0) & 3) << 4) - 32
- *       q2 = ((ql[l+32] & 0xF) | ((qh[l] >> 2) & 3) << 4) - 32
- *       q3 = ((ql[l] >> 4)  | ((qh[l] >> 4) & 3) << 4) - 32
- *       q4 = ((ql[l+32] >> 4) | ((qh[l] >> 6) & 3) << 4) - 32
- *       val = d * sc[is+0] * q1, etc.
+ * Dequantization: value = nibble_sign_ext * 2^(e - 127)
+ * Optimizations: int-bit-trick scale, FMA, vertical accum, prefetch
  * ═══════════════════════════════════════════════════════════════════════ */
+
+/* MXFP4 block structure */
+typedef struct {
+    uint8_t q[16];
+    uint8_t e;
+} block_mxfp4;
+
+void mxfp4_matmul_omp(const uint8_t *restrict W, const float *restrict x,
+                      float *restrict out, int n_rows, int n_cols) {
+    int bpr = n_cols / 32;  /* blocks of 32 per row */
+
+    #pragma omp parallel for schedule(static)
+    for (int r = 0; r < n_rows; r++) {
+        __m256 acc0 = _mm256_setzero_ps();
+        __m256 acc1 = _mm256_setzero_ps();
+        __m256 acc2 = _mm256_setzero_ps();
+        __m256 acc3 = _mm256_setzero_ps();
+
+        const uint8_t *row = W + (size_t)r * bpr * sizeof(block_mxfp4);
+        for (int blk = 0; blk < bpr; blk++) {
+            int next = blk + 1;
+            if (next < bpr) {
+                __builtin_prefetch(row + next * sizeof(block_mxfp4), 0, 1);
+            }
+
+            const uint8_t *bp = row + blk * sizeof(block_mxfp4);
+            /* E8M0 exponent → IEEE754 float32: 2^(e-127) = float with bits (e << 23) */
+            union { uint32_t u; float f; } sc = { .u = ((uint32_t)bp[16]) << 23 };
+            __m256 sv = _mm256_set1_ps(sc.f);
+
+            __m128i packed = _mm_loadu_si128((const __m128i*)bp);
+            /* Extract lower/upper 4-bit nibbles */
+            __m128i lo = _mm_and_si128(packed, _mm_set1_epi8(0x0F));
+            __m128i hi = _mm_and_si128(_mm_srli_epi16(packed, 4), _mm_set1_epi8(0x0F));
+            /* Sign extend 4-bit to signed int8: nibble >= 8 → nibble - 16 */
+            __m128i sign_lo = _mm_cmpgt_epi8(lo, _mm_set1_epi8(7));
+            __m128i sign_hi = _mm_cmpgt_epi8(hi, _mm_set1_epi8(7));
+            lo = _mm_sub_epi8(lo, _mm_and_si128(sign_lo, _mm_set1_epi8(16)));
+            hi = _mm_sub_epi8(hi, _mm_and_si128(sign_hi, _mm_set1_epi8(16)));
+            /* Interleave to restore natural order */
+            __m128i vals_lo = _mm_unpacklo_epi8(lo, hi);
+            __m128i vals_hi = _mm_unpackhi_epi8(lo, hi);
+
+            /* Dequant + vertical FMA accumulate across 4 quarter-blocks */
+            int o = blk * 32;
+            __m256 d0 = _mm256_mul_ps(
+                _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(vals_lo)), sv);
+            acc0 = _mm256_fmadd_ps(d0, _mm256_loadu_ps(x + o), acc0);
+
+            __m256 d1 = _mm256_mul_ps(
+                _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(
+                    _mm_srli_si128(vals_lo, 8))), sv);
+            acc1 = _mm256_fmadd_ps(d1, _mm256_loadu_ps(x + o + 8), acc1);
+
+            __m256 d2 = _mm256_mul_ps(
+                _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(vals_hi)), sv);
+            acc2 = _mm256_fmadd_ps(d2, _mm256_loadu_ps(x + o + 16), acc2);
+
+            __m256 d3 = _mm256_mul_ps(
+                _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(
+                    _mm_srli_si128(vals_hi, 8))), sv);
+            acc3 = _mm256_fmadd_ps(d3, _mm256_loadu_ps(x + o + 24), acc3);
+        }
+
+        /* Single horizontal reduction per row */
+        __m128 hi0 = _mm256_extractf128_ps(acc0, 1);
+        __m128 lo0 = _mm256_castps256_ps128(acc0);
+        __m128 hi1 = _mm256_extractf128_ps(acc1, 1);
+        __m128 lo1 = _mm256_castps256_ps128(acc1);
+        __m128 hi2 = _mm256_extractf128_ps(acc2, 1);
+        __m128 lo2 = _mm256_castps256_ps128(acc2);
+        __m128 hi3 = _mm256_extractf128_ps(acc3, 1);
+        __m128 lo3 = _mm256_castps256_ps128(acc3);
+
+        __m128 sum01 = _mm_add_ps(_mm_add_ps(lo0, hi0), _mm_add_ps(lo1, hi1));
+        __m128 sum23 = _mm_add_ps(_mm_add_ps(lo2, hi2), _mm_add_ps(lo3, hi3));
+        __m128 total = _mm_add_ps(sum01, sum23);
+        total = _mm_hadd_ps(total, total);
+        total = _mm_hadd_ps(total, total);
+        out[r] = _mm_cvtss_f32(total);
+    }
+}
+
+/* Scalar row dot for row_range dispatcher (bpr = n_cols / 32) */
+static float mxfp4_row_dot(const uint8_t *restrict W, const float *restrict x,
+                            int bpr, int row) {
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    __m256 acc2 = _mm256_setzero_ps();
+    __m256 acc3 = _mm256_setzero_ps();
+    const uint8_t *row_ptr = W + (size_t)row * bpr * sizeof(block_mxfp4);
+    for (int blk = 0; blk < bpr; blk++) {
+        const uint8_t *bp = row_ptr + blk * sizeof(block_mxfp4);
+        union { uint32_t u; float f; } sc = { .u = ((uint32_t)bp[16]) << 23 };
+        __m256 sv = _mm256_set1_ps(sc.f);
+        __m128i packed = _mm_loadu_si128((const __m128i*)bp);
+        __m128i lo = _mm_and_si128(packed, _mm_set1_epi8(0x0F));
+        __m128i hi = _mm_and_si128(_mm_srli_epi16(packed, 4), _mm_set1_epi8(0x0F));
+        __m128i sign_lo = _mm_cmpgt_epi8(lo, _mm_set1_epi8(7));
+        __m128i sign_hi = _mm_cmpgt_epi8(hi, _mm_set1_epi8(7));
+        lo = _mm_sub_epi8(lo, _mm_and_si128(sign_lo, _mm_set1_epi8(16)));
+        hi = _mm_sub_epi8(hi, _mm_and_si128(sign_hi, _mm_set1_epi8(16)));
+        __m128i vals_lo = _mm_unpacklo_epi8(lo, hi);
+        __m128i vals_hi = _mm_unpackhi_epi8(lo, hi);
+        int o = blk * 32;
+        __m256 d0 = _mm256_mul_ps(
+            _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(vals_lo)), sv);
+        acc0 = _mm256_fmadd_ps(d0, _mm256_loadu_ps(x + o), acc0);
+        __m256 d1 = _mm256_mul_ps(
+            _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(vals_lo, 8))), sv);
+        acc1 = _mm256_fmadd_ps(d1, _mm256_loadu_ps(x + o + 8), acc1);
+        __m256 d2 = _mm256_mul_ps(
+            _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(vals_hi)), sv);
+        acc2 = _mm256_fmadd_ps(d2, _mm256_loadu_ps(x + o + 16), acc2);
+        __m256 d3 = _mm256_mul_ps(
+            _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(vals_hi, 8))), sv);
+        acc3 = _mm256_fmadd_ps(d3, _mm256_loadu_ps(x + o + 24), acc3);
+    }
+    __m128 hi0 = _mm256_extractf128_ps(acc0, 1);
+    __m128 lo0 = _mm256_castps256_ps128(acc0);
+    __m128 hi1 = _mm256_extractf128_ps(acc1, 1);
+    __m128 lo1 = _mm256_castps256_ps128(acc1);
+    __m128 hi2 = _mm256_extractf128_ps(acc2, 1);
+    __m128 lo2 = _mm256_castps256_ps128(acc2);
+    __m128 hi3 = _mm256_extractf128_ps(acc3, 1);
+    __m128 lo3 = _mm256_castps256_ps128(acc3);
+    __m128 sum01 = _mm_add_ps(_mm_add_ps(lo0, hi0), _mm_add_ps(lo1, hi1));
+    __m128 sum23 = _mm_add_ps(_mm_add_ps(lo2, hi2), _mm_add_ps(lo3, hi3));
+    __m128 total = _mm_add_ps(sum01, sum23);
+    total = _mm_hadd_ps(total, total);
+    total = _mm_hadd_ps(total, total);
+    return _mm_cvtss_f32(total);
+}
+
+/* MXFP4 row dot using Q8_0 quantized input — uses VPMADDWD for integer dot product.
+ * x_q8 has been quantized to Q8_0 format (34 bytes per 32 values) once upstream.
+ * Combined scale = mxfp4_scale * q8_scale applied per block via FMA. */
+static float mxfp4_row_dot_q8(const uint8_t *restrict W, const uint8_t *restrict x_q8,
+                                int n_cols, int row) {
+    int bpr = n_cols / 32;
+    const uint8_t *rp = W + (size_t)row * bpr * sizeof(block_mxfp4);
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    for (int blk = 0; blk < bpr; blk++) {
+        const uint8_t *bp = rp + blk * sizeof(block_mxfp4);
+        const uint8_t *xbp = x_q8 + blk * Q8_0_BS;
+        float q8_d = f16_to_f32(*(const uint16_t*)xbp);
+        union { uint32_t u; float f; } sc = { .u = ((uint32_t)bp[16]) << 23 };
+        __m256 cv = _mm256_set1_ps(sc.f * q8_d);
+        __m128i p = _mm_loadu_si128((const __m128i*)bp);
+        __m128i lo = _mm_and_si128(p, _mm_set1_epi8(0x0F));
+        __m128i hi = _mm_and_si128(_mm_srli_epi16(p, 4), _mm_set1_epi8(0x0F));
+        __m128i sl = _mm_cmpgt_epi8(lo, _mm_set1_epi8(7));
+        __m128i sh = _mm_cmpgt_epi8(hi, _mm_set1_epi8(7));
+        lo = _mm_sub_epi8(lo, _mm_and_si128(sl, _mm_set1_epi8(16)));
+        hi = _mm_sub_epi8(hi, _mm_and_si128(sh, _mm_set1_epi8(16)));
+        __m128i vlo = _mm_unpacklo_epi8(lo, hi);
+        __m128i vhi = _mm_unpackhi_epi8(lo, hi);
+        __m256i q8v = _mm256_loadu_si256((const __m256i*)(xbp + 2));
+        /* int16 × int16 → int32 via VPMADDWD */
+        __m256i dl = _mm256_madd_epi16(
+            _mm256_cvtepi8_epi16(vlo),
+            _mm256_cvtepi8_epi16(_mm256_castsi256_si128(q8v)));
+        __m256i dh = _mm256_madd_epi16(
+            _mm256_cvtepi8_epi16(vhi),
+            _mm256_cvtepi8_epi16(_mm256_extracti128_si256(q8v, 1)));
+        acc0 = _mm256_fmadd_ps(_mm256_cvtepi32_ps(dl), cv, acc0);
+        acc1 = _mm256_fmadd_ps(_mm256_cvtepi32_ps(dh), cv, acc1);
+    }
+    __m256 t = _mm256_add_ps(acc0, acc1);
+    __m128 th = _mm256_extractf128_ps(t, 1);
+    __m128 tl = _mm256_castps256_ps128(t);
+    __m128 s = _mm_add_ps(tl, th);
+    s = _mm_hadd_ps(s, s); s = _mm_hadd_ps(s, s);
+    return _mm_cvtss_f32(s);
+}
+
+/* MXFP4 row dot using F32 input — vertical accum + FMA + int-bit scale.
+ * For use when input is F32 (not pre-quantized), like the down projection
+ * which takes SiLU'd expert output as input. */
+static float mxfp4_row_dot_f32(const uint8_t *restrict W, const float *restrict x,
+                                 int n_cols, int row) {
+    int bpr = n_cols / 32;
+    const uint8_t *rp = W + (size_t)row * bpr * sizeof(block_mxfp4);
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    __m256 acc2 = _mm256_setzero_ps();
+    __m256 acc3 = _mm256_setzero_ps();
+    for (int blk = 0; blk < bpr; blk++) {
+        const uint8_t *bp = rp + blk * sizeof(block_mxfp4);
+        union { uint32_t u; float f; } sc = { .u = ((uint32_t)bp[16]) << 23 };
+        __m256 sv = _mm256_set1_ps(sc.f);
+        __m128i p = _mm_loadu_si128((const __m128i*)bp);
+        __m128i lo = _mm_and_si128(p, _mm_set1_epi8(0x0F));
+        __m128i hi = _mm_and_si128(_mm_srli_epi16(p, 4), _mm_set1_epi8(0x0F));
+        __m128i sl = _mm_cmpgt_epi8(lo, _mm_set1_epi8(7));
+        __m128i sh = _mm_cmpgt_epi8(hi, _mm_set1_epi8(7));
+        lo = _mm_sub_epi8(lo, _mm_and_si128(sl, _mm_set1_epi8(16)));
+        hi = _mm_sub_epi8(hi, _mm_and_si128(sh, _mm_set1_epi8(16)));
+        __m128i vlo = _mm_unpacklo_epi8(lo, hi);
+        __m128i vhi = _mm_unpackhi_epi8(lo, hi);
+        int o = blk * 32;
+        __m256 d0 = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(vlo)), sv);
+        __m256 d1 = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(vlo, 8))), sv);
+        __m256 d2 = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(vhi)), sv);
+        __m256 d3 = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(vhi, 8))), sv);
+        acc0 = _mm256_fmadd_ps(d0, _mm256_loadu_ps(x + o), acc0);
+        acc1 = _mm256_fmadd_ps(d1, _mm256_loadu_ps(x + o + 8), acc1);
+        acc2 = _mm256_fmadd_ps(d2, _mm256_loadu_ps(x + o + 16), acc2);
+        acc3 = _mm256_fmadd_ps(d3, _mm256_loadu_ps(x + o + 24), acc3);
+    }
+    __m256 t = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
+    __m128 th = _mm256_extractf128_ps(t, 1);
+    __m128 tl = _mm256_castps256_ps128(t);
+    __m128 s = _mm_add_ps(tl, th);
+    s = _mm_hadd_ps(s, s); s = _mm_hadd_ps(s, s);
+    return _mm_cvtss_f32(s);
+}
+
+/* MXFP4 full matmul using Q8_0 pre-quantized input — calls row_dot_q8
+ * in a single OMP parallel region. Much faster than per-row dispatch
+ * from moe_forward_omp because OMP overhead is amortized across all rows. */
+static void mxfp4_matmul_omp_q8(const uint8_t *restrict W, const uint8_t *restrict x_q8,
+                                  float *restrict out, int n_rows, int n_cols) {
+    int bpr = n_cols / 32;
+    #pragma omp parallel for schedule(static)
+    for (int r = 0; r < n_rows; r++) {
+        out[r] = mxfp4_row_dot_q8(W, x_q8, n_cols, r);
+    }
+}
 
 void q6_k_matmul_omp(const uint8_t *restrict W, const float *restrict x,
                       float *restrict out, int n_rows, int n_cols) {
@@ -813,6 +1035,9 @@ static void matmul_row_range(const uint8_t *restrict W, const float *restrict x,
             case 14: /* Q6_K */
                 total = q6_k_row_dot_avx2(W, x, n_cols, r);
                 break;
+            case 39: /* MXFP4 */
+                total = mxfp4_row_dot(W, x, bpr32, r);
+                break;
             default:
                 total = 0.0f;
                 break;
@@ -939,6 +1164,9 @@ void quant_matmul_omp(const uint8_t *restrict W, const float *restrict x,
             break;
         case 14: /* Q6_K */
             q6_k_matmul_omp(W, x, out, n_rows, n_cols);
+            break;
+        case 39: /* MXFP4 */
+            mxfp4_matmul_omp(W, x, out, n_rows, n_cols);
             break;
         default:
             break;
@@ -1579,62 +1807,72 @@ void moe_forward_omp(
     float* prealloc_buf, uint8_t* prealloc_q8
 ) {
     size_t exp_buf_sz = (size_t)top_k * n_ff_expert;
-    float *all_bufs = prealloc_buf ? prealloc_buf : (float*)malloc(3 * exp_buf_sz * sizeof(float));
+    size_t total_bufs = 4 * exp_buf_sz;  /* gate + up + silu + down_tmp */
+    float *all_bufs = prealloc_buf ? prealloc_buf : (float*)malloc(total_bufs * sizeof(float));
     float *gate_buf = all_bufs;
     float *up_buf   = all_bufs + exp_buf_sz;
     float *silu_buf = all_bufs + 2 * exp_buf_sz;
+    float *down_tmp = all_bufs + 3 * exp_buf_sz;  /* temp output for MXFP4 down matmul */
 
     if (!all_bufs) return;
 
-    /* ── Quantize x_norm to Q8_0 once for all Q4_K quantized-activation rows ── */
+    /* ── Quantize x_norm to Q8_0 once for all Q4_K/MXFP4 quantized-activation rows ── */
     int n_blocks_x = n_embd / 32;
-    uint8_t x_q8_buf[2048 / 32 * Q8_0_BS];  /* stack alloc for up to 2048 dims */
+    uint8_t x_q8_buf[4096 / 32 * Q8_0_BS];  /* stack alloc for up to 4096 dims */
     int q8_sz = (size_t)n_blocks_x * Q8_0_BS;
     uint8_t *x_q8 = q8_sz <= sizeof(x_q8_buf) ? x_q8_buf : (uint8_t*)malloc(q8_sz);
     uint8_t *x_q8_alloced = (x_q8 != x_q8_buf) ? x_q8 : NULL;
-    (void)prealloc_q8;  /* kept for ABI compat — using stack alloc instead */
+    (void)prealloc_q8;
     quantize_row_q8_0(x_norm, x_q8, n_embd);
 
     int total_gate    = top_k * n_ff_expert;
     int total_down    = top_k * n_embd;
 
-    /* ── Phase 1: Gate + Up rows (single OMP region, fused per-row) ── */
-    /* Each iteration processes one (expert, row) pair computing both gate+up */
-    /* to amortize x_q8 read and reduce OMP fork-join vs two separate passes. */
-    #pragma omp parallel for schedule(dynamic, 64)
-    for (int i = 0; i < top_k * n_ff_expert; i++) {
-        int ei = i / n_ff_expert;
-        int row = i % n_ff_expert;
-        int e = top_indices[ei];
-        float gv, uv;
-        if (qt_gate == 12) {
-            gv = q4_k_row_dot_q8(gate_raw[e], x_q8, n_embd, row);
-        } else if (qt_gate == 14) {
-            gv = q6_k_row_dot_avx2(gate_raw[e], x_norm, n_embd, row);
-        } else if (qt_gate == 2) {
-            int bpr = n_embd / 32;
-            gv = q4_0_row_dot(gate_raw[e], x_norm, bpr, row);
-        } else if (qt_gate == 3) {
-            int bpr = n_embd / 32;
-            gv = q4_1_row_dot(gate_raw[e], x_norm, bpr, row);
-        } else {
-            gv = 0.0f;
+    /* ── Phase 1: Gate + Up ── */
+    if (qt_gate == 39 && qt_up == 39) {
+        /* MXFP4 fast path: full matmul per expert (avoids per-row dispatch overhead) */
+        for (int k = 0; k < top_k; k++) {
+            int e = top_indices[k];
+            mxfp4_matmul_omp_q8(gate_raw[e], x_q8, gate_buf + k * n_ff_expert, n_ff_expert, n_embd);
+            mxfp4_matmul_omp_q8(up_raw[e], x_q8, up_buf + k * n_ff_expert, n_ff_expert, n_embd);
         }
-        if (qt_up == 12) {
-            uv = q4_k_row_dot_q8(up_raw[e], x_q8, n_embd, row);
-        } else if (qt_up == 14) {
-            uv = q6_k_row_dot_avx2(up_raw[e], x_norm, n_embd, row);
-        } else if (qt_up == 2) {
-            int bpr = n_embd / 32;
-            uv = q4_0_row_dot(up_raw[e], x_norm, bpr, row);
-        } else if (qt_up == 3) {
-            int bpr = n_embd / 32;
-            uv = q4_1_row_dot(up_raw[e], x_norm, bpr, row);
-        } else {
-            uv = 0.0f;
+    } else {
+        /* Per-row dispatch for other quant types */
+        #pragma omp parallel for schedule(dynamic, 64)
+        for (int i = 0; i < total_gate; i++) {
+            int ei = i / n_ff_expert;
+            int row = i % n_ff_expert;
+            int e = top_indices[ei];
+            float gv, uv;
+            if (qt_gate == 12) {
+                gv = q4_k_row_dot_q8(gate_raw[e], x_q8, n_embd, row);
+            } else if (qt_gate == 14) {
+                gv = q6_k_row_dot_avx2(gate_raw[e], x_norm, n_embd, row);
+            } else if (qt_gate == 2) {
+                int bpr = n_embd / 32;
+                gv = q4_0_row_dot(gate_raw[e], x_norm, bpr, row);
+            } else if (qt_gate == 3) {
+                int bpr = n_embd / 32;
+                gv = q4_1_row_dot(gate_raw[e], x_norm, bpr, row);
+            } else {
+                gv = 0.0f;
+            }
+            if (qt_up == 12) {
+                uv = q4_k_row_dot_q8(up_raw[e], x_q8, n_embd, row);
+            } else if (qt_up == 14) {
+                uv = q6_k_row_dot_avx2(up_raw[e], x_norm, n_embd, row);
+            } else if (qt_up == 2) {
+                int bpr = n_embd / 32;
+                uv = q4_0_row_dot(up_raw[e], x_norm, bpr, row);
+            } else if (qt_up == 3) {
+                int bpr = n_embd / 32;
+                uv = q4_1_row_dot(up_raw[e], x_norm, bpr, row);
+            } else {
+                uv = 0.0f;
+            }
+            gate_buf[i] = gv;
+            up_buf[i] = uv;
         }
-        gate_buf[i] = gv;
-        up_buf[i] = uv;
     }
 
     /* ── Phase 1.5: SiLU(gate) * up (parallel) ── */
@@ -1644,26 +1882,44 @@ void moe_forward_omp(
         silu_buf[i] = (gv / (1.0f + expf(-gv))) * up_buf[i];
     }
 
-    /* ── Phase 2: Down matmuls + weighted accumulation (dynamic scheduling) ── */
-    #pragma omp parallel for schedule(dynamic, 64)
-    for (int i = 0; i < total_down; i++) {
-        int exp_idx = i / n_embd;
-        int row     = i % n_embd;
-        int e = top_indices[exp_idx];
-        const float *s = silu_buf + exp_idx * n_ff_expert;
-        float dot;
-        if (qt_down == 14) {
-            dot = q6_k_row_dot_avx2(down_raw[e], s, n_ff_expert, row);
-        } else if (qt_down == 12) {
-            dot = q4_k_row_dot_avx2(down_raw[e], s, n_ff_expert, row);
-        } else if (qt_down == 2) {
-            int bpr = n_ff_expert / 32;
-            dot = q4_0_row_dot(down_raw[e], s, bpr, row);
-        } else {
-            dot = 0.0f;
+    /* ── Phase 2: Down matmuls + weighted accumulation ── */
+    memset(combined, 0, n_embd * sizeof(float));
+    if (qt_down == 39) {
+        /* MXFP4 fast path: quantize silu_buf to Q8_0, full matmul per expert */
+        /* Allocate Q8 buffer for silu_buf (up to 4096 dims stack) */
+        uint8_t s_q8_buf[4096 / 32 * Q8_0_BS];
+        for (int k = 0; k < top_k; k++) {
+            int e = top_indices[k];
+            const float *s = silu_buf + k * n_ff_expert;
+            /* Quantize s to Q8_0 (shared per-expert batch) */
+            quantize_row_q8_0(s, s_q8_buf, n_ff_expert);
+            mxfp4_matmul_omp_q8(down_raw[e], s_q8_buf, down_tmp, n_embd, n_ff_expert);
+            float w = top_weights[k];
+            for (int r = 0; r < n_embd; r++) {
+                combined[r] += w * down_tmp[r];
+            }
         }
-        #pragma omp atomic
-        combined[row] += top_weights[exp_idx] * dot;
+    } else {
+        #pragma omp parallel for schedule(dynamic, 64)
+        for (int i = 0; i < total_down; i++) {
+            int exp_idx = i / n_embd;
+            int row     = i % n_embd;
+            int e = top_indices[exp_idx];
+            const float *s = silu_buf + exp_idx * n_ff_expert;
+            float dot;
+            if (qt_down == 14) {
+                dot = q6_k_row_dot_avx2(down_raw[e], s, n_ff_expert, row);
+            } else if (qt_down == 12) {
+                dot = q4_k_row_dot_avx2(down_raw[e], s, n_ff_expert, row);
+            } else if (qt_down == 2) {
+                int bpr = n_ff_expert / 32;
+                dot = q4_0_row_dot(down_raw[e], s, bpr, row);
+            } else {
+                dot = 0.0f;
+            }
+            #pragma omp atomic
+            combined[row] += top_weights[exp_idx] * dot;
+        }
     }
 
     if (!prealloc_buf) free(all_bufs);
