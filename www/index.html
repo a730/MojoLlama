@@ -431,6 +431,70 @@ td .badge {
 }
 .step h3 { font-size: 1.1rem; }
 
+/* ── Roadmap Timeline ── */
+.roadmap { margin-top: var(--space-48); }
+.roadmap-phase {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  margin-bottom: var(--space-16);
+  overflow: hidden;
+  transition: border-color var(--transition);
+}
+.roadmap-phase:hover { border-color: var(--border); }
+.roadmap-phase-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--space-20) var(--space-24);
+  cursor: pointer;
+  background: var(--bg);
+  transition: background var(--transition);
+  user-select: none;
+}
+.roadmap-phase-header:hover { background: var(--bg-alt); }
+.roadmap-phase-header .phase-left { display: flex; align-items: center; gap: var(--space-16); }
+.roadmap-phase-header .phase-icon {
+  width: 36px; height: 36px; border-radius: var(--radius);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1rem; flex-shrink: 0;
+}
+.phase-icon.p0 { background: rgba(25,128,56,0.1); }
+.phase-icon.p1 { background: var(--mojo-subtle); }
+.phase-icon.p2 { background: rgba(0,67,206,0.08); }
+.phase-icon.p3 { background: rgba(212,90,0,0.08); }
+.phase-icon.p4 { background: rgba(0,157,154,0.08); }
+.roadmap-phase-header .phase-title { font-size: 1rem; font-weight: 600; }
+.roadmap-phase-header .phase-subtitle { font-size: 0.82rem; color: var(--text-secondary); margin-top: 2px; }
+.roadmap-phase-header .phase-meta { text-align: right; flex-shrink: 0; }
+.roadmap-phase-header .phase-tag {
+  display: inline-block; font-size: 0.68rem; font-weight: 600;
+  padding: 2px 10px; border-radius: 100px;
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.phase-tag.now { background: rgba(25,128,56,0.1); color: var(--success); }
+.phase-tag.next { background: var(--mojo-subtle); color: var(--mojo-dark); }
+.phase-tag.future { background: rgba(212,90,0,0.08); color: var(--orange); }
+.roadmap-phase-header .phase-count { font-size: 0.75rem; color: var(--text-tertiary); margin-top: 3px; }
+.roadmap-phase-header .arrow {
+  font-size: 0.7rem; color: var(--text-tertiary);
+  transition: transform var(--transition);
+  margin-left: var(--space-12);
+}
+.roadmap-phase.open .roadmap-phase-header .arrow { transform: rotate(90deg); }
+.roadmap-phase-body { display: none; padding: 0 var(--space-24) var(--space-20); }
+.roadmap-phase.open .roadmap-phase-body { display: block; animation: fadeSlide 0.2s ease; }
+.roadmap-items { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-8); }
+.roadmap-item {
+  display: flex; align-items: flex-start; gap: var(--space-10);
+  padding: var(--space-8) var(--space-12);
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem; color: var(--text-secondary);
+  transition: background var(--transition);
+}
+.roadmap-item:hover { background: var(--bg-alt); }
+.roadmap-item .check { color: var(--success); font-size: 0.8rem; margin-top: 2px; flex-shrink: 0; }
+.roadmap-item .bullet { color: var(--mojo); font-size: 0.6rem; margin-top: 5px; flex-shrink: 0; }
+.roadmap-link { text-align: center; margin-top: var(--space-24); }
+.roadmap-link a { font-size: 0.88rem; font-weight: 500; }
+
 /* ── CTA Banner ── */
 .cta-banner {
   background: linear-gradient(135deg, #1a1a2e 0%, #2d1b69 100%);
@@ -513,6 +577,7 @@ footer .copyright {
   footer .grid { grid-template-columns: 1fr 1fr; }
   nav .nav-links a:not(.btn-nav):not(.version-badge) { display: none; }
   .hero-terminal { display: none; }
+  .roadmap-items { grid-template-columns: 1fr; }
 }
 @media (max-width: 480px) {
   .container { padding: 0 var(--space-16); }
@@ -791,6 +856,167 @@ footer .copyright {
 </div>
 </div>
 
+<!-- ════ ROADMAP ════ -->
+<div class="section" id="roadmap">
+<div class="container">
+  <div class="section-label">Roadmap</div>
+  <h2>What's coming next</h2>
+  <p>Major milestones across engine, studio, GPU, and platform. Click a phase to expand details.</p>
+
+  <div class="roadmap" id="roadmapContainer">
+
+    <div class="roadmap-phase open" id="phase0">
+      <div class="roadmap-phase-header" onclick="togglePhase('phase0')">
+        <div class="phase-left">
+          <div class="phase-icon p0">✅</div>
+          <div>
+            <div class="phase-title">Phase 0 — Foundation</div>
+            <div class="phase-subtitle">Current: 50+ archs, C engine, Studio, Docker</div>
+          </div>
+        </div>
+        <div class="phase-meta">
+          <span class="phase-tag now">NOW</span>
+          <div class="phase-count">6 areas shipped</div>
+        </div>
+        <span class="arrow">▶</span>
+      </div>
+      <div class="roadmap-phase-body">
+        <div class="roadmap-items">
+          <div class="roadmap-item"><span class="check">✓</span> C batched engine with AVX2+OMP quant matmul</div>
+          <div class="roadmap-item"><span class="check">✓</span> Python MoE engine — 2.26× vs llama.cpp</div>
+          <div class="roadmap-item"><span class="check">✓</span> 2 custom forward passes (Gemma 4, ZAYA1)</div>
+          <div class="roadmap-item"><span class="check">✓</span> Studio web UI — 14 panels</div>
+          <div class="roadmap-item"><span class="check">✓</span> Studio CLI — 25+ commands</div>
+          <div class="roadmap-item"><span class="check">✓</span> Docker deployment with auto-tune + HF download</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="roadmap-phase" id="phase1">
+      <div class="roadmap-phase-header" onclick="togglePhase('phase1')">
+        <div class="phase-left">
+          <div class="phase-icon p1">🔌</div>
+          <div>
+            <div class="phase-title">Phase 1 — Full HF Model Coverage</div>
+            <div class="phase-subtitle">Custom forward passes for all 60+ architectures</div>
+          </div>
+        </div>
+        <div class="phase-meta">
+          <span class="phase-tag next">NEXT</span>
+          <div class="phase-count">10 tasks • 4 weeks</div>
+        </div>
+        <span class="arrow">▶</span>
+      </div>
+      <div class="roadmap-phase-body">
+        <div class="roadmap-items">
+          <div class="roadmap-item"><span class="bullet">●</span> Falcon — parallel attention+FFN, fused QKV</div>
+          <div class="roadmap-item"><span class="bullet">●</span> Phi-3/4 — fused QKV, long RoPE (128K)</div>
+          <div class="roadmap-item"><span class="bullet">●</span> DeepSeek V2/V3 — Multi-head Latent Attention</div>
+          <div class="roadmap-item"><span class="bullet">●</span> Qwen2-VL — vision + language interop</div>
+          <div class="roadmap-item"><span class="bullet">●</span> Command-R / Cohere2 — Tanh-gated RoPE</div>
+          <div class="roadmap-item"><span class="bullet">●</span> Automated forward pass generator from GGUF metadata</div>
+          <div class="roadmap-item"><span class="bullet">●</span> BTLM / GLM — bidirectional hybrid</div>
+          <div class="roadmap-item"><span class="bullet">●</span> Perplexity regression benchmark per architecture</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="roadmap-phase" id="phase2">
+      <div class="roadmap-phase-header" onclick="togglePhase('phase2')">
+        <div class="phase-left">
+          <div class="phase-icon p2">📊</div>
+          <div>
+            <div class="phase-title">Phase 2 — Studio: One-Stop ML App</div>
+            <div class="phase-subtitle">Quantization, training, benchmarking — all in-house, no external binaries</div>
+          </div>
+        </div>
+        <div class="phase-meta">
+          <span class="phase-tag next">NEXT</span>
+          <div class="phase-count">18 tasks • 6-8 weeks</div>
+        </div>
+        <span class="arrow">▶</span>
+      </div>
+      <div class="roadmap-phase-body">
+        <div class="roadmap-items">
+          <div class="roadmap-item"><span class="bullet">●</span> Pure-Python quantizer — Q4_K through Q8_0</div>
+          <div class="roadmap-item"><span class="bullet">●</span> Imatrix + dynamic 2-bit quantization</div>
+          <div class="roadmap-item"><span class="bullet">●</span> Studio quant wizard — pick model → quants → run</div>
+          <div class="roadmap-item"><span class="bullet">●</span> LoRA/QLoRA with true Python gradients</div>
+          <div class="roadmap-item"><span class="bullet">●</span> Training loop UI — loss charts, ETA, schedule</div>
+          <div class="roadmap-item"><span class="bullet">●</span> DPO/ORPO preference optimization</div>
+          <div class="roadmap-item"><span class="bullet">●</span> Capability benchmarks — MMLU, GSM8K, HumanEval</div>
+          <div class="roadmap-item"><span class="bullet">●</span> HF dataset integration + quality filters</div>
+          <div class="roadmap-item"><span class="bullet">●</span> Perplexity evaluation + benchmark history</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="roadmap-phase" id="phase3">
+      <div class="roadmap-phase-header" onclick="togglePhase('phase3')">
+        <div class="phase-left">
+          <div class="phase-icon p3">⚡</div>
+          <div>
+            <div class="phase-title">Phase 3 — Inference Engine: CPU + GPU</div>
+            <div class="phase-subtitle">C engine maturation + full MAX GPU pipeline</div>
+          </div>
+        </div>
+        <div class="phase-meta">
+          <span class="phase-tag future">FUTURE</span>
+          <div class="phase-count">21 tasks • 8-12 weeks</div>
+        </div>
+        <span class="arrow">▶</span>
+      </div>
+      <div class="roadmap-phase-body">
+        <div class="roadmap-items">
+          <div class="roadmap-item"><span class="bullet">●</span> Q8_0 input C quant — 2-4× matmul improvement</div>
+          <div class="roadmap-item"><span class="bullet">●</span> MXFP4 C kernel — native C, 10× faster than Python</div>
+          <div class="roadmap-item"><span class="bullet">●</span> True continuous batching + PagedAttention</div>
+          <div class="roadmap-item"><span class="bullet">●</span> MAX GPU: CUDA, ROCm, Metal backends</div>
+          <div class="roadmap-item"><span class="bullet">●</span> GPU attention, MoE dispatch, KV cache</div>
+          <div class="roadmap-item"><span class="bullet">●</span> Flash Attention + CUDA graphs</div>
+          <div class="roadmap-item"><span class="bullet">●</span> Multi-GPU: tensor + pipeline parallelism</div>
+          <div class="roadmap-item"><span class="bullet">●</span> GPU-native FP8/INT4 quantization</div>
+          <div class="roadmap-item"><span class="bullet">●</span> GPU auto-tune — layers, batch, concurrency sweep</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="roadmap-phase" id="phase4">
+      <div class="roadmap-phase-header" onclick="togglePhase('phase4')">
+        <div class="phase-left">
+          <div class="phase-icon p4">📦</div>
+          <div>
+            <div class="phase-title">Phase 4 — Platform: Ship It</div>
+            <div class="phase-subtitle">pip package, desktop app, CI/CD, production hardening</div>
+          </div>
+        </div>
+        <div class="phase-meta">
+          <span class="phase-tag future">FUTURE</span>
+          <div class="phase-count">7 tasks • 4-6 weeks</div>
+        </div>
+        <span class="arrow">▶</span>
+      </div>
+      <div class="roadmap-phase-body">
+        <div class="roadmap-items">
+          <div class="roadmap-item"><span class="bullet">●</span> pip package — pre-built wheels (manylinux x86_64, aarch64)</div>
+          <div class="roadmap-item"><span class="bullet">●</span> Desktop app — Tauri wrapper for Studio</div>
+          <div class="roadmap-item"><span class="bullet">●</span> CI/CD — GitHub Actions, benchmark regressions</div>
+          <div class="roadmap-item"><span class="bullet">●</span> API hardening — keys, rate limiting, hot-swap</div>
+          <div class="roadmap-item"><span class="bullet">●</span> Model registry — local + HF Hub, one-click download</div>
+          <div class="roadmap-item"><span class="bullet">●</span> Comprehensive test suite</div>
+          <div class="roadmap-item"><span class="bullet">●</span> Auto-generated release notes</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="roadmap-link">
+    <a href="ROADMAP.md">View full roadmap →</a>
+  </div>
+</div>
+</div>
+
 <!-- ════ CTA BANNER ════ -->
 <div class="cta-banner">
 <div class="container">
@@ -836,5 +1062,11 @@ footer .copyright {
 </div>
 </footer>
 
+<script>
+function togglePhase(id) {
+  var el = document.getElementById(id);
+  if (el) el.classList.toggle('open');
+}
+</script>
 </body>
 </html>
