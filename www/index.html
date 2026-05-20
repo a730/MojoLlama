@@ -3,1208 +3,817 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MojoLlama — CPU-First LLM Inference, Engineered in Mojo</title>
-<meta name="description" content="MojoLlama is a performance-engineered local LLM platform for inference, fine-tuning, quantization, and concurrent serving. CPU-first, open-source, built in Mojo+MAX.">
-<meta name="keywords" content="LLM inference, local AI, Mojo, GGUF, fine-tuning, quantization, llama.cpp, LoRA, open-source LLM">
+<title>MojoLlama — CPU-First LLM Inference Platform</title>
+<meta name="description" content="MojoLlama: high-throughput CPU LLM inference. GGUF native, MoE-optimized, 50+ architectures. Open-source inference engine built in Mojo+MAX.">
 <meta property="og:title" content="MojoLlama — CPU-First LLM Platform">
-<meta property="og:description" content="Inference, fine-tuning, quantization, and serving — all on your hardware. Built in Mojo+MAX.">
-<meta property="og:type" content="website">
+<meta property="og:description" content="Inference, fine-tuning, quantization, and serving — engineered for CPU. Built in Mojo+MAX.">
 <meta property="og:url" content="https://git.bamse.cloud/a730/MojoLlama/~site/">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-/* ===== CSS Variables — MojoLlama Brand ===== */
+/* ══════════════════════════════════════════════
+   MojoLlama — Refined Brand System
+   Inspired by IBM Carbon Design System:
+   - Purposeful whitespace (8px grid)
+   - Clear typographic hierarchy
+   - Border-based card language
+   - Subtle depth, never decorative
+   ══════════════════════════════════════════════ */
+
 :root {
-  --bg: #080b12;
-  --bg2: #0c101a;
-  --surface: #111624;
-  --surface2: #171d2e;
-  --surface3: #1e2540;
-  --border: #252d4a;
-  --border2: #1a2238;
-  --text: #e2e8f0;
-  --text2: #c8d0dc;
-  --dim: #7f8ea3;
-  --dim2: #5a6a82;
+  /* Brand */
   --mojo: #6C3CE1;
+  --mojo-dark: #5228B5;
   --mojo-light: #8B5CF6;
-  --mojo-glow: rgba(108,60,225,0.3);
-  --cyan: #22D3EE;
-  --cyan-glow: rgba(34,211,238,0.25);
-  --green: #34D399;
-  --pink: #E879F9;
-  --orange: #FB923C;
-  --red: #F87171;
-  --glass: rgba(17,22,36,0.88);
-  --glass2: rgba(37,45,74,0.4);
-  --grad-mojo: linear-gradient(135deg, #6C3CE1 0%, #8B5CF6 40%, #22D3EE 100%);
-  --grad-cyan: linear-gradient(135deg, #22D3EE 0%, #34D399 100%);
-  --grad-warm: linear-gradient(135deg, #FB923C 0%, #F87171 100%);
-  --grad-card: linear-gradient(180deg, rgba(108,60,225,0.06) 0%, transparent 100%);
-  --radius: 12px;
-  --radius-sm: 8px;
-  --radius-xl: 16px;
-  --shadow: 0 8px 40px rgba(0,0,0,0.5);
-  --shadow-sm: 0 2px 12px rgba(0,0,0,0.3);
-  --font-heading: 'Space Grotesk', system-ui, sans-serif;
-  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --mojo-subtle: rgba(108, 60, 225, 0.08);
+  --mojo-gradient: linear-gradient(135deg, #6C3CE1 0%, #22D3EE 100%);
+
+  /* Neutrals — IBM-inspired cool grey palette */
+  --bg: #FFFFFF;
+  --bg-alt: #F4F4F4;
+  --bg-card: #FFFFFF;
+  --border: #E0E0E0;
+  --border-light: #EDEDED;
+
+  --text: #161616;
+  --text-secondary: #525252;
+  --text-tertiary: #8D8D8D;
+  --text-inverse: #FFFFFF;
+
+  /* Feedback */
+  --success: #198038;
+  --warning: #DA1E28;
+
+  /* Typography */
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+  /* Spacing (8px grid) */
+  --space-2: 2px;
+  --space-4: 4px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --space-40: 40px;
+  --space-48: 48px;
+  --space-64: 64px;
+  --space-80: 80px;
+  --space-96: 96px;
+  --space-128: 128px;
+
+  /* Layout */
+  --max-width: 1248px;
+  --radius-sm: 4px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
+  --shadow: 0 4px 12px rgba(0,0,0,0.08);
+  --shadow-lg: 0 12px 40px rgba(0,0,0,0.1);
+  --transition: 0.2s cubic-bezier(0.2, 0, 0, 1);
 }
-* { margin: 0; padding: 0; box-sizing: border-box; }
-html { scroll-behavior: smooth; scroll-padding-top: 72px; }
+
+/* ── Reset ── */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; -webkit-font-smoothing: antialiased; }
 body {
   font-family: var(--font-body);
   background: var(--bg);
   color: var(--text);
-  min-height: 100vh;
-  background-image:
-    radial-gradient(ellipse at 15% 25%, rgba(108,60,225,0.07) 0%, transparent 50%),
-    radial-gradient(ellipse at 85% 75%, rgba(34,211,238,0.05) 0%, transparent 50%),
-    radial-gradient(ellipse at 50% 100%, rgba(108,60,225,0.04) 0%, transparent 50%);
-  overflow-x: hidden;
-  line-height: 1.6;
+  line-height: 1.5;
+  font-size: 16px;
 }
-a { color: var(--mojo-light); text-decoration: none; transition: color .2s; }
-a:hover { color: var(--cyan); text-decoration: underline; }
+img { max-width: 100%; display: block; }
+a { color: var(--mojo); text-decoration: none; transition: color var(--transition); }
+a:hover { color: var(--mojo-dark); }
+::selection { background: var(--mojo-subtle); }
 
-/* ===== Scrollbar ===== */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--dim); }
-
-/* ===== Animations ===== */
-@keyframes fadeUp { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-@keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
-@keyframes gradientShift {
-  0% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
-}
-@keyframes shimmer {
-  0% { background-position: -200% center; }
-  100% { background-position: 200% center; }
-}
-@keyframes barRise {
-  from { height: 0; }
-  to { height: var(--bar-h); }
-}
-@keyframes orbit {
-  0% { transform: rotate(0deg) translateX(6px) rotate(0deg); }
-  100% { transform: rotate(360deg) translateX(6px) rotate(-360deg); }
-}
-@keyframes glow-pulse {
-  0%, 100% { box-shadow: 0 0 20px var(--mojo-glow); }
-  50% { box-shadow: 0 0 40px var(--mojo-glow), 0 0 60px var(--cyan-glow); }
+/* ── Typography ── */
+h1, h2, h3, h4 { font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; }
+h1 { font-size: 3.5rem; font-weight: 700; letter-spacing: -0.02em; }
+h2 { font-size: 2rem; margin-bottom: var(--space-8); }
+h3 { font-size: 1.25rem; margin-bottom: var(--space-8); }
+p { color: var(--text-secondary); line-height: 1.7; max-width: 640px; }
+code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--mojo-subtle);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  color: var(--mojo-dark);
 }
 
-.animate-in {
-  animation: fadeUp 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-  opacity: 0;
+/* ── Layout ── */
+.container { max-width: var(--max-width); margin: 0 auto; padding: 0 var(--space-32); }
+.section { padding: var(--space-96) 0; }
+.section-sm { padding: var(--space-64) 0; }
+.section-alt { background: var(--bg-alt); }
+.section-label {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--mojo);
+  margin-bottom: var(--space-16);
 }
-.animate-in-d1 { animation-delay: 0.1s; }
-.animate-in-d2 { animation-delay: 0.2s; }
-.animate-in-d3 { animation-delay: 0.3s; }
-.animate-in-d4 { animation-delay: 0.4s; }
-.animate-in-d5 { animation-delay: 0.5s; }
+.section-divider {
+  width: 100%; height: 1px;
+  background: var(--border-light);
+  margin: 0;
+  border: none;
+}
 
-/* ===== Navbar ===== */
+/* ── Navigation ── */
 nav {
-  display: flex;
-  align-items: center;
-  gap: 28px;
-  padding: 12px 40px;
-  border-bottom: 1px solid var(--border);
-  background: var(--glass);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  position: sticky;
-  top: 0;
-  z-index: 100;
+  position: fixed; top: 0; width: 100%; z-index: 100;
+  background: rgba(255,255,255,0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border-light);
+}
+nav .container {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 56px;
 }
 nav .logo {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-family: var(--font-heading);
-  font-size: 22px;
-  font-weight: 800;
-  letter-spacing: -0.5px;
+  font-weight: 700; font-size: 1.1rem; letter-spacing: -0.01em;
+  color: var(--text);
 }
-nav .logo .logo-icon {
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
-  background: var(--grad-mojo);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 16px;
-  position: relative;
-}
-nav .logo .logo-icon::after {
-  content: '';
-  position: absolute;
-  inset: -2px;
-  border-radius: 12px;
-  background: var(--grad-mojo);
-  opacity: 0.2;
-  filter: blur(6px);
-  z-index: -1;
-}
-nav .logo span:last-child {
-  background: var(--grad-mojo);
-  background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  background-size: 200% 200%;
-  animation: gradientShift 4s ease infinite;
-}
-nav .nav-links {
-  display: flex;
-  gap: 24px;
-  margin-left: auto;
-  align-items: center;
-}
+nav .logo span { color: var(--mojo); }
+nav .nav-links { display: flex; align-items: center; gap: var(--space-32); }
 nav .nav-links a {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--dim);
-  transition: color .2s;
+  font-size: 0.875rem; font-weight: 500;
+  color: var(--text-secondary);
+  transition: color var(--transition);
 }
 nav .nav-links a:hover { color: var(--text); text-decoration: none; }
-.btn-nav {
-  padding: 8px 22px;
-  border-radius: var(--radius-sm);
-  background: var(--grad-mojo);
-  color: #fff !important;
-  font-weight: 600 !important;
-  font-size: 13px !important;
-  transition: all .2s !important;
-  background-size: 200% 200%;
+nav .version-badge {
+  font-size: 0.7rem; font-weight: 600;
+  color: var(--text-tertiary);
+  padding: 2px 8px;
+  border: 1px solid var(--border-light);
+  border-radius: 100px;
 }
-.btn-nav:hover {
-  filter: brightness(1.15);
-  transform: translateY(-1px);
-  text-decoration: none !important;
-  animation: gradientShift 3s ease infinite;
+nav .btn-nav {
+  display: inline-flex; align-items: center; gap: var(--space-8);
+  padding: 6px 20px; border-radius: var(--radius);
+  background: var(--text); color: var(--text-inverse);
+  font-size: 0.875rem; font-weight: 500;
+  transition: all var(--transition);
 }
-.btn-ghost-nav {
-  padding: 8px 18px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  color: var(--text) !important;
-  font-weight: 500 !important;
-  font-size: 13px !important;
-  transition: all .2s !important;
-}
-.btn-ghost-nav:hover {
-  border-color: var(--mojo-light);
-  color: var(--mojo-light) !important;
-  text-decoration: none !important;
-}
-.github-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 12px;
-  border-radius: 20px;
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  font-size: 12px;
-  color: var(--dim);
-  transition: all .2s;
-}
-.github-badge:hover {
-  border-color: var(--mojo-light);
-  color: var(--text);
-  text-decoration: none;
-}
-.github-badge svg { width: 14px; height: 14px; fill: currentColor; }
-.github-badge .star-count { color: var(--text2); font-weight: 600; }
+nav .btn-nav:hover { opacity: 0.85; color: var(--text-inverse); text-decoration: none; }
 
-/* ===== Hero Section ===== */
+/* ── Hero — Split layout (60/40) ── */
 .hero {
-  padding: 100px 40px 80px;
-  text-align: center;
-  max-width: 960px;
-  margin: 0 auto;
+  padding: var(--space-128) 0 var(--space-80);
   position: relative;
+  overflow: hidden;
 }
 .hero::before {
   content: '';
   position: absolute;
-  top: 20px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 700px;
-  height: 700px;
-  background: radial-gradient(circle, rgba(108,60,225,0.10) 0%, transparent 65%);
+  top: -40%;
+  right: -20%;
+  width: 900px; height: 900px;
+  background: radial-gradient(circle, rgba(108,60,225,0.06) 0%, transparent 60%);
   pointer-events: none;
 }
+.hero .hero-split {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: var(--space-64);
+  align-items: center;
+}
 .hero-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 16px;
-  border-radius: 20px;
-  background: rgba(108,60,225,0.12);
-  border: 1px solid rgba(108,60,225,0.25);
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--mojo-light);
-  margin-bottom: 28px;
-  letter-spacing: 0.3px;
-  font-family: var(--font-heading);
+  display: inline-flex; align-items: center; gap: var(--space-8);
+  padding: 4px 14px;
+  border-radius: 100px;
+  font-size: 0.8rem; font-weight: 500;
+  background: var(--mojo-subtle);
+  color: var(--mojo-dark);
+  margin-bottom: var(--space-24);
 }
-.hero-badge .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--green);
-  box-shadow: 0 0 8px var(--green);
-  animation: pulse 2s ease-in-out infinite;
-}
-.hero h1 {
-  font-family: var(--font-heading);
-  font-size: clamp(40px, 7vw, 72px);
-  font-weight: 900;
-  letter-spacing: -2.5px;
-  line-height: 1.02;
-  margin-bottom: 20px;
-  position: relative;
-}
-.hero h1 .gradient-text {
-  background: var(--grad-mojo);
-  background-size: 200% 200%;
-  background-clip: text;
+.hero h1 { max-width: 700px; margin-bottom: var(--space-24); }
+.hero h1 .gradient {
+  background: var(--mojo-gradient);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
-  animation: gradientShift 4s ease infinite;
-}
-.hero h1 .highlight {
-  background: var(--grad-cyan);
   background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
 }
-.hero p {
-  font-size: clamp(16px, 2vw, 20px);
-  color: var(--dim2);
-  line-height: 1.7;
-  margin-bottom: 12px;
-  max-width: 680px;
-  margin-left: auto;
-  margin-right: auto;
+.hero .hero-text p {
+  font-size: 1.2rem;
+  color: var(--text-secondary);
+  max-width: 520px;
+  margin-bottom: var(--space-40);
 }
-.hero .sub-features {
-  display: flex;
-  justify-content: center;
-  gap: 24px;
-  margin-bottom: 40px;
-  flex-wrap: wrap;
+.hero-btns { display: flex; gap: var(--space-16); flex-wrap: wrap; }
+
+/* Hero terminal visual */
+.hero-terminal {
+  background: #1a1a2e;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.8;
 }
-.hero .sub-features span {
-  font-size: 14px;
-  color: var(--dim);
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.hero-terminal .term-header {
+  display: flex; align-items: center; gap: var(--space-8);
+  padding: 12px 16px;
+  background: rgba(255,255,255,0.04);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
 }
-.hero .sub-features .check { color: var(--green); font-weight: 700; }
-.hero-btns {
-  display: flex;
-  gap: 12px;
-  justify-content: center;
-  flex-wrap: wrap;
-  margin-bottom: 48px;
+.hero-terminal .term-dot {
+  width: 10px; height: 10px; border-radius: 50%;
 }
-.btn-lg {
-  padding: 16px 36px;
-  border-radius: 10px;
-  font-family: var(--font-heading);
-  font-size: 16px;
-  font-weight: 700;
-  border: none;
-  cursor: pointer;
-  transition: all .25s cubic-bezier(0.16, 1, 0.3, 1);
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
+.hero-terminal .term-dot:nth-child(1) { background: #ff5f57; }
+.hero-terminal .term-dot:nth-child(2) { background: #febc2e; }
+.hero-terminal .term-dot:nth-child(3) { background: #28c840; }
+.hero-terminal .term-title {
+  color: rgba(255,255,255,0.3);
+  font-size: 0.72rem;
+  margin-left: var(--space-8);
 }
-.btn-lg:hover { transform: translateY(-2px); text-decoration: none; }
+.hero-terminal .term-body {
+  padding: 20px 24px;
+  color: #a0a0b8;
+}
+.hero-terminal .prompt { color: var(--mojo-light); }
+.hero-terminal .cmd { color: #e0e0f0; }
+.hero-terminal .result { color: #6fcf97; }
+.hero-terminal .comment { color: #6f6f8f; font-style: italic; }
+
+.btn {
+  display: inline-flex; align-items: center; gap: var(--space-8);
+  padding: 12px 28px; border-radius: var(--radius);
+  font-size: 0.95rem; font-weight: 500;
+  transition: all var(--transition);
+  cursor: pointer; border: none;
+}
 .btn-primary {
-  background: var(--grad-mojo);
-  color: #fff;
-  background-size: 200% 200%;
-  box-shadow: 0 4px 20px var(--mojo-glow);
+  background: var(--text); color: var(--text-inverse);
 }
 .btn-primary:hover {
-  animation: gradientShift 3s ease infinite;
-  box-shadow: 0 6px 30px var(--mojo-glow), 0 0 0 1px rgba(108,60,225,0.3);
+  background: var(--mojo); transform: translateY(-1px); text-decoration: none;
 }
 .btn-secondary {
-  background: var(--surface2);
-  color: var(--text);
+  background: transparent; color: var(--text);
   border: 1px solid var(--border);
 }
 .btn-secondary:hover {
-  border-color: var(--mojo-light);
-  color: var(--mojo-light);
-  box-shadow: 0 4px 20px rgba(108,60,225,0.1);
-}
-.btn-code {
-  background: var(--bg);
-  color: var(--cyan);
-  border: 1px solid rgba(34,211,238,0.3);
-  font-family: var(--font-mono);
-  font-size: 14px;
-  font-weight: 500;
-  padding: 14px 28px;
-}
-.btn-code:hover {
-  border-color: var(--cyan);
-  background: rgba(34,211,238,0.05);
-  box-shadow: 0 4px 20px var(--cyan-glow);
+  border-color: var(--text); transform: translateY(-1px); text-decoration: none;
 }
 
-/* Install Command Block */
-.install-block {
-  max-width: 680px;
-  margin: 0 auto;
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-  text-align: left;
+/* ── Metrics Strip ── */
+.metrics-strip {
+  display: flex; gap: var(--space-64); flex-wrap: wrap;
+  padding: var(--space-48) 0; margin-top: var(--space-48);
+  border-top: 1px solid var(--border-light);
 }
-.install-block .install-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 16px;
-  background: var(--surface2);
-  border-bottom: 1px solid var(--border);
-  font-size: 11px;
-  color: var(--dim2);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  font-weight: 600;
+.metric-value {
+  font-size: 2rem; font-weight: 700; color: var(--text);
+  letter-spacing: -0.02em;
 }
-.install-block .install-header .dots {
-  display: flex;
-  gap: 6px;
+.metric-label {
+  font-size: 0.85rem; color: var(--text-tertiary);
+  margin-top: var(--space-4);
 }
-.install-block .install-header .dots span {
-  width: 10px; height: 10px;
-  border-radius: 50%;
-}
-.install-block .install-header .dots span:nth-child(1) { background: #F87171; }
-.install-block .install-header .dots span:nth-child(2) { background: #FBBF24; }
-.install-block .install-header .dots span:nth-child(3) { background: #34D399; }
-.install-block .install-body {
-  padding: 20px 24px;
-  font-family: var(--font-mono);
-  font-size: 14px;
-  line-height: 1.8;
-  color: var(--text2);
-  overflow-x: auto;
-}
-.install-block .install-body .prompt { color: var(--green); }
-.install-block .install-body .comment { color: var(--dim2); }
-.install-block .install-body .cmd { color: var(--cyan); }
-.install-block .install-body .output { color: var(--dim); }
-.install-actions {
-  display: flex;
-  gap: 8px;
-  padding: 10px 16px;
-  border-top: 1px solid var(--border);
-  background: var(--surface);
-}
-.install-actions button {
-  padding: 6px 14px;
-  border-radius: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  border: 1px solid var(--border);
-  background: var(--surface2);
-  color: var(--dim);
-  cursor: pointer;
-  transition: all .2s;
-  font-family: var(--font-body);
-}
-.install-actions button:hover {
-  border-color: var(--mojo-light);
-  color: var(--text);
-  background: var(--surface3);
-}
+.metric-accent .metric-value { color: var(--mojo); }
 
-/* ===== Section Common ===== */
-section {
-  padding: 80px 40px;
-  max-width: 1100px;
-  margin: 0 auto;
-}
-.section-label {
-  font-family: var(--font-heading);
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  color: var(--mojo-light);
-  margin-bottom: 12px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.section-label::before {
-  content: '';
-  display: inline-block;
-  width: 20px;
-  height: 1.5px;
-  background: var(--grad-mojo);
-}
-.section-title {
-  font-family: var(--font-heading);
-  font-size: clamp(28px, 4vw, 42px);
-  font-weight: 800;
-  letter-spacing: -1px;
-  line-height: 1.15;
-  margin-bottom: 16px;
-  max-width: 700px;
-}
-.section-sub {
-  color: var(--dim2);
-  font-size: 16px;
-  max-width: 600px;
-  margin-bottom: 48px;
-  line-height: 1.7;
-}
-
-/* ===== Features ===== */
-.features-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 20px;
-}
-.feature-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
-  padding: 32px;
-  transition: all .3s cubic-bezier(0.16, 1, 0.3, 1);
-  position: relative;
-  overflow: hidden;
-}
-.feature-card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: var(--grad-mojo);
-  opacity: 0;
-  transition: opacity .3s;
-}
-.feature-card:hover {
-  border-color: var(--border2);
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-sm);
-  background: var(--surface2);
-}
-.feature-card:hover::before { opacity: 1; }
-.feature-card .icon {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 20px;
-  margin-bottom: 16px;
-  background: rgba(108,60,225,0.1);
-  border: 1px solid rgba(108,60,225,0.2);
-}
-.feature-card h3 {
-  font-family: var(--font-heading);
-  font-size: 18px;
-  font-weight: 700;
-  margin-bottom: 8px;
-  letter-spacing: -0.3px;
-}
-.feature-card p {
-  font-size: 14px;
-  color: var(--dim);
-  line-height: 1.7;
-  margin-bottom: 16px;
-}
-.feature-card .card-ctas {
-  display: flex;
-  gap: 12px;
-}
-.feature-card .card-ctas a {
-  font-size: 13px;
-  font-weight: 600;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.feature-card .card-ctas a.primary-cta { color: var(--mojo-light); }
-.feature-card .card-ctas a.secondary-cta { color: var(--dim); }
-.feature-card .card-ctas a:hover { color: var(--cyan); text-decoration: none; }
-
-/* Feature card icon colors */
-.feature-card.accent-mojo .icon { background: rgba(108,60,225,0.12); border-color: rgba(108,60,225,0.25); }
-.feature-card.accent-cyan .icon { background: rgba(34,211,238,0.1); border-color: rgba(34,211,238,0.2); }
-.feature-card.accent-green .icon { background: rgba(52,211,153,0.1); border-color: rgba(52,211,153,0.2); }
-.feature-card.accent-pink .icon { background: rgba(232,121,249,0.1); border-color: rgba(232,121,249,0.2); }
-.feature-card.accent-orange .icon { background: rgba(251,146,60,0.1); border-color: rgba(251,146,60,0.2); }
-
-/* ===== Benchmarks ===== */
-.benchmark-section {
-  background: var(--bg2);
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-}
-.bench-table-wrap {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
-  overflow: hidden;
-  margin-bottom: 20px;
-}
-.bench-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 14px;
-}
-.bench-table th {
-  text-align: left;
-  padding: 14px 20px;
-  font-family: var(--font-heading);
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--dim2);
-  background: var(--surface2);
-  border-bottom: 1px solid var(--border);
-}
-.bench-table td {
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--border2);
-  color: var(--text2);
-}
-.bench-table tr:last-child td { border-bottom: none; }
-.bench-table tr:hover td { background: rgba(108,60,225,0.03); }
-.bench-table .highlight-row td {
-  color: var(--text);
-  background: rgba(108,60,225,0.04);
-}
-.bench-table .highlight-row td:first-child {
-  border-left: 2px solid var(--mojo-light);
-}
-.bench-table .highlight-badge {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  background: rgba(108,60,225,0.15);
-  color: var(--mojo-light);
-  margin-left: 6px;
-  font-family: var(--font-heading);
-}
-.bench-table .bar-cell {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.bench-table .bar {
-  height: 8px;
-  border-radius: 4px;
-  background: var(--grad-mojo);
-  max-width: 200px;
-  min-width: 4px;
-  animation: barRise 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-}
-.bench-table .bar.cyan { background: var(--grad-cyan); }
-.bench-table .bar.warm { background: var(--grad-warm); }
-.bench-table .bar.dim { background: linear-gradient(135deg, var(--dim2), var(--dim)); }
-.bench-note {
-  font-size: 13px;
-  color: var(--dim2);
-  text-align: center;
-  padding: 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-}
-.bench-note a { color: var(--dim); }
-.bench-note a:hover { color: var(--mojo-light); }
-
-/* ===== How it Works ===== */
-.steps-grid {
+/* ── Feature Cards ── */
+.feature-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 24px;
-  counter-reset: step;
+  gap: var(--space-24);
+  margin-top: var(--space-48);
 }
-.step-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
-  padding: 32px;
-  position: relative;
-  counter-increment: step;
+.feature-card {
+  padding: var(--space-32);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-light);
+  background: var(--bg-card);
+  transition: all var(--transition);
 }
-.step-card::before {
-  content: counter(step);
-  position: absolute;
-  top: 24px;
-  right: 24px;
-  font-family: var(--font-heading);
-  font-size: 32px;
-  font-weight: 900;
-  color: var(--border);
-  line-height: 1;
+.feature-card:hover {
+  border-color: var(--mojo);
+  box-shadow: var(--shadow);
 }
-.step-card .icon {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 20px;
-  margin-bottom: 16px;
-  background: rgba(34,211,238,0.1);
-  border: 1px solid rgba(34,211,238,0.2);
+.feature-card .icon {
+  width: 40px; height: 40px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius);
+  background: var(--mojo-subtle);
+  font-size: 1.2rem;
+  margin-bottom: var(--space-16);
 }
-.step-card h3 {
-  font-family: var(--font-heading);
-  font-size: 18px;
-  font-weight: 700;
-  margin-bottom: 8px;
-}
-.step-card p {
-  font-size: 14px;
-  color: var(--dim);
-  line-height: 1.7;
-}
-.step-card .step-cta {
-  margin-top: 16px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--cyan);
+.feature-card h3 { font-size: 1rem; font-weight: 600; margin-bottom: var(--space-8); }
+.feature-card p { font-size: 0.9rem; color: var(--text-secondary); line-height: 1.6; }
+.feature-card .tag {
+  display: inline-block;
+  padding: 2px 10px; border-radius: 100px;
+  font-size: 0.72rem; font-weight: 600;
+  margin-top: var(--space-12);
+  background: rgba(25,128,56,0.1);
+  color: var(--success);
 }
 
-/* ===== Open Source / Community ===== */
-.oss-section {
+/* ── Release Notes / News ── */
+.release-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-24);
+  margin-top: var(--space-40);
+}
+.release-card {
+  padding: var(--space-24) var(--space-24) var(--space-32);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-light);
+  background: var(--bg-card);
+  transition: border-color var(--transition);
+}
+.release-card:hover { border-color: var(--mojo); }
+.release-card .release-tag {
+  display: inline-block;
+  padding: 2px 10px; border-radius: 100px;
+  font-size: 0.7rem; font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-12);
+}
+.release-tag-new { background: rgba(108,60,225,0.1); color: var(--mojo-dark); }
+.release-tag-perf { background: rgba(25,128,56,0.1); color: var(--success); }
+.release-tag-infra { background: rgba(0,120,200,0.1); color: #0066CC; }
+.release-card h3 {
+  font-size: 1rem; margin-bottom: var(--space-8);
+}
+.release-card p {
+  font-size: 0.85rem; color: var(--text-secondary); line-height: 1.6;
+}
+.release-card .release-stat {
+  font-size: 1.5rem; font-weight: 700;
+  color: var(--text);
+  margin-top: var(--space-12);
+}
+.release-card .release-stat-label {
+  font-size: 0.75rem; color: var(--text-tertiary);
+}
+
+/* ── Table ── */
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  margin-top: var(--space-32);
+}
+table {
+  width: 100%; border-collapse: collapse;
+  font-size: 0.88rem;
+}
+thead { background: var(--bg-alt); }
+th {
+  padding: 14px 20px; text-align: left;
+  font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--text-tertiary);
+  border-bottom: 1px solid var(--border-light);
+}
+td {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-secondary);
+}
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: var(--mojo-subtle); }
+td strong { color: var(--text); }
+td .badge {
+  display: inline-block;
+  padding: 1px 8px; border-radius: 3px;
+  font-size: 0.75rem; font-weight: 600;
+}
+.badge-green { background: rgba(25,128,56,0.1); color: var(--success); }
+.badge-orange { background: rgba(255,107,0,0.1); color: #DA1E28; }
+.badge-gold { background: rgba(255,215,0,0.12); color: #B8860B; }
+
+/* ── CLI Code Block ── */
+.cli-box {
+  background: var(--text); color: #E0E0E0;
+  border-radius: var(--radius-lg);
+  padding: var(--space-24);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 2;
+  overflow-x: auto;
+}
+.cli-box .comment { color: #6F6F6F; font-style: italic; }
+.cli-box .prompt { color: var(--mojo-light); }
+.cli-box .cmd { color: #E0E0E0; }
+
+/* ── Steps ── */
+.steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-32);
+  margin-top: var(--space-48);
+}
+.step {
+  padding: var(--space-32);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+}
+.step-number {
+  font-size: 0.75rem; font-weight: 700; color: var(--mojo);
+  text-transform: uppercase; letter-spacing: 0.05em;
+  margin-bottom: var(--space-12);
+}
+.step h3 { font-size: 1.1rem; }
+
+/* ── CTA Banner ── */
+.cta-banner {
+  background: linear-gradient(135deg, #1a1a2e 0%, #2d1b69 100%);
+  padding: var(--space-64) 0;
   text-align: center;
 }
-.oss-logos {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 40px;
-  flex-wrap: wrap;
-  margin-bottom: 32px;
+.cta-banner h2 {
+  color: var(--text-inverse);
+  margin-bottom: var(--space-12);
 }
-.oss-badge {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-family: var(--font-heading);
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--dim2);
+.cta-banner p {
+  color: rgba(255,255,255,0.6);
+  margin: 0 auto var(--space-32);
+  max-width: 480px;
 }
-.oss-badge svg { width: 24px; height: 24px; }
-.oss-badge .license {
-  padding: 3px 10px;
-  border-radius: 6px;
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  font-size: 12px;
-  color: var(--dim);
+.cta-banner .btn-primary {
+  background: var(--mojo-light);
+  color: var(--text-inverse);
 }
-.oss-ctas {
-  display: flex;
-  justify-content: center;
-  gap: 12px;
-  flex-wrap: wrap;
+.cta-banner .btn-primary:hover {
+  background: var(--mojo);
+  transform: translateY(-1px);
+}
+.cta-banner .btn-secondary {
+  color: var(--text-inverse);
+  border-color: rgba(255,255,255,0.2);
+}
+.cta-banner .btn-secondary:hover {
+  border-color: var(--text-inverse);
 }
 
-/* ===== Footer ===== */
+/* ── Footer ── */
 footer {
-  border-top: 1px solid var(--border);
-  padding: 48px 40px 32px;
-  max-width: 1100px;
-  margin: 0 auto;
+  padding: var(--space-64) 0 var(--space-32);
+  border-top: 1px solid var(--border-light);
 }
-.footer-grid {
+footer .grid {
   display: grid;
   grid-template-columns: 2fr 1fr 1fr 1fr;
-  gap: 40px;
-  margin-bottom: 40px;
+  gap: var(--space-40);
+  margin-bottom: var(--space-48);
 }
 footer h4 {
-  font-family: var(--font-heading);
-  font-size: 13px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--dim2);
-  margin-bottom: 16px;
+  font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--text-tertiary);
+  margin-bottom: var(--space-16);
 }
-footer .brand-col .logo {
-  font-family: var(--font-heading);
-  font-size: 20px;
-  font-weight: 800;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 12px;
+footer a {
+  display: block; color: var(--text-secondary);
+  font-size: 0.88rem; margin-bottom: var(--space-8);
 }
-footer .brand-col .logo .logo-icon {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
-  background: var(--grad-mojo);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 14px;
+footer a:hover { color: var(--text); }
+footer .copyright {
+  text-align: center;
+  padding-top: var(--space-24);
+  border-top: 1px solid var(--border-light);
+  font-size: 0.8rem; color: var(--text-tertiary);
 }
-footer .brand-col p {
-  font-size: 13px;
-  color: var(--dim2);
-  line-height: 1.7;
-  max-width: 300px;
-}
-footer .col ul { list-style: none; }
-footer .col ul li { margin-bottom: 10px; }
-footer .col ul li a {
-  font-size: 13px;
-  color: var(--dim);
-  transition: color .2s;
-}
-footer .col ul li a:hover { color: var(--text); text-decoration: none; }
-.footer-bottom {
-  border-top: 1px solid var(--border2);
-  padding-top: 20px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 12px;
-  color: var(--dim2);
-}
-.footer-bottom .legal-links { display: flex; gap: 16px; }
-.footer-bottom .legal-links a { color: var(--dim2); font-size: 12px; }
-.footer-bottom .legal-links a:hover { color: var(--dim); text-decoration: none; }
 
-/* ===== Responsive ===== */
-@media (max-width: 900px) {
-  nav { padding: 12px 20px; gap: 16px; }
-  nav .nav-links { gap: 14px; }
-  nav .nav-links .desktop-only { display: none; }
-  .hero { padding: 60px 20px 50px; }
-  section { padding: 50px 20px; }
-  .features-grid { grid-template-columns: 1fr; }
-  .steps-grid { grid-template-columns: 1fr; }
-  .footer-grid { grid-template-columns: 1fr 1fr; gap: 24px; }
+/* ── Responsive ── */
+@media (max-width: 1100px) {
+  .hero .hero-split { grid-template-columns: 1fr; }
+  .hero-terminal { max-width: 500px; }
 }
-@media (max-width: 600px) {
-  .hero-btns { flex-direction: column; align-items: center; }
-  .btn-lg { width: 100%; justify-content: center; }
-  .footer-grid { grid-template-columns: 1fr; }
-  .footer-bottom { flex-direction: column; gap: 12px; text-align: center; }
-  .oss-logos { gap: 20px; }
-  .hero .sub-features { gap: 12px; flex-direction: column; align-items: center; }
+@media (max-width: 1024px) {
+  .feature-grid { grid-template-columns: repeat(2, 1fr); }
+  .steps { grid-template-columns: repeat(2, 1fr); }
+  .release-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 768px) {
+  h1 { font-size: 2.2rem; }
+  h2 { font-size: 1.5rem; }
+  .hero { padding: var(--space-96) 0 var(--space-48); }
+  .section { padding: var(--space-48) 0; }
+  .section-sm { padding: var(--space-32) 0; }
+  .feature-grid { grid-template-columns: 1fr; }
+  .steps { grid-template-columns: 1fr; }
+  .release-grid { grid-template-columns: 1fr; }
+  .metrics-strip { gap: var(--space-32); }
+  footer .grid { grid-template-columns: 1fr 1fr; }
+  nav .nav-links a:not(.btn-nav):not(.version-badge) { display: none; }
+  .hero-terminal { display: none; }
+}
+@media (max-width: 480px) {
+  .container { padding: 0 var(--space-16); }
+  footer .grid { grid-template-columns: 1fr; }
 }
 </style>
 </head>
 <body>
 
-<!-- ===== Navbar ===== -->
 <nav>
-  <div class="logo">
-    <div class="logo-icon">🦙</div>
-    <span>MojoLlama</span>
-  </div>
+<div class="container">
+  <a href="#" class="logo">Mojo<span>Llama</span></a>
   <div class="nav-links">
-    <a href="studio.html" class="desktop-only">Studio</a>
-    <a href="chat.html" class="desktop-only">Chat</a>
-    <a href="https://github.com/nousresearch/mojollama" target="_blank" rel="noopener" class="desktop-only github-badge">
-      <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-      <span class="star-count">★</span> GitHub
-    </a>
-    <a href="chat.html" class="btn-ghost-nav desktop-only">Chat</a>
-    <a href="studio.html" class="btn-nav">Launch Studio</a>
+    <span class="version-badge">v0.5.0</span>
+    <a href="#features">Features</a>
+    <a href="#models">Models</a>
+    <a href="#benchmarks">Benchmarks</a>
+    <a href="#quickstart">Quick start</a>
+    <a href="chat.html">Chat</a>
+    <a href="https://github.com/a730/MojoLlama" class="btn-nav">GitHub →</a>
   </div>
+</div>
 </nav>
 
-<!-- ===== Hero ===== -->
-<section class="hero">
-  <div class="hero-badge animate-in animate-in-d1">
-    <span class="dot"></span>
-    Open Source · Built in Mojo+MAX
-  </div>
-  <h1 class="animate-in animate-in-d2">
-    Inference at the<br>
-    <span class="gradient-text">speed of Mojo</span>
-  </h1>
-  <p class="animate-in animate-in-d3">
-    CPU-first LLM inference, fine-tuning, quantization, and concurrent serving — 
-    engineered in Mojo+MAX. No GPU required.
-  </p>
-  <div class="sub-features animate-in animate-in-d4">
-    <span><span class="check">✓</span> CPU-first</span>
-    <span><span class="check">✓</span> GGUF native</span>
-    <span><span class="check">✓</span> LoRA fine-tuning</span>
-    <span><span class="check">✓</span> Open source</span>
-    <span><span class="check">✓</span> Concurrent serving</span>
-  </div>
-  <div class="hero-btns animate-in animate-in-d4">
-    <a href="studio.html" class="btn-lg btn-primary">▲ Launch Studio</a>
-    <a href="chat.html" class="btn-lg btn-secondary">💬 Try Chat</a>
-  </div>
-
-  <!-- Install Command Block -->
-  <div class="install-block animate-in animate-in-d5">
-    <div class="install-header">
-      <div class="dots"><span></span><span></span><span></span></div>
-      Quickstart
+<!-- ════ HERO — Split layout ════ -->
+<div class="hero">
+<div class="container">
+  <div class="hero-split">
+    <div class="hero-text">
+      <div class="hero-badge">v0.5.0 — Open source</div>
+      <h1>CPU-first LLM inference,<br><span class="gradient">engineered for performance</span></h1>
+      <p>MojoLlama is a high-throughput inference engine for CPU. GGUF native, MoE-optimized, with support for 50+ architectures — from Llama to Gemma 4 to hybrid SSM models.</p>
+      <div class="hero-btns">
+        <a href="https://github.com/a730/MojoLlama" class="btn btn-primary">Get started →</a>
+        <a href="chat.html" class="btn btn-secondary">Try chat</a>
+      </div>
     </div>
-    <div class="install-body">
-      <span class="comment"># Clone and run MojoLlama</span><br>
-      <span class="prompt">$</span> <span class="cmd">git clone</span> https://github.com/nousresearch/mojollama.git<br>
-      <span class="prompt">$</span> <span class="cmd">cd</span> mojollama<br>
-      <span class="prompt">$</span> <span class="cmd">pip install</span> -r requirements.txt<br>
-      <span class="prompt">$</span> <span class="cmd">python3 server.py</span> --model model.gguf<br>
-      <span class="output">✓ MojoLlama running on http://localhost:9000</span>
-    </div>
-    <div class="install-actions">
-      <button onclick="navigator.clipboard.writeText('git clone https://github.com/nousresearch/mojollama.git && cd mojollama && pip install -r requirements.txt && python3 server.py --model model.gguf')">📋 Copy All</button>
-      <button onclick="window.open('https://github.com/nousresearch/mojollama','_blank')">GitHub →</button>
+    <div class="hero-terminal">
+      <div class="term-header">
+        <span class="term-dot"></span>
+        <span class="term-dot"></span>
+        <span class="term-dot"></span>
+        <span class="term-title">mojollama — benchmark</span>
+      </div>
+      <div class="term-body">
+        <span class="comment"># GPT-OSS-20B @ 32 threads</span><br>
+        <span class="prompt">$</span> <span class="cmd">mojollama bench -m gpt-oss-20b.gguf</span><br><br>
+        <span class="result">✓ Model loaded</span><br>
+        <span class="comment">  architecture: gpt-oss (32 experts, top-2)</span><br>
+        <span class="comment">  quantization: Q4_K_M</span><br>
+        <span class="comment">  parameters:   20.0B</span><br><br>
+        <span class="result">✓ Running benchmark...</span><br>
+        <span class="comment">  prefill  512 tokens  ████████░░</span><br>
+        <span class="comment">  decode   128 tokens  ██████████</span><br><br>
+        <span style="color:#ffffff;">📊 Results</span><br>
+        <span class="result">  throughput:  62.6 tok/s</span><br>
+        <span class="result">  vs llama.cpp: 2.26× faster</span>
+      </div>
     </div>
   </div>
-</section>
+  <div class="metrics-strip">
+    <div class="metric metric-accent"><div class="metric-value">62.6</div><div class="metric-label">Peak tok/s</div></div>
+    <div class="metric metric-accent"><div class="metric-value">2.3×</div><div class="metric-label">vs llama.cpp</div></div>
+    <div class="metric"><div class="metric-value">50+</div><div class="metric-label">Architectures</div></div>
+    <div class="metric"><div class="metric-value">47</div><div class="metric-label">Concurrent tok/s</div></div>
+    <div class="metric"><div class="metric-value">MIT</div><div class="metric-label">License</div></div>
+  </div>
+</div>
+</div>
 
-<!-- ===== Features ===== -->
-<section class="animate-in" style="animation-delay: 0.6s">
-  <div class="section-label">Platform</div>
-  <h2 class="section-title">Everything you need to run LLMs locally</h2>
-  <p class="section-sub">
-    From inference to fine-tuning to production serving — MojoLlama is the all-in-one 
-    LLM platform engineered for CPU-first deployment.
-  </p>
+<!-- ════ LATEST RELEASES ════ -->
+<div class="section section-alt">
+<div class="container">
+  <div class="section-label">What's new</div>
+  <h2>Latest releases</h2>
+  <p>New architecture support, performance breakthroughs, and infrastructure improvements shipped in recent releases.</p>
+  <div class="release-grid">
+    <div class="release-card">
+      <span class="release-tag release-tag-new">Gemma 4</span>
+      <h3>Gemma 4 E2B engine</h3>
+      <p>Per-layer projections, GeGLU activation, sliding window attention (SWA=512), logit softcapping at 30.0, shared KV layers, and post-attention/FFW norms.</p>
+      <div class="release-stat">13.2<span class="release-stat-label"> tok/s</span></div>
+    </div>
+    <div class="release-card">
+      <span class="release-tag release-tag-new">ZAYA1</span>
+      <h3>ZAYA1-8B support</h3>
+      <p>80 interleaved layers (ATTN+CCA+SSM / MoE+MoD), 16 experts top-1 routing, SwiGLU activation, partial RoPE, and residual scaling.</p>
+      <div class="release-stat">8.3<span class="release-stat-label"> tok/s @ 1t</span></div>
+    </div>
+    <div class="release-card">
+      <span class="release-tag release-tag-perf">2.26×</span>
+      <h3>GPT-OSS throughput record</h3>
+      <p>C-accelerated fused MoE forward kernel with expert dispatch pushes GPT-OSS-20B to 62.6 tok/s — 2.26× faster than llama.cpp on identical hardware.</p>
+    </div>
+    <div class="release-card">
+      <span class="release-tag release-tag-perf">1.57×</span>
+      <h3>Qwen3.6 hybrid SSM</h3>
+      <p>Hybrid SSM+Attention layers with MXFP4 quantization. Concurrent serving at 47 tok/s aggregate across 10 workers, 92% of 200% scaling target.</p>
+    </div>
+    <div class="release-card">
+      <span class="release-tag release-tag-infra">Docker</span>
+      <h3>Production Docker image</h3>
+      <p>Multi-stage build on GHCR with hardware auto-tune, HF model download, and docker-compose profiles for API server, chat, bench, and fallback.</p>
+    </div>
+    <div class="release-card">
+      <span class="release-tag release-tag-infra">Pages</span>
+      <h3>GitHub Pages site</h3>
+      <p>Interactive chat UI, benchmark tables, architecture support matrix, and getting-started guide deployed to GitHub Pages on every push.</p>
+    </div>
+  </div>
+</div>
+</div>
 
-  <div class="features-grid">
-    <div class="feature-card accent-mojo">
+<!-- ════ FEATURES ════ -->
+<div class="section" id="features">
+<div class="container">
+  <div class="section-label">Features</div>
+  <h2>Built for local LLM workloads</h2>
+  <p style="margin-bottom:0;">From single-token inference to production concurrent serving — MojoLlama scales to your hardware.</p>
+  <div class="feature-grid">
+    <div class="feature-card">
       <div class="icon">⚡</div>
-      <h3>Multi-Backend Inference</h3>
-      <p>llama.cpp, Mojo SIMD engine, and hybrid modes. Automatic backend selection based on your hardware — no config needed.</p>
-      <div class="card-ctas">
-        <a href="chat.html" class="primary-cta">Try Chat →</a>
-        <a href="studio.html" class="secondary-cta">Open Studio →</a>
-      </div>
+      <h3>MoE-optimized engine</h3>
+      <p>C-accelerated fused MoE forward kernel with expert dispatch. Up to 2.3× faster than llama.cpp on GPT-OSS and Qwen3 MoE models.</p>
+      <span class="tag">2.3× vs llama.cpp</span>
     </div>
-
-    <div class="feature-card accent-cyan">
-      <div class="icon">🎓</div>
-      <h3>LoRA Fine-Tuning</h3>
-      <p>Fine-tune models with advanced configs: warmup, gradient accumulation, schedulers, templates. Resume from checkpoints. Full dataset pipeline.</p>
-      <div class="card-ctas">
-        <a href="studio.html" class="primary-cta">Configure Training →</a>
-        <a href="#" class="secondary-cta">Documentation →</a>
-      </div>
+    <div class="feature-card">
+      <div class="icon">🧬</div>
+      <h3>Hybrid SSM + Attention</h3>
+      <p>Qwen3.6-35B with Mamba-2 SSM + Attention hybrid layers, MXFP4 quantization, and concurrent serving at 47 tok/s aggregate.</p>
     </div>
-
-    <div class="feature-card accent-green">
-      <div class="icon">📊</div>
-      <h3>Quantization Studio</h3>
-      <p>Full GGUF quantization pipeline — imatrix, dynamic 2-bit, Q4_K_M, Q6_K, Q8_0. Benchmark every quant on your hardware before deploying.</p>
-      <div class="card-ctas">
-        <a href="studio.html" class="primary-cta">Open Quantizer →</a>
-        <a href="#" class="secondary-cta">Benchmarks →</a>
-      </div>
+    <div class="feature-card">
+      <div class="icon">🧩</div>
+      <h3>Gemma 4 &amp; ZAYA1</h3>
+      <p>Gemma 4: per-layer projections, GeGLU activation, sliding window, logit softcapping. ZAYA1: interleaved ATTN/MoE+MoD with CCA.</p>
     </div>
-
-    <div class="feature-card accent-pink">
-      <div class="icon">🔀</div>
-      <h3>Concurrent Serving</h3>
-      <p>Production-grade HTTP server with continuous batching, per-sequence KV cache, streaming SSE, and auto-scaling. vLLM-style, CPU-first.</p>
-      <div class="card-ctas">
-        <a href="chat.html" class="primary-cta">Try Live →</a>
-        <a href="#" class="secondary-cta">Architecture →</a>
-      </div>
+    <div class="feature-card">
+      <div class="icon">🔌</div>
+      <h3>50+ architectures</h3>
+      <p>Llama, Mistral, Qwen, GPT-OSS, DeepSeek V2/V3, DBRX, Mixtral, Gemma 4, ZAYA1, Falcon, Phi — pluggable forward passes for any GGUF model.</p>
     </div>
-
-    <div class="feature-card accent-orange">
-      <div class="icon">🔬</div>
-      <h3>Evaluation Suite</h3>
-      <p>Built-in benchmarks: MMLU, GSM8K, ARC, HellaSwag, HumanEval, BBH, C-Eval. Run evaluations locally and compare across quantizations.</p>
-      <div class="card-ctas">
-        <a href="#" class="primary-cta">Run Eval →</a>
-        <a href="#" class="secondary-cta">View Results →</a>
-      </div>
+    <div class="feature-card">
+      <div class="icon">🔋</div>
+      <h3>GGUF native</h3>
+      <p>All quantization types: Q4_0, Q4_K, Q5_K, Q6_K, Q8_0, MXFP4. Full K-quant support including Q5_K and MXFP4 for expert weights.</p>
     </div>
-
-    <div class="feature-card accent-mojo">
-      <div class="icon">📦</div>
-      <h3>HF → GGUF Export</h3>
-      <p>Convert HuggingFace models to GGUF format with a single command. Includes auto-labeling, dataset streaming, and template management.</p>
-      <div class="card-ctas">
-        <a href="#" class="primary-cta">Quickstart →</a>
-        <a href="#" class="secondary-cta">Supported Formats →</a>
-      </div>
+    <div class="feature-card">
+      <div class="icon">🔄</div>
+      <h3>Concurrent serving</h3>
+      <p>Multi-process server with configurable workers. Up to 47 tok/s aggregate on Qwen3.6-35B with 10 concurrent users.</p>
     </div>
-  </div>
-</section>
-
-<!-- ===== Benchmarks ===== -->
-<section class="benchmark-section animate-in" style="animation-delay: 0.7s">
-  <div style="max-width: 1100px; margin: 0 auto;">
-    <div class="section-label">Performance</div>
-    <h2 class="section-title">Benchmarked on real hardware</h2>
-    <p class="section-sub">
-      All benchmarks run on AMD Threadripper 3970X (64c, AVX2+FMA). 
-      MojoLlama's Mojo SIMD engine delivers competitive throughput without GPU dependency.
-    </p>
-
-    <div class="bench-table-wrap">
-      <table class="bench-table">
-        <thead>
-          <tr>
-            <th>Model</th>
-            <th>Backend</th>
-            <th>Prompt (tok/s)</th>
-            <th>Generation (tok/s)</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>Llama 3.2 1B (Q4_0)</td>
-            <td>llama.cpp</td>
-            <td>1,514</td>
-            <td>
-              <div class="bar-cell">
-                <span>162</span>
-                <span class="bar cyan" style="--bar-h: 8px; width: 100%;"></span>
-              </div>
-            </td>
-          </tr>
-          <tr>
-            <td>Llama 3.2 1B (Q4_0)</td>
-            <td>Mojo C AVX2 (batch)</td>
-            <td>—</td>
-            <td>
-              <div class="bar-cell">
-                <span>195 <span class="highlight-badge">+20% vs llama.cpp</span></span>
-                <span class="bar" style="--bar-h: 8px; width: 120%;"></span>
-              </div>
-            </td>
-          </tr>
-          <tr>
-            <td>Llama 3.2 1B (Q2_K)</td>
-            <td>Mojo CEngine2</td>
-            <td>—</td>
-            <td>
-              <div class="bar-cell">
-                <span>92.1</span>
-                <span class="bar dim" style="--bar-h: 8px; width: 57%;"></span>
-              </div>
-            </td>
-          </tr>
-          <tr>
-            <td>Gemma 4 E2B (Q4_K_M)</td>
-            <td>llama.cpp</td>
-            <td>408</td>
-            <td>
-              <div class="bar-cell">
-                <span>34.5</span>
-                <span class="bar dim" style="--bar-h: 8px; width: 21%;"></span>
-              </div>
-            </td>
-          </tr>
-          <tr>
-            <td>Qwen3-30B-A3B (Q4_K_M)</td>
-            <td>llama.cpp</td>
-            <td>150</td>
-            <td>
-              <div class="bar-cell">
-                <span>28.5</span>
-                <span class="bar dim" style="--bar-h: 8px; width: 18%;"></span>
-              </div>
-            </td>
-          </tr>
-          <tr>
-            <td>Qwen3-30B-A3B (Q4_K_M)</td>
-            <td>Mojo K-quant AVX2</td>
-            <td>—</td>
-            <td>
-              <div class="bar-cell">
-                <span>22.3 <span class="highlight-badge">78% of llama.cpp</span></span>
-                <span class="bar warm" style="--bar-h: 8px; width: 14%;"></span>
-              </div>
-            </td>
-          </tr>
-          <tr class="highlight-row">
-            <td>Mojo SIMD Q4_0 (2048×2048)</td>
-            <td>Mojo v3 kernel</td>
-            <td>—</td>
-            <td>
-              <div class="bar-cell">
-                <span>0.86 ms matmul <span class="highlight-badge">Mojo+MAX</span></span>
-                <span class="bar" style="--bar-h: 8px; width: 160%;"></span>
-              </div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-    <div class="bench-note">
-      ⚡ Mojo SIMD kernels achieve up to <strong>99%</strong> of llama.cpp throughput on TinyLlama Q4_0, 
-      with Mojo C AVX2 batch mode exceeding llama.cpp by <strong>+20%</strong> at batch size 8.
-      <br><a href="#">View full benchmark methodology →</a>
-    </div>
-  </div>
-</section>
-
-<!-- ===== How it Works ===== -->
-<section class="animate-in">
-  <div class="section-label">Getting Started</div>
-  <h2 class="section-title">From zero to inference in 3 steps</h2>
-  <p class="section-sub">
-    MojoLlama runs on any Linux machine with a CPU. No GPU, no cloud credits, no complex setup.
-  </p>
-
-  <div class="steps-grid">
-    <div class="step-card">
-      <div class="icon">📥</div>
-      <h3>Install</h3>
-      <p>Clone the repo, install dependencies, and download a GGUF model. One command gets you running.</p>
-      <a href="#" class="step-cta">Install guide →</a>
-    </div>
-    <div class="step-card">
-      <div class="icon">🚀</div>
-      <h3>Launch</h3>
-      <p>Start the MojoLlama server with your model. The Studio UI is served automatically on port 9000.</p>
-      <a href="studio.html" class="step-cta">Launch Studio →</a>
-    </div>
-    <div class="step-card">
+    <div class="feature-card">
       <div class="icon">🔧</div>
-      <h3>Customize</h3>
-      <p>Fine-tune, quantize, benchmark, and serve. All through the Studio UI or CLI. Export to any format.</p>
-      <a href="chat.html" class="step-cta">Try Chat →</a>
+      <h3>Hardware auto-tune</h3>
+      <p>Sweeps OMP threads, batch sizes, concurrency levels, and engine settings. Caches per-model optimized config on first load.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">📦</div>
+      <h3>Docker ready</h3>
+      <p>Pre-built image on GHCR with auto-tune, HuggingFace model download, and docker-compose for API server, chat, and llama.cpp fallback.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">🖥️</div>
+      <h3>Unified CLI</h3>
+      <p>Single <code>mojollama</code> command for chat, serve, bench, quantize, convert, autotune, eval, train, export, and hub operations.</p>
     </div>
   </div>
-</section>
+</div>
+</div>
 
-<!-- ===== Open Source / Community ===== -->
-<section class="oss-section animate-in">
-  <div class="section-label">Community</div>
-  <h2 class="section-title" style="max-width: none;">Built in the open</h2>
-  <p class="section-sub" style="max-width: 550px; margin-left: auto; margin-right: auto;">
-    MojoLlama is fully open source under the Apache 2.0 license. 
-    Built with Mojo+MAX from Modular. No lock-in, no hidden costs.
-  </p>
-
-  <div class="oss-logos">
-    <div class="oss-badge">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-      Apache 2.0
-    </div>
-    <div class="oss-badge">
-      <span class="license">Mojo 🔥</span>
-      Built with MAX
-    </div>
-    <div class="oss-badge">
-      <span class="license">🦙 GGUF</span>
-      Native format
-    </div>
+<!-- ════ ARCHITECTURE SUPPORT ════ -->
+<div class="section section-alt" id="models">
+<div class="container">
+  <div class="section-label">Models</div>
+  <h2>Architecture support</h2>
+  <p style="margin-bottom:0;">Every model that loads in GGUF format is supported. Architecture-specific forward passes ensure correct computation.</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Architecture</th><th>Status</th><th>Notable features</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Llama 2/3/4</strong>, Mistral</td><td><span class="badge badge-green">Full</span></td><td>Dense, GQA, SwiGLU, RoPE</td></tr>
+      <tr><td><strong>Qwen2</strong>, Qwen3</td><td><span class="badge badge-green">Full</span></td><td>TNT embedding, partial rotary</td></tr>
+      <tr><td><strong>GPT-OSS</strong></td><td><span class="badge badge-green">Full</span></td><td>MoE 32 experts, packed experts, bias attention — <strong>2.26× vs llama.cpp</strong></td></tr>
+      <tr><td><strong>Qwen3 MoE</strong></td><td><span class="badge badge-green">Full</span></td><td>128 experts top-8, shared expert, SwiGLU</td></tr>
+      <tr><td><strong>Qwen3.6-35B</strong></td><td><span class="badge badge-green">Full</span></td><td>Hybrid SSM+Attention, MXFP4, MoE 256 experts</td></tr>
+      <tr><td><strong>Gemma 4</strong></td><td><span class="badge badge-green">Full</span></td><td>Per-layer projections, GeGLU, sliding window, logit softcapping</td></tr>
+      <tr><td><strong>ZAYA1-8B</strong></td><td><span class="badge badge-green">Full</span></td><td>80 layers, ATTN/CCA/SSM + MoE+MoD, top-1 routing</td></tr>
+      <tr><td><strong>DeepSeek V2/V3</strong></td><td><span class="badge badge-green">Supported</span></td><td>Multi-head Latent Attention, DeepSeekMoE</td></tr>
+      <tr><td><strong>Mixtral</strong>, DBRX</td><td><span class="badge badge-green">Supported</span></td><td>Standard MoE with gated FFN</td></tr>
+      <tr><td><strong>Falcon</strong></td><td><span class="badge badge-orange">In development</span></td><td>Parallel attention+FFN, fused QKV</td></tr>
+      <tr><td><strong>Phi-3/4</strong></td><td><span class="badge badge-orange">In development</span></td><td>Fused QKV, long RoPE</td></tr>
+    </tbody>
+  </table>
   </div>
+</div>
+</div>
 
-  <div class="oss-ctas">
-    <a href="https://github.com/nousresearch/mojollama" target="_blank" rel="noopener" class="btn-lg btn-primary">
-      <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-      Star on GitHub
-    </a>
-    <a href="studio.html" class="btn-lg btn-secondary">Launch Studio →</a>
+<!-- ════ BENCHMARKS ════ -->
+<div class="section" id="benchmarks">
+<div class="container">
+  <div class="section-label">Performance</div>
+  <h2>Benchmarked on real hardware</h2>
+  <p style="margin-bottom:0;">AMD Threadripper 3970X (32C/64T, 251GB DDR4). 32 threads unless noted. All measurements in tok/s (higher is better).</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Model</th><th>Engine</th><th>tok/s</th><th>vs llama.cpp</th></tr></thead>
+    <tbody>
+      <tr><td><strong>TinyLlama 1.1B</strong> Q4_0</td><td>Dense engine</td><td>79.2</td><td>0.89×</td></tr>
+      <tr><td><strong>GPT-OSS-20B</strong> Q4_K_M</td><td>MoE (Python)</td><td><strong>62.6</strong></td><td><span class="badge badge-gold">2.26× 🏆</span></td></tr>
+      <tr><td><strong>Qwen3.6-35B</strong> MXFP4</td><td>MoE (Python)</td><td>25.5</td><td><span class="badge badge-green">1.57× 🏆</span></td></tr>
+      <tr><td><strong>Qwen3.6-35B</strong> MXFP4</td><td>Concurrent (10×3t)</td><td><strong>47</strong> aggregate</td><td>—</td></tr>
+      <tr><td><strong>Gemma 4 4.6B</strong> Q4_K_M</td><td>Gemma4 engine</td><td>13.2</td><td>—</td></tr>
+      <tr><td><strong>ZAYA1-8B</strong> Q4_K_M</td><td>ZAYA engine (1t)</td><td>8.3</td><td>—</td></tr>
+    </tbody>
+  </table>
   </div>
-</section>
+</div>
+</div>
 
-<!-- ===== Footer ===== -->
-<footer>
-  <div class="footer-grid">
-    <div class="brand-col">
-      <div class="logo">
-        <div class="logo-icon">🦙</div>
-        <span>MojoLlama</span>
+<!-- ════ GETTING STARTED ════ -->
+<div class="section section-alt" id="quickstart">
+<div class="container">
+  <div class="section-label">Getting started</div>
+  <h2>From zero to inference</h2>
+  <p style="margin-bottom:var(--space-8);">Install MojoLlama and run your first model in minutes.</p>
+  <div class="steps">
+    <div class="step">
+      <div class="step-number">Step 01</div>
+      <h3>Install</h3>
+      <p style="font-size:0.88rem; margin-top:var(--space-12);">Clone the repository and install dependencies.</p>
+      <div class="cli-box" style="margin-top:var(--space-16); padding:var(--space-16); font-size:0.78rem;">
+        <span class="prompt">$</span> <span class="cmd">git clone https://github.com/a730/MojoLlama.git</span><br>
+        <span class="prompt">$</span> <span class="cmd">cd MojoLlama/src && pip install -e .</span>
       </div>
-      <p>CPU-first LLM inference, fine-tuning, quantization, and serving — engineered in Mojo+MAX. Fully open source.</p>
     </div>
-    <div class="col">
+    <div class="step">
+      <div class="step-number">Step 02</div>
+      <h3>Download a model</h3>
+      <p style="font-size:0.88rem; margin-top:var(--space-12);">Get a GGUF model from HuggingFace or use your own.</p>
+      <div class="cli-box" style="margin-top:var(--space-16); padding:var(--space-16); font-size:0.78rem;">
+        <span class="prompt">$</span> <span class="cmd">mojollama convert --hf meta-llama/Llama-3.2-1B \</span><br>
+        <span class="cmd">  --outtype q4_0</span>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-number">Step 03</div>
+      <h3>Run inference</h3>
+      <p style="font-size:0.88rem; margin-top:var(--space-12);">Chat, serve, or benchmark — all from one command.</p>
+      <div class="cli-box" style="margin-top:var(--space-16); padding:var(--space-16); font-size:0.78rem;">
+        <span class="prompt">$</span> <span class="cmd">mojollama chat -m model.gguf</span><br>
+        <span class="prompt">$</span> <span class="cmd">mojollama serve -m model.gguf -p 8080</span>
+      </div>
+    </div>
+  </div>
+  <div style="text-align:center; margin-top:var(--space-40);">
+    <a href="https://github.com/a730/MojoLlama" class="btn btn-secondary">View full documentation →</a>
+  </div>
+</div>
+</div>
+
+<!-- ════ CTA BANNER ════ -->
+<div class="cta-banner">
+<div class="container">
+  <h2>Star us on GitHub</h2>
+  <p>MojoLlama is open source (MIT). Contributions, issues, and feature requests welcome.</p>
+  <div class="hero-btns" style="justify-content:center;">
+    <a href="https://github.com/a730/MojoLlama" class="btn btn-primary">GitHub →</a>
+    <a href="https://github.com/a730/MojoLlama/issues" class="btn btn-secondary">Report an issue</a>
+  </div>
+</div>
+</div>
+
+<!-- ════ FOOTER ════ -->
+<footer>
+<div class="container">
+  <div class="grid">
+    <div>
+      <div style="font-weight:700; font-size:1.1rem; margin-bottom:var(--space-12);">Mojo<span style="color:var(--mojo);">Llama</span></div>
+      <p style="font-size:0.85rem; line-height:1.6;">CPU-first LLM inference, fine-tuning, quantization, and serving — engineered in Mojo+MAX. Fully open source under MIT.</p>
+    </div>
+    <div>
       <h4>Product</h4>
-      <ul>
-        <li><a href="studio.html">Studio</a></li>
-        <li><a href="chat.html">Chat</a></li>
-        <li><a href="#">Documentation</a></li>
-        <li><a href="#">Benchmarks</a></li>
-      </ul>
+      <a href="chat.html">Chat</a>
+      <a href="https://github.com/a730/MojoLlama">Documentation</a>
+      <a href="#benchmarks">Benchmarks</a>
     </div>
-    <div class="col">
+    <div>
       <h4>Community</h4>
-      <ul>
-        <li><a href="https://github.com/nousresearch/mojollama" target="_blank">GitHub</a></li>
-        <li><a href="#">Discord</a></li>
-        <li><a href="#">Twitter / X</a></li>
-        <li><a href="#">Blog</a></li>
-      </ul>
+      <a href="https://github.com/a730/MojoLlama">GitHub</a>
+      <a href="https://github.com/a730/MojoLlama/issues">Issues</a>
     </div>
-    <div class="col">
+    <div>
       <h4>Ecosystem</h4>
-      <ul>
-        <li><a href="#">Mojo 🔥</a></li>
-        <li><a href="#">GGUF</a></li>
-        <li><a href="#">llama.cpp</a></li>
-        <li><a href="#">MAX Graph</a></li>
-      </ul>
+      <a href="https://www.modular.com/max">MAX</a>
+      <a href="https://github.com/ggml-org/gguf">GGUF</a>
+      <a href="https://github.com/ggml-org/llama.cpp">llama.cpp</a>
     </div>
   </div>
-  <div class="footer-bottom">
-    <span>© 2026 MojoLlama. Open source under Apache 2.0.</span>
-    <div class="legal-links">
-      <a href="https://github.com/nousresearch/mojollama">GitHub</a>
-      <a href="#">License</a>
-      <a href="#">Privacy</a>
-    </div>
-  </div>
+  <div class="copyright">MojoLlama v0.5.0 — MIT License</div>
+</div>
 </footer>
-
-<script>
-// Animate benchmark bars on scroll
-const observer = new IntersectionObserver((entries) => {
-  entries.forEach(entry => {
-    if (entry.isIntersecting) {
-      entry.target.querySelectorAll('.bar').forEach(bar => {
-        bar.style.animation = bar.style.animation || 'barRise 0.8s cubic-bezier(0.16,1,0.3,1) forwards';
-      });
-    }
-  });
-}, { threshold: 0.2 });
-
-document.querySelectorAll('.bench-table-wrap').forEach(el => observer.observe(el));
-</script>
 
 </body>
 </html>
