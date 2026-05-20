@@ -32,7 +32,7 @@ from mojollama.dataset import (
     detect_format,
 )
 
-STUDIO_VERSION = "0.1.0"
+STUDIO_VERSION = "0.2.0"
 BASE_DIR = Path(__file__).parent.parent.parent.resolve()
 LLAMA_CPP = "/tmp/llama.cpp"
 CONVERTER = f"{LLAMA_CPP}/convert_hf_to_gguf.py"
@@ -40,6 +40,226 @@ FINETUNE_BIN = f"{LLAMA_CPP}/build/examples/training/llama-finetune"
 SERVER_BIN = f"{LLAMA_CPP}/build/bin/llama-server"
 CHAT_HTML = f"{BASE_DIR}/www/chat.html"
 INDEX_HTML = f"{BASE_DIR}/www/index.html"
+
+# ── Model registry ──────────────────────────────────────────
+MODEL_REGISTRY = Path.home() / ".mojollama" / "models.json"
+MODEL_CACHE = Path.home() / ".cache" / "mojollama" / "models"
+os.makedirs(MODEL_CACHE, exist_ok=True)
+os.makedirs(MODEL_REGISTRY.parent, exist_ok=True)
+
+
+def _load_model_registry():
+    """Load the model registry (connected models)."""
+    if MODEL_REGISTRY.exists():
+        try:
+            return json.loads(MODEL_REGISTRY.read_text())
+        except Exception:
+            return {"connected": {}}
+    return {"connected": {}}
+
+
+def _save_model_registry(registry):
+    """Save the model registry."""
+    MODEL_REGISTRY.write_text(json.dumps(registry, indent=2))
+
+
+def _resolve_model(model_spec):
+    """Resolve a model spec to a local path.
+
+    Accepts:
+      - Local path (/path/to/model.gguf)
+      - HF repo ID (Qwen/Qwen3-30B-A3B-Instruct-GGUF)
+      - Alias name from registry (my-model)
+
+    Returns (local_path, source) tuple.
+    """
+    if not model_spec:
+        return None, None
+
+    # 1) Direct local path
+    if os.path.exists(model_spec):
+        return os.path.abspath(model_spec), "local"
+
+    # 2) Check registry aliases
+    reg = _load_model_registry()
+    if model_spec in reg.get("connected", {}):
+        entry = reg["connected"][model_spec]
+        lp = entry.get("local_path", "")
+        if os.path.exists(lp):
+            return lp, f"registry:{model_spec}"
+        print(f"  ⚠ Registry entry '{model_spec}' has missing local path, re-downloading...")
+
+    # 3) Check if it's already a downloaded file in cache
+    cached = list(MODEL_CACHE.glob(f"**/*{model_spec.split('/')[-1]}*"))
+    if cached:
+        return str(cached[0]), "cache"
+
+    # 4) Treat as HF repo ID — auto-download
+    return _download_hf_model(model_spec), "hf"
+
+
+def _download_hf_model(repo_id, filename=None):
+    """Download a model from HuggingFace Hub to local cache.
+
+    Returns local path. Uses hf_hub_download or huggingface_hub CLI.
+    """
+    local_name = repo_id.replace("/", "--")
+    dest_dir = MODEL_CACHE / local_name
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check if already downloaded
+    existing = list(dest_dir.glob("*.gguf"))
+    if existing:
+        return str(existing[0])
+
+    print(f"  📥 Downloading {repo_id} from HuggingFace Hub...")
+    print(f"     Target: {dest_dir}")
+
+    try:
+        from huggingface_hub import hf_hub_download, list_repo_files
+
+        # List files to find the GGUF
+        files = [f for f in list_repo_files(repo_id) if f.endswith(".gguf")]
+        if not files:
+            print(f"  ❌ No GGUF files found in {repo_id}")
+            return None
+
+        # Pick the best one (prefer Q4_K_M, then largest)
+        if filename:
+            selected = [f for f in files if filename in f]
+            if selected:
+                files = selected
+
+        # Auto-select: prefer Q4_K_M, then largest quant
+        preferred = [f for f in files if "q4_k_m" in f.lower() or "Q4_K_M" in f]
+        if not preferred:
+            preferred = sorted(files)  # sort alphabetically, gives stable selection
+        target = preferred[0]
+
+        print(f"     File: {target}")
+        local_path = hf_hub_download(repo_id=repo_id, filename=target,
+                                     cache_dir=str(dest_dir))
+        print(f"  ✅ Downloaded to {local_path}")
+        return local_path
+
+    except ImportError:
+        print(f"  ⚠ huggingface_hub not installed, trying HF CLI...")
+        try:
+            result = subprocess.run(
+                ["huggingface-cli", "download", repo_id, "--local-dir", str(dest_dir)],
+                capture_output=True, text=True, timeout=600
+            )
+            if result.returncode == 0:
+                ggufs = list(dest_dir.rglob("*.gguf"))
+                if ggufs:
+                    print(f"  ✅ Downloaded to {ggufs[0]}")
+                    return str(ggufs[0])
+            print(f"  ❌ HF download failed: {result.stderr[:200]}")
+            return None
+        except FileNotFoundError:
+            print(f"  ❌ huggingface_hub CLI not available")
+            print(f"     Install: pip install huggingface_hub")
+            return None
+    except Exception as e:
+        print(f"  ❌ Download failed: {e}")
+        return None
+
+
+def cmd_connect(args):
+    """Connect to a model from HuggingFace Hub or local path.
+
+    Downloads the model (if remote) and registers it in the model registry
+    with an alias name so all studio commands can use it.
+    """
+    print_banner()
+    print("[Connect] Model Registration")
+    print()
+
+    spec = args.spec or input("Model (HF repo ID or local path): ").strip()
+    if not spec:
+        print("❌ No model specified")
+        return
+
+    alias = args.alias or input(f"Alias name [{Path(spec).stem}]: ").strip() or Path(spec).stem
+
+    print(f"\n  Resolving: {spec}")
+    local_path, source = _resolve_model(spec)
+
+    if not local_path or not os.path.exists(local_path):
+        print(f"❌ Could not resolve model: {spec}")
+        return
+
+    # Detect engine type
+    engine_type = "unknown"
+    try:
+        from mojollama.benchmarks.bench_tok import detect_engine_type
+        engine_type = detect_engine_type(local_path)
+    except Exception:
+        pass
+
+    # Register
+    reg = _load_model_registry()
+    reg["connected"][alias] = {
+        "spec": spec,
+        "local_path": local_path,
+        "engine_type": engine_type,
+        "connected_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "size_gb": round(os.path.getsize(local_path) / (1024**3), 1),
+    }
+    _save_model_registry(reg)
+
+    print(f"\n  ✅ Model registered as '{alias}'")
+    print(f"     Path:   {local_path}")
+    print(f"     Engine: {engine_type}")
+    print(f"     Size:   {reg['connected'][alias]['size_gb']:.1f} GB")
+    print(f"\n  You can now use this model in any studio command:")
+    print(f"    mojollama-studio chat --model {alias}")
+    print(f"    mojollama-studio benchmark --model {alias}")
+    print(f"    mojollama-studio train --model {alias} --data dataset.jsonl")
+    print(f"    mojollama-studio serve --model {alias} --port 8080")
+
+
+def cmd_models(args):
+    """List connected models."""
+    reg = _load_model_registry()
+    connected = reg.get("connected", {})
+
+    if not connected:
+        print_banner()
+        print("[Models] No connected models")
+        print()
+        print("  Connect a model:")
+        print("    mojollama-studio connect Qwen/Qwen3-30B-A3B-Instruct-GGUF")
+        print("    mojollama-studio connect /path/to/model.gguf --alias my-model")
+        return
+
+    print_banner()
+    print(f"[Models] {len(connected)} connected")
+    print()
+    print(f"  {'Alias':<24s}  {'Engine':<10s}  {'Size':>6s}  {'Source':<40s}")
+    print(f"  {'─'*24}  {'─'*10}  {'─'*6}  {'─'*40}")
+    for alias, entry in sorted(connected.items()):
+        etype = entry.get("engine_type", "?")
+        size = f"{entry.get('size_gb', 0):.1f}G"
+        spec = entry.get("spec", entry.get("local_path", "?"))[:40]
+        exists = "✅" if os.path.exists(entry.get("local_path", "")) else "❌"
+        print(f"  {exists} {alias:<22s}  {etype:<10s}  {size:>6s}  {spec:<40s}")
+    print(f"\n  To use: mojollama-studio <command> --model <alias>")
+
+
+def _get_model(spec):
+    """Resolve a model spec (path, alias, or HF repo) to local path. Handles input prompts."""
+    if not spec:
+        return None
+    path, source = _resolve_model(spec)
+    if path and os.path.exists(path):
+        if source.startswith("registry"):
+            print(f"  Model: {spec} ({path})")
+        elif source == "hf":
+            print(f"  Model: {spec} → downloaded ✅")
+        return path
+    print(f"  ❌ Could not resolve model: {spec}")
+    return None
 
 
 def print_banner():
@@ -883,6 +1103,9 @@ def _cmd_dataset_autolabel(args):
 def cmd_chat(args):
     """Interactive chat with a model."""
     print_banner()
+    model = _get_model(args.model)
+    if not model:
+        model = input("Model path (GGUF): ").strip()
     print("[Chat] Interactive model chat")
     print()
     
@@ -949,8 +1172,9 @@ def cmd_serve(args):
     print()
     
     os.environ["PORT"] = str(args.port or 9000)
-    if args.model:
-        os.environ["MODEL_PATH"] = args.model
+    model = _get_model(args.model) or args.model
+    if model:
+        os.environ["MODEL_PATH"] = model
     
     sys.path.insert(0, f"{BASE_DIR}/src")
     from mojollama.server import main
@@ -960,108 +1184,23 @@ def cmd_serve(args):
 # ─── Benchmark ─────────────────────────────────────────────────────────
 
 def cmd_benchmark(args):
-    """Benchmark model inference speed."""
+    """Benchmark model inference speed (delegates to new bench suite)."""
     print_banner()
-    print("[Benchmark] Model speed test")
+    print("[Benchmark] MojoLlama Native Engine Benchmark")
     print()
-
     model = args.model or input("Model path (GGUF): ").strip()
     if not os.path.exists(model):
         print(f"❌ Model not found: {model}")
         return
-
-    port = args.port or 8092
-    prompt = args.prompt or "The meaning of life is"
-    n_predict = args.n_predict or 128
-
-    print(f"Model: {model}")
-    print(f"Prompt: \"{prompt}\"")
-    print(f"Tokens to generate: {n_predict}")
-    print()
-
-    # Start server
-    print(f"Starting llama.cpp server on port {port}...")
-    proc = subprocess.Popen(
-        [SERVER_BIN, "-m", model, "-c", "4096",
-         "-t", "64", "-tb", "32", "-b", "4096", "-ub", "4096",
-         "-np", "8", "--mlock", "--cont-batching",
-         "--port", str(port), "--host", "127.0.0.1", "--no-webui",
-         "--metrics"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
-
-    print("Waiting for server...", end=" ", flush=True)
-    ready = False
-    for _ in range(45):
-        time.sleep(1)
-        try:
-            urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2)
-            ready = True
-            break
-        except Exception:
-            print(".", end="", flush=True)
-    print()
-
-    if not ready:
-        print("\n❌ Server failed to start")
-        proc.kill()
-        return
-
-    print(f"\n✅ Server ready at http://127.0.0.1:{port}")
-
-    # Warmup run
-    print("\nWarming up...")
-    data = json.dumps({
-        "messages": [{"role": "user", "content": "Hello"}],
-        "max_tokens": 4, "temperature": 0, "stream": False
-    }).encode()
-    try:
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/v1/chat/completions",
-            data=data, headers={"Content-Type": "application/json"}
-        )
-        urllib.request.urlopen(req, timeout=60)
-    except Exception:
-        pass
-
-    # Benchmark run
-    print(f"Benchmarking ({n_predict} tokens)...")
-    data = json.dumps({
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": n_predict, "temperature": 0, "stream": False
-    }).encode()
-
-    t0 = time.time()
-    try:
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/v1/chat/completions",
-            data=data, headers={"Content-Type": "application/json"}
-        )
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            result = json.loads(resp.read())
-        elapsed = time.time() - t0
-
-        content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-        usage = result.get("usage", {})
-        prompt_tokens = usage.get("prompt_tokens", 0)
-        completion_tokens = usage.get("completion_tokens", len(content) // 4 or 1)
-
-        prompt_tok_s = prompt_tokens / elapsed if elapsed > 0 else 0
-        gen_tok_s = completion_tokens / elapsed if elapsed > 0 else 0
-
-        print(f"\n  ─────────────────────────────")
-        print(f"  Prompt tokens:       {prompt_tokens}")
-        print(f"  Generated tokens:    {completion_tokens}")
-        print(f"  Total time:          {elapsed:.2f}s")
-        print(f"  Prompt processing:   {prompt_tok_s:.1f} tok/s")
-        print(f"  Text generation:     {gen_tok_s:.1f} tok/s")
-        print(f"  ─────────────────────────────")
-        print(f"  Response preview:    {content[:100]}...")
-    except Exception as e:
-        print(f"\\n❌ Benchmark failed: {e}")
-
-    proc.kill()
-    print(f"\\n✅ Benchmark complete")
+    os.environ["OMP_NUM_THREADS"] = str(args.threads or 32)
+    # Delegate to the new bench_tok
+    sys.argv = ["bench", "--model", model]
+    if args.threads:
+        sys.argv.extend(["--threads", str(args.threads)])
+    if args.n_predict:
+        sys.argv.extend(["--gen-len", str(args.n_predict)])
+    from mojollama.benchmarks.bench_tok import main as _bench_main
+    _bench_main()
 
 
 # ─── Evaluate ─────────────────────────────────────────────────────────
@@ -1236,50 +1375,47 @@ def cmd_info(args):
         print(f"  {f.name} ({size:.1f} GB)")
     
     print()
-    print("Studio commands:")
-    print("  train     Fine-tune a model with LoRA")
-    print("  export    Convert HF model to GGUF")
-    print("  dataset   Create/manage training data")
-    print("  merge     Merge LoRA adapter into base model")
-    print("  chat      Interactive chat")
-    print("  serve     Full API server")
-    print("  benchmark Benchmark model inference speed")
-    print("  info      This info")
-
-
+    print("AVAILABLE COMMANDS:")
+    print("  train         Fine-tune a model with LoRA/QLoRA/DPO/GRPO")
+    print("  export        Convert HuggingFace model to GGUF")
+    print("  dataset       Create/manage training data")
+    print("  merge         Merge LoRA adapter into base model")
+    print("  chat          Interactive chat with an endpoint-connected model")
+    print("  serve         Full MojoLlama API server")
+    print("  benchmark     Benchmark model inference speed")
+    print("  evaluate      Run evaluations (MMLU, GSM8K, CEval)")
+    print("  quantize      Quantize a GGUF model")
+    print("  imatrix       Generate importance matrix")
+    print("  autotune      Auto-tune server settings")
+    print("  connect       Connect to a model (HF Hub or local)")
+    print("  models        List connected models")
+    print("  info          System info")
+    print("  hub-login     Login to HuggingFace Hub")
+    print("  hub-whoami    Show HuggingFace user info")
+    print("  hub-push      Push model to HuggingFace Hub")
+    print()
+    print("  Run 'mojollama-studio <command> --help' for detailed options.")
 # ─── Quantizer Wrappers ────────────────────────────────────────────────
 
 def cmd_quantize(args):
-    """Quantize GGUF → GGUF using llama-quantize."""
-    quantize_bin = "/tmp/llama.cpp/build/bin/llama-quantize"
-
-    model = args.model
-    outtype = args.type
-    outfile = args.output or model.replace(".gguf", f"-{outtype}.gguf")
-    nthreads = args.threads
-
-    cmd = [quantize_bin]
-    if args.allow_requantize:
-        cmd.append("--allow-requantize")
-    if args.pure:
-        cmd.append("--pure")
-    if args.leave_output:
-        cmd.append("--leave-output-tensor")
-    if args.dry_run:
-        cmd.append("--dry-run")
-    if args.imatrix:
-        cmd.extend(["--imatrix", args.imatrix])
-    if args.override_kv:
-        for kv in args.override_kv:
-            cmd.extend(["--override-kv", kv])
-    cmd.extend([model, outfile, outtype])
-    if nthreads and nthreads > 0:
-        cmd.append(str(nthreads))
-
-    print_banner()
-    print(f"[Quantize] {model} → {outfile} ({outtype})")
-    print()
-    subprocess.run(cmd, check=True)
+    """Quantize GGUF → GGUF (delegates to new multi-quant engine)."""
+    # Delegate to __main__.py's cmd_quantize which has --multi, --target-bpw, --bench, --list-types
+    sys.argv = ["quantize"]
+    if args.model: sys.argv.append(args.model)
+    if args.type: sys.argv.extend(["-t", args.type])
+    if args.output: sys.argv.extend(["-o", args.output])
+    if args.imatrix: sys.argv.extend(["--imatrix", args.imatrix])
+    if args.threads: sys.argv.extend(["--threads", str(args.threads)])
+    if args.allow_requantize: sys.argv.append("--allow-requantize")
+    if args.dry_run: sys.argv.append("--dry-run")
+    if args.pure: sys.argv.append("--pure")
+    if args.leave_output: sys.argv.append("--leave-output")
+    if args.multi: sys.argv.extend(["--multi", args.multi])
+    if args.target_bpw: sys.argv.extend(["--target-bpw", str(args.target_bpw)])
+    if args.bench: sys.argv.append("--bench")
+    if args.list_types: sys.argv.append("--list-types")
+    from mojollama.__main__ import cmd_quantize as _quant
+    _quant(args)
 
 
 def cmd_imatrix(args):
@@ -1722,6 +1858,15 @@ def main():
     p_data.add_argument("--output-prefix", help="Output prefix for split files")
     p_data.add_argument("--no-shuffle", action="store_true", help="Disable shuffle for split")
 
+    # connect — endpoint-based model loading
+    p_connect = sub.add_parser("connect", help="Connect to a model from HF Hub or local path")
+    p_connect.add_argument("spec", nargs="?", help="HF repo ID or local path")
+    p_connect.add_argument("--alias", help="Alias name for the model (defaults to repo name)")
+
+    # models
+    p_models = sub.add_parser("models", aliases=["list-models"],
+                              help="List connected models")
+
     # quantize (wrapper around quantizer.py)
     p_quant = sub.add_parser("quantize", help="Quantize a GGUF model to a different type (all K/IQ quants, imatrix, NF4)")
     p_quant.add_argument("model", help="Path to input GGUF model")
@@ -1740,6 +1885,16 @@ def main():
                          help="Calculate size without quantizing")
     p_quant.add_argument("--override-kv", action="append",
                          help="Override model metadata key=type:val (can be repeated)")
+    p_quant.add_argument("--multi", type=str,
+                         help="Multi-quant cascade: comma-separated types, e.g. 'Q8_0,Q6_K,Q4_K_M'")
+    p_quant.add_argument("--target-bpw", type=float,
+                         help="Target bits-per-weight (auto-selects best type)")
+    p_quant.add_argument("--bench", action="store_true",
+                         help="Benchmark each output after quantization")
+    p_quant.add_argument("--list-types", action="store_true",
+                         help="List available quantization types and exit")
+    p_quant.add_argument("--compare", action="store_true",
+                         help="Compare with llama.cpp baseline")
 
     # imatrix
     p_imatrix = sub.add_parser("imatrix", help="Generate importance matrix for better quantization")
@@ -1779,11 +1934,17 @@ def main():
     p_serve.add_argument("--model", help="Model path override")
     
     # benchmark
-    p_bench = sub.add_parser("benchmark", help="Benchmark model inference speed")
+    p_bench = sub.add_parser("benchmark", help="Benchmark inference speed (MojoLlama native engine)")
     p_bench.add_argument("--model", help="Model path (GGUF)")
-    p_bench.add_argument("--port", type=int, default=8092, help="Server port")
-    p_bench.add_argument("--prompt", default="The meaning of life is", help="Test prompt")
-    p_bench.add_argument("--n-predict", type=int, default=128, help="Tokens to generate")
+    p_bench.add_argument("--threads", "-t", type=int, default=32,
+                        help="CPU threads (default: 32)")
+    p_bench.add_argument("--n-predict", type=int, default=128,
+                        help="Tokens to generate (default: 128)")
+    p_bench.add_argument("--compare", action="store_true",
+                        help="A/B comparison with llama.cpp")
+    p_bench.add_argument("--json", dest="output_json", action="store_true",
+                        help="Output as JSON")
+    p_bench.set_defaults(func=cmd_benchmark)
 
     # evaluate
     p_eval = sub.add_parser("evaluate", help="Run benchmark evaluations (MMLU, GSM8K, CEval, etc.)")
@@ -1912,10 +2073,13 @@ def main():
         "evaluate": cmd_evaluate,
         "autotune": cmd_autotune,
         "info": cmd_info,
-        "hub-login": cmd_hub_login,
-        "hub-whoami": cmd_hub_whoami,
-        "hub-push": cmd_hub_push,
-        "hub-push-adapter": cmd_hub_push_adapter,
+         "hub-login": cmd_hub_login,
+         "hub-whoami": cmd_hub_whoami,
+         "hub-push": cmd_hub_push,
+         "hub-push-adapter": cmd_hub_push_adapter,
+         "connect": cmd_connect,
+         "models": cmd_models,
+         "list-models": cmd_models,
         "export-safetensors": cmd_export_safetensors,
         "export-onnx": cmd_export_onnx,
         "checkpoint-save": cmd_checkpoint_save,

@@ -149,337 +149,216 @@ def run_bench(model, threads, threads_batch, batch_size, ubatch_size,
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Phase 6 — MojoLlama engine batch-sweep benchmark
+# Phase 6 — MojoLlama engine benchmark (all archs: MoE, dense, Gemma4)
 # ═══════════════════════════════════════════════════════════════════════
 
+def _detect_engine_type(model_path):
+    """Detect which MojoLlama engine class to use for a model."""
+    try:
+        import gguf
+        r = gguf.GGUFReader(model_path)
+        arch = str(r.fields.get("general.architecture", gguf.GGUFValue(b"unknown")).parts[-1]).strip().lower()
+        if any(x in arch for x in ["moe", "gpt-oss", "deepseek"]):
+            return "moe"
+        if "gemma4" in arch:
+            return "gemma4"
+        if "zaya" in arch:
+            return "zaya"
+        return "dense"
+    except Exception:
+        return "dense"
+
+
+def _load_engine(model_path, threads):
+    """Load the appropriate MojoLlama engine for the given model.
+    Returns (engine, engine_type) or raises."""
+    _md = os.path.dirname(os.path.abspath(__file__))
+    _bd = os.path.dirname(_md)
+    if _bd not in sys.path:
+        sys.path.insert(0, _bd)
+    os.environ["OMP_NUM_THREADS"] = str(threads)
+
+    engine_type = _detect_engine_type(model_path)
+
+    if engine_type in ("moe", "gemma4"):
+        from mojollama.kernels.turbo_engine_v7_moe import TurboEngineV7MoE
+        eng = TurboEngineV7MoE(model_path, n_threads=threads)
+    else:
+        from mojollama.kernels.turbo_engine_v77 import TurboEngineV77
+        eng = TurboEngineV77(model_path, n_threads=threads)
+
+    return eng, engine_type
+
+
 def bench_mojollama(model_path, threads, quick=False):
-    """Benchmark MojoLlama custom engine with a batch-size sweep.
+    """Benchmark MojoLlama native engine with pp512 + tg128 measurement.
 
-    Loads *model_path* via TurboEngineV7MoE, sweeps B ∈ [1,2,4,8]
-    (or [1,4] in quick mode), measures ms/tok and tok/s,
-    and returns a list of result dicts.
-
-    Returns an empty list if the engine is unavailable or the model
-    architecture isn't supported.
+    Sweeps thread counts (if threads is a list) and batch sizes.
+    Returns list of {threads, pp_tok_s, tg_tok_s, ms_per_tok} dicts.
     """
     try:
-        # Ensure the engine module is importable (add parent dir if needed)
-        _mod_dir = os.path.dirname(os.path.abspath(__file__))
-        _base_dir = os.path.dirname(_mod_dir)  # src/
-        if _base_dir not in sys.path:
-            sys.path.insert(0, _base_dir)
-        from mojollama.kernels.turbo_engine_v7_moe import TurboEngineV7MoE
-    except ImportError as exc:
-        print(f"  ⚠ TurboEngineV7MoE not available ({exc}) — skipping MojoLlama engine benchmark")
-        return []
-
-    os.environ["OMP_NUM_THREADS"] = str(threads)
-    try:
-        engine = TurboEngineV7MoE(model_path, n_threads=threads)
+        engine, etype = _load_engine(model_path, threads if isinstance(threads, int) else threads[0])
     except Exception as exc:
-        print(f"  ⚠ Failed to load TurboEngineV7MoE: {exc}")
+        print(f"  ⚠ Engine load failed: {exc}")
         return []
 
-    if not engine.is_moe:
-        print("  ℹ  Model is not MoE — TurboEngineV7MoE benchmark only supports MoE models, skipping")
-        return []
-
-    batch_sizes = [1, 2, 4, 8] if not quick else [1, 4]
+    V = int(engine.vocab_size)
+    N_WARMUP = 5
+    N_MEASURED = 20
     results = []
 
-    for B in batch_sizes:
+    # Handle single thread or list
+    thread_list = [threads] if isinstance(threads, int) else threads
+
+    for nt in thread_list:
+        # Re-load engine for each thread count (OMP_NUM_THREADS must match)
+        if nt != thread_list[0]:
+            try:
+                engine, etype = _load_engine(model_path, nt)
+            except Exception as exc:
+                print(f"  ⚠ Reload @{nt}t failed: {exc}")
+                continue
+
         engine.reset()
 
-        # Warmup: 10 tokens
-        token = 1  # BOS
-        for _ in range(10):
-            logits = engine.forward(token)
-            token = int(np.argmax(logits))
-
-        # Measure: 30 tokens
+        # ── pp512: prompt processing ──
+        prompt_len = 512
+        prompt_tokens = [i % max(V, 1) for i in range(prompt_len)]
         t0 = time.perf_counter()
-        for _ in range(30):
-            logits = engine.forward(token)
-            token = int(np.argmax(logits))
-        elapsed = time.perf_counter() - t0
+        for tok in prompt_tokens:
+            engine.forward([tok])
+        pp_elapsed = time.perf_counter() - t0
+        pp_tok_s = prompt_len / pp_elapsed
 
-        ms_per_tok = elapsed / 30.0 * 1000.0
-        tok_per_s = 30.0 / elapsed
+        # ── tg128: token generation ──
+        token = prompt_tokens[-1]
+        # Warmup
+        for _ in range(N_WARMUP):
+            logits = engine.forward([token])
+            a = np.asarray(logits).ravel()
+            token = int(np.argmax(a)) % max(V, 1)
+        # Measured
+        t0 = time.perf_counter()
+        for _ in range(N_MEASURED):
+            logits = engine.forward([token])
+            a = np.asarray(logits).ravel()
+            token = int(np.argmax(a)) % max(V, 1)
+        tg_elapsed = time.perf_counter() - t0
+        tg_tok_s = N_MEASURED / tg_elapsed
+        tg_ms = tg_elapsed / N_MEASURED * 1000
 
         results.append({
-            "batch_size": B,
-            "ms_per_tok": ms_per_tok,
-            "tok_per_s": tok_per_s,
-            "threads": threads,
+            "threads": nt,
+            "pp_tok_s": round(pp_tok_s, 1),
+            "tg_tok_s": round(tg_tok_s, 1),
+            "ms_per_tok": round(tg_ms, 2),
+            "engine_type": etype,
         })
-        print(f"    B={B} → {ms_per_tok:.1f} ms/tok, {tok_per_s:.1f} tok/s")
+        print(f"    {nt:3d}t → pp={pp_tok_s:.1f}  tg={tg_tok_s:.1f} tok/s  ({tg_ms:.1f} ms/tok)")
 
     return results
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Phase 7 — Concurrency tuning against server_moe.py
+# Phase 7 — Concurrency tuning (no server needed)
 # ═══════════════════════════════════════════════════════════════════════
 
 def bench_concurrency(model_path, quick=False):
-    """Benchmark concurrency by running server_moe.py and firing requests.
+    """Benchmark concurrent throughput using direct engine forward() calls.
 
-    Starts a fresh server for each concurrency level ∈ [1,2,4,8],
-    sends 5 requests with max_tokens=20, measures p50/p95 latency
-    and throughput.  Identifies the throughput-plateau and latency-knee
-    and returns an optimal-concurrency dict, or *None* on failure.
-
-    Returns dict keys: optimal_concurrency, latency_p50_ms, max_throughput.
+    No HTTP server required. Sweeps concurrency=1,2,4,8 (or 1,4 quick).
+    Measures aggregate tok/s by spawning N concurrent forward() loops
+    via threading (GIL-released OMP matmuls run in parallel).
+    Returns dict with optimal_concurrency, max_throughput, latency.
     """
-    import urllib.request
-    import urllib.error
-    import concurrent.futures
-    import socket
-
-    # Find server script (moved to benchmarks/ in workspace reorganization)
-    server_script = None
-    for candidate in [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "benchmarks", "server_moe.py"),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "server_moe.py"),
-        "server_moe.py",
-    ]:
-        if os.path.exists(candidate):
-            server_script = candidate
-            break
-    if server_script is None:
-        print(f"  ⚠ server_moe.py not found — cannot test concurrency")
+    try:
+        engine, etype = _load_engine(model_path, int(os.environ.get("OMP_NUM_THREADS", "8")))
+    except Exception as exc:
+        print(f"  ⚠ Engine load failed for concurrency test: {exc}")
         return None
 
-    PORT = 8080
-    concurrency_levels = [1, 2, 4, 8]
-    num_requests = 5
-    max_tokens = 20
-    prompt = "What is the capital of France?"
-    request_timeout = 120
-    server_start_timeout = 120
+    V = int(engine.vocab_size)
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
 
-    # ── helpers ──────────────────────────────────────────────────────
+    levels = [1, 2, 4, 8, 16] if not quick else [1, 4, 8]
+    n_gen = 20  # tokens per request
+    n_reqs = 3  # requests per level
 
-    def _port_free(port):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                s.bind(("0.0.0.0", port))
-                return True
-            except OSError:
-                return False
-
-    def _free_port(port, timeout=15):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if _port_free(port):
-                return
-            time.sleep(0.5)
-        raise RuntimeError(f"Port {port} still in use after {timeout}s")
-
-    def _start_server():
-        if not _port_free(PORT):
-            raise RuntimeError(f"Port {PORT} already in use")
-        env = os.environ.copy()
-        proc = subprocess.Popen(
-            ["python3", "-u", server_script, model_path, str(PORT)],
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        ready_marker = f"Serving on 0.0.0.0:{PORT}"
-        deadline = time.monotonic() + server_start_timeout
-        while time.monotonic() < deadline:
-            line = proc.stdout.readline()
-            if line:
-                sys.stdout.write(f"    [server] {line}")
-                sys.stdout.flush()
-                if ready_marker in line:
-                    time.sleep(0.5)
-                    return proc
-            if proc.poll() is not None:
-                remaining = proc.stdout.read()
-                if remaining:
-                    sys.stdout.write(f"    [server] {remaining}")
-                    sys.stdout.flush()
-                raise RuntimeError(f"Server died (rc={proc.returncode})")
-        proc.kill()
-        proc.wait()
-        raise RuntimeError(f"Server not ready within {server_start_timeout}s")
-
-    def _kill_server(proc):
-        if proc is None or proc.poll() is not None:
-            return
-        proc.terminate()
+    def _request(engine_ref, tid):
+        """Run a short generation sequence, return tok/s."""
         try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-
-    def _send_request(prompt_text, mtokens):
-        url = f"http://localhost:{PORT}/v1/completions"
-        body = json.dumps({
-            "prompt": prompt_text,
-            "max_tokens": mtokens,
-        }).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        t0 = time.perf_counter_ns()
-        try:
-            with urllib.request.urlopen(req, timeout=request_timeout) as resp:
-                if resp.status != 200:
-                    return None
-                resp_body = json.loads(resp.read())
-                latency_ns = time.perf_counter_ns() - t0
-                usage = resp_body.get("usage", {})
-                tokens_gen = usage.get("completion_tokens", 0)
-                return (latency_ns, tokens_gen)
+            token = int(tid) % max(V, 1)
+            t0 = time.perf_counter()
+            for _ in range(n_gen):
+                logits = engine_ref.forward([token])
+                a = np.asarray(logits).ravel()
+                token = int(np.argmax(a)) % max(V, 1)
+            elapsed = time.perf_counter() - t0
+            return n_gen / elapsed if elapsed > 0 else 0
         except Exception:
-            return None
-
-    def _pct(data, p):
-        if not data:
-            return 0.0
-        s = sorted(data)
-        k = (p / 100.0) * (len(s) - 1)
-        f = int(k)
-        c = k - f
-        if f + 1 < len(s):
-            return s[f] + c * (s[f + 1] - s[f])
-        return s[f]
-
-    # quick mode: skip middle levels
-    if quick and len(concurrency_levels) > 2:
-        concurrency_levels = [concurrency_levels[0], concurrency_levels[-1]]
-
-    print(f"  Concurrency levels: {concurrency_levels}")
-    print(f"  Requests per level: {num_requests}")
-    print(f"  Max tokens/request: {max_tokens}")
+            return 0
 
     results_data = []
-    server_proc = None
+    for concurrency in levels:
+        t0 = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=concurrency) as pool:
+            tok_s_list = list(pool.map(lambda x: _request(engine, x), range(n_reqs * concurrency)))
+        total_elapsed = time.perf_counter() - t0
 
-    for idx, concurrency in enumerate(concurrency_levels):
-        # Kill previous instance
-        if server_proc is not None:
-            _kill_server(server_proc)
-            server_proc = None
-            try:
-                _free_port(PORT, timeout=15)
-            except RuntimeError as e:
-                print(f"    ⚠ {e}")
-                continue
-
-        print(f"\n  >>> Starting server for concurrency={concurrency} ...")
-        try:
-            server_proc = _start_server()
-        except RuntimeError as e:
-            print(f"    FAILED: {e}")
+        valid = [t for t in tok_s_list if t > 0]
+        if not valid:
             continue
-
-        print(f"  >>> Running benchmark ...")
-
-        # Fire concurrent requests
-        results = []
-        wall_start = time.perf_counter_ns()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
-            futures = [
-                pool.submit(_send_request, prompt, max_tokens)
-                for _ in range(num_requests)
-            ]
-            for future in concurrent.futures.as_completed(futures):
-                r = future.result()
-                if r is not None:
-                    results.append(r)
-        wall_ns = time.perf_counter_ns() - wall_start
-        wall_sec = wall_ns / 1e9
-
-        if results:
-            latencies_ms = [r[0] / 1_000_000 for r in results]
-            total_tokens = sum(r[1] for r in results)
-            p50 = _pct(latencies_ms, 50)
-            p95 = _pct(latencies_ms, 95)
-            throughput = total_tokens / wall_sec if wall_sec > 0 else 0.0
-            print(f"    Results: {len(results)}/{num_requests} OK, "
-                  f"p50={p50:.1f}ms p95={p95:.1f}ms "
-                  f"throughput={throughput:.1f} tok/s")
-        else:
-            p50 = p95 = throughput = 0.0
-            print(f"    Results: 0/{num_requests} OK — all failed")
+        avg_tok_s = sum(valid) / len(valid)
+        agg_tok_s = sum(valid)
+        latencies = [n_gen / t * 1000 for t in valid]  # ms per request
+        lat_sorted = sorted(latencies)
+        p50 = lat_sorted[len(lat_sorted)//2]
+        p95 = lat_sorted[int(len(lat_sorted)*0.95)]
 
         results_data.append({
             "concurrency": concurrency,
-            "p50_latency_ms": p50,
-            "p95_latency_ms": p95,
-            "throughput": throughput,
+            "throughput": round(agg_tok_s, 1),
+            "avg_per_request": round(avg_tok_s, 1),
+            "p50_latency_ms": round(p50, 1),
+            "p95_latency_ms": round(p95, 1),
+            "total_time_s": round(total_elapsed, 2),
         })
-
-    # Cleanup
-    if server_proc is not None:
-        _kill_server(server_proc)
+        print(f"    concurrency={concurrency:3d} → {agg_tok_s:.1f} agg tok/s  p50={p50:.0f}ms  p95={p95:.0f}ms")
 
     if not results_data:
-        print("  No concurrency results obtained — tuning failed")
         return None
 
-    # ── Results table ────────────────────────────────────────────────
-    print(f"\n  {'Concurrency':>12} | {'p50 (ms)':>10} | {'p95 (ms)':>10} | {'tok/s':>10}")
-    print("  " + "-" * 48)
-    for rd in results_data:
-        print(f"  {rd['concurrency']:>12} | "
-              f"{rd['p50_latency_ms']:>10.1f} | "
-              f"{rd['p95_latency_ms']:>10.1f} | "
-              f"{rd['throughput']:>10.1f}")
-
-    # ── Find throughput plateau ──────────────────────────────────────
-    # First level where next step gives <10% improvement
-    plateau_concurrency = concurrency_levels[0]
-    best_throughput = 0.0
-    best_concurrency = concurrency_levels[0]
-    for i, rd in enumerate(results_data):
-        if rd["throughput"] > best_throughput:
-            best_throughput = rd["throughput"]
-            best_concurrency = rd["concurrency"]
-    # Find the plateau
+    # Find throughput plateau: first level where next step gives <10% improvement
+    plateau = results_data[-1]["concurrency"]
     for i in range(1, len(results_data)):
-        prev_tp = results_data[i - 1]["throughput"]
+        prev_tp = results_data[i-1]["throughput"]
         curr_tp = results_data[i]["throughput"]
         if prev_tp > 0 and curr_tp / prev_tp < 1.10:
-            plateau_concurrency = results_data[i - 1]["concurrency"]
+            plateau = results_data[i-1]["concurrency"]
             break
-    else:
-        plateau_concurrency = results_data[-1]["concurrency"]
 
-    print(f"\n  Throughput plateau at concurrency {plateau_concurrency} "
-          f"({best_throughput:.1f} tok/s)")
-
-    # ── Find latency knee ────────────────────────────────────────────
+    # Find latency knee: first level where p95 > 2x base p95
     base_p95 = results_data[0]["p95_latency_ms"]
     latency_knee = None
     for rd in results_data[1:]:
         if base_p95 > 0 and rd["p95_latency_ms"] > 2.0 * base_p95:
             latency_knee = rd["concurrency"]
-            print(f"  Latency knee at concurrency {latency_knee} "
-                  f"(p95 {rd['p95_latency_ms']:.0f}ms > 2× base {base_p95:.0f}ms)")
             break
 
-    # Optimal = min(plateau, knee) so we avoid the knee point
-    if latency_knee:
-        optimal = min(plateau_concurrency, latency_knee)
-    else:
-        optimal = plateau_concurrency
-    print(f"  Optimal concurrency: {optimal}")
+    optimal = min(plateau, latency_knee) if latency_knee else plateau
+    best_throughput = max(rd["throughput"] for rd in results_data)
+
+    print(f"\n  → Throughput plateau at concurrency={plateau}"
+          f"{'  (latency knee at {latency_knee})' if latency_knee else ''}")
+    print(f"  → Optimal concurrency: {optimal}  (peak {best_throughput:.0f} tok/s)")
 
     return {
         "optimal_concurrency": optimal,
-        "latency_p50_ms": results_data[0]["p50_latency_ms"] if results_data else 0,
-        "max_throughput": best_throughput,
+        "throughput_plateau": plateau,
+        "latency_knee": latency_knee,
+        "max_throughput": round(best_throughput, 1),
+        "p50_latency_ms": results_data[0]["p50_latency_ms"],
     }
 
 
@@ -633,39 +512,39 @@ def autotune(model, quick=False, mojollama=False):
 
     if mojollama:
         print(f"\n{'='*50}")
-        print("Phase 6: MojoLlama custom-engine batch-sweep benchmark")
+        print("Phase 6: MojoLlama native engine benchmark (all archs)")
         print(f"{'='*50}")
-        moe_thread_configs = [16, 24, 32] if not quick else [32]
+        moe_thread_configs = [int(physical*0.5), int(physical*0.75), physical] if not quick else [physical]
+        moe_thread_configs = sorted(set(t for t in moe_thread_configs if t >= 1))
         all_moe_results = []
-        for mt in moe_thread_configs:
-            print(f"\n  --- Threads={mt} ---")
-            r = bench_mojollama(model, mt, quick=quick)
-            all_moe_results.extend(r)
-            if not r:
-                print(f"  Skipping thread count {mt} (engine not available)")
+        print(f"  Thread sweep: {moe_thread_configs}")
+        r = bench_mojollama(model, moe_thread_configs, quick=quick)
+        all_moe_results.extend(r)
 
         if all_moe_results:
-            best_moe = max(all_moe_results, key=lambda x: x["tok_per_s"])
-            optimal_moe_threads = best_moe["threads"]
-            best_moe_batch = best_moe["batch_size"]
-            best_moe_tok_s = best_moe["tok_per_s"]
-            print(f"\n  Best MojoLlama engine: {optimal_moe_threads} threads, "
-                  f"B={best_moe_batch} ({best_moe_tok_s:.1f} tok/s)")
+            best_moe_tg = max(all_moe_results, key=lambda x: x["tg_tok_s"])
+            best_moe_combined = max(all_moe_results, key=lambda x: x["tg_tok_s"] + x.get("pp_tok_s", 0))
+            optimal_moe_threads = best_moe_tg["threads"]
+            best_moe_tok_s = best_moe_tg["tg_tok_s"]
+            print(f"\n  Best MojoLlama engine (tg): {best_moe_tg['threads']}t → {best_moe_tg['tg_tok_s']:.1f} tok/s"
+                  f"  pp={best_moe_tg.get('pp_tok_s', 0):.1f} tok/s")
+            print(f"  Best combined: {best_moe_combined['threads']}t → "
+                  f"tg={best_moe_combined['tg_tok_s']:.1f} pp={best_moe_combined.get('pp_tok_s', 0):.1f}")
         else:
             print(f"\n  MojoLlama engine benchmark skipped -- no results")
 
-        # --- Phase 7: Concurrency tuning ---
+        # --- Phase 7: Concurrency tuning (direct, no server) ---
         print(f"\n{'='*50}")
-        print("Phase 7: Concurrency tuning (server_moe.py)")
+        print("Phase 7: Concurrency tuning (direct forward calls)")
         print(f"{'='*50}")
         cc_result = bench_concurrency(model, quick=quick)
         if cc_result:
             optimal_moe_concurrency = cc_result["optimal_concurrency"]
-            latency_p50_ms = cc_result["latency_p50_ms"]
+            latency_p50_ms = cc_result["p50_latency_ms"]
             if cc_result["max_throughput"] > best_moe_tok_s:
                 best_moe_tok_s = cc_result["max_throughput"]
         else:
-            print(f"  Concurrency tuning failed -- using defaults")
+            print(f"  Concurrency tuning skipped -- using defaults")
 
     # --- Build final config ---
     optimal_np = best_par["n_parallel"] if best_par else 4

@@ -96,31 +96,183 @@ def cmd_serve(args):
 
 
 def cmd_bench(args):
-    """Benchmark inference performance."""
+    """Benchmark inference performance. Better than llama-bench — thread sweep,
+    multi-model, profile mode, A/B comparison, historical results."""
     if not args.model:
         print("ERROR: --model is required for benchmarking")
-        print("Usage: mojollama bench -m model.gguf [-n 128] [-t 32]")
+        print()
+        print("Examples:")
+        print("  mojollama bench -m model.gguf                          # single benchmark")
+        print("  mojollama bench -m model.gguf -t 1,2,4,8,16,32        # thread sweep")
+        print("  mojollama bench -m m1.gguf,m2.gguf                    # multi-model")
+        print("  mojollama bench -m model.gguf --compare                # A/B vs llama.cpp")
+        print("  mojollama bench -m model.gguf --profile                # component profile")
+        print("  mojollama bench -m model.gguf --json                   # JSON output")
+        print("  mojollama bench -m model.gguf --save results.json      # save to file")
+        print("  mojollama bench --load a.json --load b.json            # historical compare")
         sys.exit(1)
     os.environ["OMP_NUM_THREADS"] = str(args.threads)
-    # Add kernels/ directory to path for engine imports
+    # Add paths needed for engine imports
     kernels_dir = os.path.join(os.path.dirname(__file__), 'kernels')
     if kernels_dir not in sys.path:
         sys.path.insert(0, kernels_dir)
-    from mojollama.benchmarks.bench_tok import bench_mojollama_qwen3
-    ms, tps = bench_mojollama_qwen3(args.model)
-    print(f"\n{'='*50}")
-    print(f"MojoLlama Benchmark")
-    print(f"{'='*50}")
-    print(f"  Model:      {args.model}")
-    print(f"  Threads:    {args.threads}")
-    print(f"  Median:     {ms:.1f} ms/tok ({tps:.1f} tok/s)")
-    print(f"{'='*50}")
+    from mojollama.benchmarks.bench_tok import main as _bench_main
+    # Forward all relevant flags
+    sys.argv = ["bench"]
+    if args.model: sys.argv.extend(["--model", args.model])
+    sys.argv.extend(["--threads", str(args.threads)])
+    sys.argv.extend(["--prompt-len", str(args.prompt_len)])
+    sys.argv.extend(["--gen-len", str(args.gen_len)])
+    sys.argv.extend(["--warmup", str(args.warmup)])
+    sys.argv.extend(["--measured", str(args.measured)])
+    if args.compare: sys.argv.append("--compare")
+    if args.profile: sys.argv.append("--profile")
+    if args.output_json: sys.argv.extend(["--output", "json"])
+    if args.save: sys.argv.extend(["--save", args.save])
+    if args.concurrent: sys.argv.extend(["--concurrent", args.concurrent])
+    if args.concurrent_quick: sys.argv.append("--concurrent-quick")
+    if args.load_paths:
+        for path in args.load_paths:
+            sys.argv.extend(["--load", path])
+    _bench_main()
 
 
 def cmd_quantize(args):
-    """Quantize a GGUF model."""
-    from mojollama.studio import cmd_quantize as _quant
-    _quant(args)
+    """Quantize a GGUF model. Supports multi-quant cascade, target BPW, benchmark."""
+    import time
+
+    # --list-types
+    Q_TYPES = [
+        ("Q2_K",   2.5,  "2-bit K-quant (smallest, lowest quality)"),
+        ("Q3_K_S", 3.0,  "3-bit K-quant small"),
+        ("Q3_K_M", 3.4,  "3-bit K-quant medium (balanced)"),
+        ("Q3_K_L", 3.6,  "3-bit K-quant large"),
+        ("Q4_0",   4.0,  "4-bit (no K-quant, fast but large)"),
+        ("Q4_K_S", 4.4,  "4-bit K-quant small"),
+        ("Q4_K_M", 4.5,  "4-bit K-quant medium (recommended)"),
+        ("Q5_0",   5.0,  "5-bit (no K-quant)"),
+        ("Q5_K_S", 5.1,  "5-bit K-quant small"),
+        ("Q5_K_M", 5.5,  "5-bit K-quant medium"),
+        ("Q6_K",   6.0,  "6-bit K-quant (high quality)"),
+        ("Q8_0",   8.0,  "8-bit (lossless-ish)"),
+        ("F16",    16.0, "16-bit float (lossless)"),
+    ]
+    if args.list_types:
+        dash = "─" * 10; dash5 = "─" * 5; dash40 = "─" * 40
+        print(f"\n{'Type':>10s}  {'BPW':>5s}  Description")
+        print(f"{dash}  {dash5}  {dash40}")
+        for name, bpw, desc in Q_TYPES:
+            print(f"{name:>10s}  {bpw:>5.1f}  {desc}")
+        print(f"\n  Use: mojollama quantize model.gguf -t TYPE")
+        print(f"  Multi: mojollama quantize model.gguf --multi Q8_0,Q6_K,Q4_K_M")
+        print(f"  Target BPW: mojollama quantize model.gguf --target-bpw 3.5")
+        return
+
+    # --target-bpw: auto-select best type
+    if args.target_bpw:
+        best = None
+        for name, bpw, desc in Q_TYPES:
+            if bpw <= args.target_bpw + 0.1:
+                best = name
+            else:
+                break
+        if best:
+            best_bpw = next(b for n,b,d in Q_TYPES if n==best)
+            print(f"[Quantize] Target BPW={args.target_bpw}: selected {best} ({best_bpw:.1f} bpw)")
+            args.type = best
+        else:
+            print(f"[Quantize] No type fits target BPW={args.target_bpw}, using Q2_K")
+            args.type = "Q2_K"
+
+    # --multi cascade
+    if args.multi:
+        types = [t.strip() for t in args.multi.split(",")]
+        print(f"\n[Quantize] Multi-quant cascade: {' → '.join(types)}")
+        print(f"[Quantize] Base model: {args.model}")
+        print()
+        prev_model = args.model
+        results = []
+        for i, qt in enumerate(types):
+            outfile = args.model.replace(".gguf", f"-{qt}.gguf")
+            print(f"  [{i+1}/{len(types)}] Quantizing to {qt}...")
+            print(f"    Input:  {prev_model}")
+            print(f"    Output: {outfile}")
+            t0 = time.time()
+            _run_llama_quantize(prev_model, outfile, qt, args)
+            elapsed = time.time() - t0
+            size_mb = os.path.getsize(outfile) / (1024*1024)
+            print(f"    Done: {elapsed:.0f}s  Size: {size_mb:.0f} MB")
+            results.append((qt, outfile, elapsed, size_mb))
+
+            # Benchmark each output if --bench
+            if args.bench and os.path.exists(outfile):
+                print(f"    Benchmarking {qt}...")
+                try:
+                    from mojollama.benchmarks.bench_tok import bench_native
+                    pp_ms, pp_tok, tg_ms, tg_tok = bench_native(outfile)
+                    print(f"    tg128: {tg_tok:.1f} tok/s")
+                    results[-1] = (qt, outfile, elapsed, size_mb, tg_tok)
+                except Exception as e:
+                    print(f"    Benchmark FAILED: {e}")
+
+            prev_model = outfile
+            print()
+        print(f"[Quantize] Cascade complete. {' → '.join(types)}")
+        return
+
+    # Standard single quantization
+    outfile = args.output or args.model.replace(".gguf", f"-{args.type}.gguf")
+    print(f"\n[Quantize] {args.model} → {outfile} ({args.type})")
+    print()
+    t0 = time.time()
+    _run_llama_quantize(args.model, outfile, args.type, args)
+    elapsed = time.time() - t0
+    size_mb = os.path.getsize(outfile) / (1024*1024)
+    print(f"\nDone: {elapsed:.0f}s  Size: {size_mb:.0f} MB")
+
+    # Benchmark if --bench
+    if args.bench:
+        print(f"\n[Quantize] Benchmarking {args.type}...")
+        try:
+            from mojollama.benchmarks.bench_tok import bench_native
+            pp_ms, pp_tok, tg_ms, tg_tok = bench_native(outfile)
+            print(f"  pp512: {pp_tok:.1f} tok/s  tg128: {tg_tok:.1f} tok/s")
+        except Exception as e:
+            print(f"  Benchmark FAILED: {e}")
+    print()
+
+
+def _run_llama_quantize(inpath, outpath, qtype, args):
+    """Run llama-quantize with progress monitoring."""
+    quantize_bin = "/tmp/llama.cpp/build/bin/llama-quantize"
+    if not os.path.exists(quantize_bin):
+        print(f"  ERROR: llama-quantize not found at {quantize_bin}")
+        print(f"  Build it: cd /tmp/llama.cpp && cmake -B build && cmake --build build -j32 --target llama-quantize")
+        sys.exit(1)
+    cmd = [quantize_bin, "--allow-requantize" if args.allow_requantize else None,
+           "--pure" if args.pure else None,
+           "--leave-output-tensor" if args.leave_output else None,
+           "--dry-run" if args.dry_run else None, inpath, outpath, qtype]
+    if args.threads and args.threads > 0:
+        cmd.append(str(args.threads))
+    if args.imatrix:
+        cmd.extend(["--imatrix", args.imatrix])
+    cmd = [c for c in cmd if c is not None]
+    # Run with progress display
+    import subprocess
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    for line in proc.stdout:
+        line = line.rstrip()
+        if line:
+            # Show progress lines (not debug spam)
+            if any(x in line.lower() for x in ['size', 'quantizing', 'done', 'error', 'warning', 'processing', '%']):
+                print(f"    {line}", flush=True)
+            elif line.startswith('['):
+                print(f"    {line}", flush=True)
+    proc.wait()
+    if proc.returncode != 0:
+        print(f"  ERROR: Quantization failed (exit code {proc.returncode})")
+        sys.exit(proc.returncode)
 
 
 def cmd_imatrix(args):
@@ -142,9 +294,22 @@ def cmd_info(args):
 
 
 def cmd_autotune(args):
-    """Auto-tune server settings."""
-    from mojollama.studio import cmd_autotune as _tune
-    _tune(args)
+    """Auto-tune server settings for this hardware."""
+    # Default to MojoLlama native tuning if no llama-bench available
+    import shutil
+    lb = shutil.which("llama-bench") or "/tmp/llama.cpp/build/bin/llama-bench"
+    use_mojollama = args.mojollama or not os.path.exists(lb)
+    if not args.model:
+        print("ERROR: --model is required for autotune")
+        print("Usage: mojollama autotune -m model.gguf [--quick] [--llamacpp-only]")
+        sys.exit(1)
+
+    from mojollama.autotune import autotune
+    config = autotune(args.model, quick=args.quick, mojollama=use_mojollama)
+    if config:
+        from mojollama.autotune import save_config, print_config
+        save_config(config)
+        print_config(config)
 
 
 def cmd_hub(args):
@@ -236,27 +401,45 @@ Examples:
 
     # ── bench ─────────────────────────────────────────────────────
     p_bench = sub.add_parser("bench", aliases=["benchmark"],
-                             help="Benchmark inference performance",
-                             description="Benchmark model inference speed (tok/s, ms/tok)")
-    p_bench.add_argument("-m", "--model", required=True,
-                         help="Model path (GGUF)")
-    p_bench.add_argument("-n", "--n-predict", type=int, default=128,
+                             help="Benchmark inference performance (better than llama-bench)",
+                             description="Comprehensive benchmark: thread sweep, multi-model, "
+                                         "A/B comparison, profile mode, historical results.")
+    p_bench.add_argument("-m", "--model", type=str,
+                         help="Model path(s) — comma-separated for multi-model comparison")
+    p_bench.add_argument("-t", "--threads", type=str, default="32",
+                         help="Thread count(s) — comma-separated for sweep (default: 32)")
+    p_bench.add_argument("--prompt-len", type=int, default=512,
+                         help="Prompt length in tokens (default: 512)")
+    p_bench.add_argument("--gen-len", type=int, default=128,
                          help="Tokens to generate (default: 128)")
-    p_bench.add_argument("-t", "--threads", type=int, default=32,
-                         help="CPU threads (default: 32)")
-    p_bench.add_argument("--warmup", type=int, default=10,
-                         help="Warmup tokens (default: 10)")
-    p_bench.add_argument("-p", "--prompt", default="The meaning of life is",
-                         help="Test prompt")
+    p_bench.add_argument("--warmup", type=int, default=5,
+                         help="Warmup tokens (default: 5)")
+    p_bench.add_argument("--measured", type=int, default=30,
+                         help="Measured tokens (default: 30)")
+    p_bench.add_argument("--compare", action="store_true",
+                         help="A/B comparison with llama.cpp")
+    p_bench.add_argument("--profile", action="store_true",
+                         help="Component-level profiling")
+    p_bench.add_argument("--concurrent", type=str,
+                         help="Concurrency benchmark: comma-sep levels, e.g. '1,2,4,8,16'")
+    p_bench.add_argument("--concurrent-quick", action="store_true",
+                         help="Quick concurrency test (levels 1,4,8)")
+    p_bench.add_argument("--json", dest="output_json", action="store_true",
+                         help="Output results as JSON")
+    p_bench.add_argument("--save", type=str,
+                         help="Save results to JSON file")
+    p_bench.add_argument("--load", type=str, action="append", dest="load_paths",
+                         help="Load previous results for comparison (can be used multiple times)")
     p_bench.set_defaults(func=cmd_bench)
 
     # ── quantize ──────────────────────────────────────────────────
     p_quant = sub.add_parser("quantize", aliases=["q"],
                              help="Quantize a GGUF model",
-                             description="Quantize a GGUF model to a different quantization type")
-    p_quant.add_argument("model", help="Path to input GGUF model")
+                             description="Quantize a GGUF model to a different quantization type. "
+                                         "Supports multi-quant cascade with --multi and target-BPW selection.")
+    p_quant.add_argument("model", nargs="?", help="Path to input GGUF model (optional with --list-types)")
     p_quant.add_argument("-t", "--type", default="Q4_K_M", dest="type",
-                         help="Quantization type (default: Q4_K_M)")
+                         help="Quantization type (default: Q4_K_M). Use --list-types to see options")
     p_quant.add_argument("-o", "--output", help="Output path (default: auto)")
     p_quant.add_argument("--imatrix", help="Importance matrix file for guided quantization")
     p_quant.add_argument("--threads", type=int, default=0, help="Thread count (0=auto)")
@@ -268,6 +451,15 @@ Examples:
                          help="Disable K-quant mixtures, pure type")
     p_quant.add_argument("--leave-output", action="store_true",
                          help="Leave output.weight unquantized")
+    p_quant.add_argument("--multi", type=str,
+                         help="Multi-quant cascade: comma-separated types, e.g. 'Q8_0,Q6_K,Q4_K_M,Q3_K_M' "
+                              "(runs sequentially, each from previous)")
+    p_quant.add_argument("--target-bpw", type=float,
+                         help="Target bits-per-weight (auto-selects best type)")
+    p_quant.add_argument("--bench", action="store_true",
+                         help="Benchmark each output after quantization")
+    p_quant.add_argument("--list-types", action="store_true",
+                         help="List available quantization types and exit")
     p_quant.set_defaults(func=cmd_quantize)
 
     # ── imatrix ──────────────────────────────────────────────────
@@ -305,11 +497,13 @@ Examples:
     # ── autotune ──────────────────────────────────────────────────
     p_tune = sub.add_parser("autotune",
                             help="Auto-tune server settings",
-                            description="Auto-tune server settings for this hardware")
-    p_tune.add_argument("-m", "--model", help="Model to benchmark with")
+                            description="Auto-tune MojoLlama native engine or llama.cpp settings for this hardware")
+    p_tune.add_argument("-m", "--model", required=True, help="Model path (GGUF) to benchmark")
     p_tune.add_argument("-q", "--quick", action="store_true",
                         help="Faster sweep (fewer combinations)")
-    p_tune.add_argument("-d", "--deep", action="store_true",
+    p_tune.add_argument("--mojollama", action="store_true",
+                        help="Force MojoLlama native engine tuning (auto-detected by default)")
+    p_tune.add_argument("--deep", action="store_true",
                         help="Deep hardware detection (CPU features, GPU, etc.)")
     p_tune.set_defaults(func=cmd_autotune)
 

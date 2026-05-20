@@ -105,10 +105,9 @@ class ForwardGemma4(ArchitectureForwardPass):
     def forward(self, token_id):
         e = self.engine; self._build_c()
         L=e.n_layers; N=e.n_embd; V=e.vocab_size; NH=e.n_head; NKH=e.n_kv_head
-        S = max(N, NH*512, e.n_ff//2, self.per_layer_dim)
-        if S < 8192: S = 8192
+        S = int(max(int(e.n_embd), int(e.n_head)*512, int(e.n_ff)//2, int(self.per_layer_dim), 8192))
         ws = np.zeros(14*S, dtype=np.float32)
-        tid = np.array([int(token_id.flat[0])], dtype=np.int32)
+        tid = np.array([[int(token_id.flat[0])]], dtype=np.int32)
         ci = ctypes.c_int; cf = ctypes.POINTER(ctypes.c_float); cu = ctypes.POINTER(ctypes.c_uint8)
         cpi = ctypes.POINTER(ci); cpf = ctypes.POINTER(cf); cpu = ctypes.POINTER(cu)
         ce = e._cengine
@@ -152,13 +151,15 @@ class ForwardGemma4(ArchitectureForwardPass):
             fn.restype = None
             fn._at_set = True
         # RoPE table
-        mpos = max(8192, self.sliding_window*2)
+        mpos = int(max(8192, int(self.sliding_window)*2))
         cos_t = np.zeros(mpos*512, dtype=np.float32)
         sin_t = np.zeros(mpos*512, dtype=np.float32)
+        rope_base = float(self.rope_freq_base)
         for p in range(mpos):
-            for j in range(min(256, e.head_dim)):
-                t = p / (self.rope_freq_base**(2.0*j/min(512,e.head_dim)))
-                cos_t[p*512+j] = np.cos(t); sin_t[p*512+j] = np.sin(t)
+            for j in range(min(256, int(e.head_dim))):
+                hp = j
+                t = float(p) / (rope_base ** (2.0*hp/512.0))
+                cos_t[p*512+hp] = np.cos(t); sin_t[p*512+hp] = np.sin(t)
 
         fn(tid.ctypes.data_as(ctypes.POINTER(ci)), ci(1),
            ci(L), ci(N), ci(NH), ci(NKH), ci(V), ci(self.per_layer_dim),

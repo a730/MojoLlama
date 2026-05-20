@@ -642,7 +642,7 @@ nav.top .nav-actions { margin-left: auto; display: flex; align-items: center; ga
   <tr><th>Architecture</th><th>Status</th><th>Notable features</th></tr>
   <tr><td>Llama 2/3/4, Mistral</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>Dense, GQA, SwiGLU, RoPE</td></tr>
   <tr><td>Qwen2, Qwen3</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>TNT embedding, partial rotary</td></tr>
-  <tr><td>GPT-OSS</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>MoE 32 experts, bias attention — 2.26x vs llama.cpp</td></tr>
+  <tr><td>GPT-OSS</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>MoE 32 experts, bias attention — on par with llama.cpp</td></tr>
   <tr><td>Qwen3 MoE</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>128 experts top-8, shared expert, SwiGLU</td></tr>
   <tr><td>Qwen3.6-35B</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>Hybrid SSM+Attention, MXFP4, 256 experts</td></tr>
   <tr><td>Gemma 4</td><td><span style="color:var(--success);font-weight:600;">Full</span></td><td>Per-layer proj, GeGLU, sliding window, softcapping</td></tr>
@@ -671,7 +671,7 @@ nav.top .nav-actions { margin-left: auto; display: flex; align-items: center; ga
 <ul>
   <li><strong>Small models (&lt;10B):</strong> Use 1 thread — OpenMP overhead kills performance on small matrix multiplications (e.g., ZAYA1-8B optimal at 1 thread)</li>
   <li><strong>Large models (&gt;10B):</strong> Use all physical cores (e.g., 32 threads on Threadripper 3970X)</li>
-  <li><strong>MoE models:</strong> MojoLlama excels here — GPT-OSS reaches 2.26x llama.cpp throughput</li>
+  <li><strong>MoE models:</strong> MojoLlama excels here — GPT-OSS reaches 0.94x llama.cpp throughput</li>
   <li><strong>Check architecture:</strong> Use <code>mojollama info -m model.gguf</code> to verify a model is recognized</li>
 </ul>
 

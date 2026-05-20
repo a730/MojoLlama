@@ -12,7 +12,7 @@ mojollama bench -m model.gguf -n 128   # Benchmark
 
 - **Multi-architecture** — Llama, Mistral, Qwen2/3, GPT-OSS, Gemma 4, ZAYA1, DeepSeek V2/V3, DBRX, Mixtral, Falcon, Phi, and 50+ more
 - **GGUF native** — all quant types: Q4_0, Q4_K, Q5_K, Q6_K, Q8_0, MXFP4
-- **MoE optimized** — C-accelerated fused MoE kernel (up to 2.3x vs llama.cpp)
+- **MoE optimized** — C-accelerated fused MoE kernel
 - **Hybrid SSM+Attention** — Qwen3.6-35B (Mamba-2 + Attention hybrid)
 - **Per-layer projections** — Gemma 4 support with GeGLU, sliding window, logit softcapping
 - **Mixture of Depth** — ZAYA1-8B with interleaved ATTN/MoE+MoD, CCA, SSM conv1d
@@ -107,11 +107,11 @@ docker run --rm -e HF_REPO=bartowski/TinyLlama-1.1B-GGUF \
 | Model | Engine | tok/s | vs llama.cpp |
 |-------|--------|-------|-------------|
 | TinyLlama 1.1B Q4_0 | Dense | 79.2 | 0.89x |
-| GPT-OSS-20B Q4_K_M | MoE (Python) | **62.6** | **2.26x** 🏆 |
+| GPT-OSS-20B Q4_K_M | MoE (Python) | **25.5** | **0.94x** |
 | Qwen3.6-35B MXFP4 | MoE (Python) | 25.5 | 1.57x 🏆 |
 | Qwen3.6-35B MXFP4 | Concurrent (10×3) | **47 agg** | — |
-| Gemma 4 4.6B Q4_K_M | Gemma4 | 13.2 | — |
-| ZAYA1-8B Q4_K_M | ZAYA (1 thread) | 8.3 | — |
+| Gemma 4 4.6B Q4_K_M | Gemma4 | 18.8 | — |
+| ZAYA1-8B Q4_K_M | ZAYA (1 thread) | 0.9 | — |
 
 Benchmarked on AMD Threadripper 3970X (32C/64T, 251GB DDR4), 32 threads unless noted.
 

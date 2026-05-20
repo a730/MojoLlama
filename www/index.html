@@ -1044,14 +1044,14 @@ footer .copyright {
         <div class="term-line" data-delay="2100"><span class="comment">  decode   128 tokens  ██████████</span></div>
         <div class="term-line" data-delay="2400"><br></div>
         <div class="term-line" data-delay="2600"><span style="color:#ffffff;">📊 Results</span></div>
-        <div class="term-line" data-delay="2800"><span class="result">  throughput:  62.6 tok/s</span></div>
-        <div class="term-line" data-delay="3000"><span class="result">  vs llama.cpp: 2.26× faster</span></div>
+        <div class="term-line" data-delay="2800"><span class="result">  throughput:  25.5 tok/s</span></div>
+        <div class="term-line" data-delay="3000"><span class="result">  vs llama.cpp: 0.94× of llama.cpp</span></div>
       </div>
     </div>
   </div>
   <div class="metrics-strip reveal">
-    <div class="metric metric-accent"><div class="metric-value" data-count="62.6">0</div><div class="metric-label">Peak tok/s</div></div>
-    <div class="metric metric-accent"><div class="metric-value" data-count="2.3" data-suffix="×">0</div><div class="metric-label">vs llama.cpp</div></div>
+    <div class="metric metric-accent"><div class="metric-value" data-count="25.5">0</div><div class="metric-label">Peak tok/s</div></div>
+    <div class="metric metric-accent"><div class="metric-value" data-count="0.94">0</div><div class="metric-label">vs llama.cpp</div></div>
     <div class="metric"><div class="metric-value" data-count="50" data-suffix="+">0</div><div class="metric-label">Architectures</div></div>
     <div class="metric"><div class="metric-value" data-count="47">0</div><div class="metric-label">Concurrent tok/s</div></div>
     <div class="metric"><div class="metric-value" data-text="Apache 2.0">0</div><div class="metric-label">License</div></div>
@@ -1070,18 +1070,18 @@ footer .copyright {
       <span class="release-tag release-tag-new">Gemma 4</span>
       <h3>Gemma 4 E2B engine</h3>
       <p>Per-layer projections, GeGLU activation, sliding window attention (SWA=512), logit softcapping at 30.0, shared KV layers, and post-attention/FFW norms.</p>
-      <div class="release-stat">13.2<span class="release-stat-label"> tok/s</span></div>
+      <div class="release-stat">18.8<span class="release-stat-label"> tok/s</span></div>
     </div>
     <div class="release-card reveal">
       <span class="release-tag release-tag-new">ZAYA1</span>
       <h3>ZAYA1-8B support</h3>
       <p>80 interleaved layers (ATTN+CCA+SSM / MoE+MoD), 16 experts top-1 routing, SwiGLU activation, partial RoPE, and residual scaling.</p>
-      <div class="release-stat">8.3<span class="release-stat-label"> tok/s @ 1t</span></div>
+      <div class="release-stat">0.9<span class="release-stat-label"> tok/s @ 1t</span></div>
     </div>
     <div class="release-card reveal">
-      <span class="release-tag release-tag-perf">2.26×</span>
-      <h3>GPT-OSS throughput record</h3>
-      <p>C-accelerated fused MoE forward kernel with expert dispatch pushes GPT-OSS-20B to 62.6 tok/s — 2.26× faster than llama.cpp on identical hardware.</p>
+      <span class="release-tag release-tag-perf">0.94×</span>
+      <h3>GPT-OSS on par with llama.cpp</h3>
+      <p>After MXFP4 expert matmul fix and Q5_0 attention kernel, GPT-OSS-20B reaches 25.5 tok/s — on par with llama.cpp's 27.2 tok/s on the same hardware. The benchmark table at line 1210 shows the corrected numbers.</p>
     </div>
     <div class="release-card reveal">
       <span class="release-tag release-tag-perf">1.57×</span>
@@ -1122,8 +1122,8 @@ footer .copyright {
     <div class="feature-card reveal">
       <div class="icon">⚡</div>
       <h3>MoE-optimized engine</h3>
-      <p>C-accelerated fused MoE forward kernel with expert dispatch. Up to 2.3× faster than llama.cpp on GPT-OSS and Qwen3 MoE models.</p>
-      <span class="tag">2.3× vs llama.cpp</span>
+      <p>C-accelerated fused MoE forward kernel with expert dispatch for GPT-OSS, Qwen3, and Qwen3.6 MoE models.</p>
+      <span class="tag">MoE optimized</span>
     </div>
     <div class="feature-card reveal">
       <div class="icon">🧬</div>
@@ -1187,7 +1187,7 @@ footer .copyright {
     <tbody>
       <tr><td><strong>Llama 2/3/4</strong>, Mistral</td><td><span class="badge badge-green">Full</span></td><td>Dense, GQA, SwiGLU, RoPE</td></tr>
       <tr><td><strong>Qwen2</strong>, Qwen3</td><td><span class="badge badge-green">Full</span></td><td>TNT embedding, partial rotary</td></tr>
-      <tr><td><strong>GPT-OSS</strong></td><td><span class="badge badge-green">Full</span></td><td>MoE 32 experts, packed experts, bias attention — <strong>2.26× vs llama.cpp</strong></td></tr>
+      <tr><td><strong>GPT-OSS</strong></td><td><span class="badge badge-green">Full</span></td><td>MoE 32 experts, packed experts, bias attention — on par with llama.cpp</td></tr>
       <tr><td><strong>Qwen3 MoE</strong></td><td><span class="badge badge-green">Full</span></td><td>128 experts top-8, shared expert, SwiGLU</td></tr>
       <tr><td><strong>Qwen3.6-35B</strong></td><td><span class="badge badge-green">Full</span></td><td>Hybrid SSM+Attention, MXFP4, MoE 256 experts</td></tr>
       <tr><td><strong>Gemma 4</strong></td><td><span class="badge badge-green">Full</span></td><td>Per-layer projections, GeGLU, sliding window, logit softcapping</td></tr>
@@ -1213,11 +1213,11 @@ footer .copyright {
     <thead><tr><th>Model</th><th>Engine</th><th>tok/s</th><th>vs llama.cpp</th></tr></thead>
     <tbody>
       <tr><td><strong>TinyLlama 1.1B</strong> Q4_0</td><td>Dense engine</td><td>79.2</td><td>0.89×</td></tr>
-      <tr><td><strong>GPT-OSS-20B</strong> Q4_K_M</td><td>MoE (Python)</td><td><strong>62.6</strong></td><td><span class="badge badge-gold">2.26× 🏆</span></td></tr>
+      <tr><td><strong>GPT-OSS-20B</strong> Q4_K_M</td><td>MoE (Python)</td><td><strong>25.5</strong></td><td>0.94×</td></tr>
       <tr><td><strong>Qwen3.6-35B</strong> MXFP4</td><td>MoE (Python)</td><td>25.5</td><td><span class="badge badge-green">1.57× 🏆</span></td></tr>
       <tr><td><strong>Qwen3.6-35B</strong> MXFP4</td><td>Concurrent (10×3t)</td><td><strong>47</strong> aggregate</td><td>—</td></tr>
-      <tr><td><strong>Gemma 4 4.6B</strong> Q4_K_M</td><td>Gemma4 engine</td><td>13.2</td><td>—</td></tr>
-      <tr><td><strong>ZAYA1-8B</strong> Q4_K_M</td><td>ZAYA engine (1t)</td><td>8.3</td><td>—</td></tr>
+      <tr><td><strong>Gemma 4 4.6B</strong> Q4_K_M</td><td>Gemma4 engine</td><td>18.8</td><td>—</td></tr>
+      <tr><td><strong>ZAYA1-8B</strong> Q4_K_M</td><td>ZAYA engine (1t)</td><td>0.9</td><td>—</td></tr>
     </tbody>
   </table>
   </div>
@@ -1279,7 +1279,7 @@ footer .copyright {
       <section class="period-single active" period="period0">
         <div class="year" style="color:#198038;">Phase 0</div>
         <div class="title">Foundation — shipped</div>
-        <p>C engine, Python MoE engine (2.26× vs llama.cpp), Studio (14 panels, 25+ CLI commands), Docker deployment. 60+ arch detection, 2 custom forward passes.</p>
+        <p>C engine, Python MoE engine (0.94× vs llama.cpp), Studio (14 panels, 25+ CLI commands), Docker deployment. 60+ arch detection, 2 custom forward passes.</p>
       </section>
       <section class="period-single" period="period1">
         <div class="year" style="color:#6C3CE1;">Phase 1</div>
@@ -1322,7 +1322,7 @@ footer .copyright {
         <div class="subtitle">6 major areas shipped</div>
         <ul class="items">
           <li style="--dot:#198038;">C batched engine — AVX2+OMP quant matmul</li>
-          <li style="--dot:#198038;">Python MoE engine — 2.26× vs llama.cpp</li>
+          <li style="--dot:#198038;">Python MoE engine — 0.94× vs llama.cpp</li>
           <li style="--dot:#198038;">2 custom forward passes (Gemma 4, ZAYA1)</li>
           <li style="--dot:#198038;">Studio web UI — 14 panels</li>
           <li style="--dot:#198038;">Studio CLI — 25+ commands</li>

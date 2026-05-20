@@ -48,14 +48,14 @@ float q5_k_row_dot_avx2(const uint8_t *restrict W, const float *restrict x, int 
 float q6_k_row_dot_avx2(const uint8_t *restrict W, const float *restrict x, int n_cols, int row);
 float q4_k_row_dot_q8(const uint8_t *restrict W, const uint8_t *restrict x_q8, int n_cols, int row);
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * Q4_K scale/min unpacking  (from ggml get_scale_min_k4)
  *
  * The 12-byte scales[] array packs 8 (scale, min) pairs using 6 bits each.
  * Pairs 0..3: scale = scales[0..3] & 63,  min = scales[4..7] & 63
  * Pairs 4..7: scale and min reconstructed from bits of scales[8..11]
  *             plus upper 2 bits of scales[0..3] and scales[4..7].
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
 static inline void get_scale_min_k4(int j, const uint8_t *q,
                                       uint8_t *d, uint8_t *m) {
@@ -68,9 +68,9 @@ static inline void get_scale_min_k4(int j, const uint8_t *q,
     }
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * Q4_0 / Q4_1 AVX2 decode + dot (from q4_kernel_omp.c)
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
 static inline void decode_q4_0(const uint8_t* bp, __m256 v[4]) {
     float scale = f16_to_f32((uint16_t)bp[0] | ((uint16_t)bp[1] << 8));
@@ -126,9 +126,9 @@ static inline float block_dot_fma(const __m256 v[4], const float* x_base) {
     return _mm256_cvtss_f32(h);
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * Q4_0 matmul
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
 void q4_0_matmul_omp(const uint8_t *restrict W, const float *restrict x,
                       float *restrict out, int n_rows, int n_cols) {
@@ -151,9 +151,9 @@ void q4_0_matmul_omp(const uint8_t *restrict W, const float *restrict x,
     }
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * Q4_1 matmul
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
 void q4_1_matmul_omp(const uint8_t *restrict W, const float *restrict x,
                       float *restrict out, int n_rows, int n_cols) {
@@ -175,7 +175,7 @@ void q4_1_matmul_omp(const uint8_t *restrict W, const float *restrict x,
     }
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * Q4_K matmul  (144 bytes per 256 values)
  *
  * Block layout:
@@ -192,7 +192,7 @@ void q4_1_matmul_omp(const uint8_t *restrict W, const float *restrict x,
  *     pos j+0..j+31:  d1 * (qs[l] & 0xF) - m1
  *     pos j+32..j+63: d2 * (qs[l] >> 4)  - m2
  *     qs advances by 32 per group
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
 void q4_k_matmul_omp(const uint8_t *restrict W, const float *restrict x,
                       float *restrict out, int n_rows, int n_cols) {
@@ -206,7 +206,7 @@ void q4_k_matmul_omp(const uint8_t *restrict W, const float *restrict x,
     if (x_q8 != x_q8_buf) free(x_q8);
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * Q5_K matmul  (176 bytes per 256 values)
  *
  * Block layout:
@@ -221,9 +221,9 @@ void q4_k_matmul_omp(const uint8_t *restrict W, const float *restrict x,
  *     u1 starts at 1, u2 starts at 2; after each group u1<<=2, u2<<=2
  *     pos j+0..j+31:   d1 * ((qs[l] & 0xF) + (qh[l] & u1 ? 16 : 0)) - m1
  *     pos j+32..j+63:  d2 * ((qs[l] >> 4) + (qh[l] & u2 ? 16 : 0)) - m2
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * Q5_K matmul — AVX2 vectorized dequant + FMA
  *
  * Block layout (176 bytes per 256 values):
@@ -241,7 +241,7 @@ void q4_k_matmul_omp(const uint8_t *restrict W, const float *restrict x,
  *   hi-nibble group mask = u2 (2, 8, 32, 128)
  *
  * Uses identity: sum((d1*val - m1)*x) = d1*sum(val*x) - m1*sum(x)
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
 /* Q5_K row-dot with AVX2 dequant + FMA (extracted for batch_qkv_omp) */
 float q5_k_row_dot_avx2(const uint8_t *restrict W, const float *restrict x,
@@ -342,6 +342,11 @@ float q5_k_row_dot_avx2(const uint8_t *restrict W, const float *restrict x,
 }
 
 /* Q5_K matmul — AVX2 vectorized, uses q5_k_row_dot_avx2 per row */
+/* Q5_0 (type 6) */
+void q5_0_matmul_omp(const uint8_t *restrict W, const float *restrict x,
+                      float *restrict out, int n_rows, int n_cols);
+float q5_0_row_dot(const uint8_t *row, const float *x, int n_cols);
+
 void q5_k_matmul_omp(const uint8_t *restrict W, const float *restrict x,
                       float *restrict out, int n_rows, int n_cols) {
     int nb = n_cols / QK_K;
@@ -352,7 +357,7 @@ void q5_k_matmul_omp(const uint8_t *restrict W, const float *restrict x,
     }
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * Q8_0 matmul  (34 bytes per 32 values)
  *
  * Block layout:
@@ -360,7 +365,7 @@ void q5_k_matmul_omp(const uint8_t *restrict W, const float *restrict x,
  *   offset 2: qs   (int8_t[32])     — quantized values
  *
  * Dequantization: value = d * qs[i]
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
 void q8_0_matmul_omp(const uint8_t *restrict W, const float *restrict x,
                       float *restrict out, int n_rows, int n_cols) {
@@ -407,7 +412,74 @@ void q8_0_matmul_omp(const uint8_t *restrict W, const float *restrict x,
     }
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* V8: Q8_0 × Q8_0 batch matmul — uses VPMADDUBSW for integer dot product.
+ * Takes Q8_0 quantized input (pre-quantized from F32 upstream).
+ * Reads 34 bytes per block for both weight and input, computes int8×int8→int32
+ * via zero-extend to int16 → VPMADDWD → combined scale.
+ * For B>1, each batch item has its own input Q8_0 scale.
+ * ~2x faster than dequant+FMA path (q8_0_matmul_omp) because:
+ *   1. Input reads are 34 bytes/block instead of 128 bytes/block
+ *   2. Integer SIMD (VPMADDWD) is higher throughput than FP dequant+multiply
+ *   3. Combined scale applied once per block instead of per-element
+ */
+void q8_0_q8_0_matmul_omp(const uint8_t *restrict W, const uint8_t *restrict x_q8,
+                           float *restrict out, int n_rows, int n_cols, int B) {
+    int bpr = n_cols / QK8_0;  /* blocks of 32 per row */
+    #pragma omp parallel for schedule(static, 8)
+    for (int r = 0; r < n_rows; r++) {
+        float acc_buf[8];
+        float *acc = B <= 8 ? acc_buf : (float*)malloc(B * sizeof(float));
+        for (int b = 0; b < B; b++) acc[b] = 0.0f;
+        
+        const uint8_t *row = W + (size_t)r * bpr * Q8_0_BS;
+        for (int blk = 0; blk < bpr; blk++) {
+            if (blk + 1 < bpr) {
+                __builtin_prefetch(row + (blk + 1) * Q8_0_BS, 0, 1);
+            }
+            
+            const uint8_t *bp = row + blk * Q8_0_BS;
+            float w_d = f16_to_f32((uint16_t)bp[0] | ((uint16_t)bp[1] << 8));
+            
+            /* Load weight int8 values: 32 bytes starting at bp[2] */
+            __m256i w_i8 = _mm256_loadu_si256((const __m256i*)(bp + 2));
+            
+            /* Split into low/high 16 for sign-extension */
+            __m256i w_lo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(w_i8));
+            __m256i w_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(w_i8, 1));
+            
+            int off = blk * 32;
+            for (int b = 0; b < B; b++) {
+                const uint8_t *xbp = x_q8 + (size_t)b * bpr * Q8_0_BS + blk * Q8_0_BS;
+                float x_d = f16_to_f32((uint16_t)xbp[0] | ((uint16_t)xbp[1] << 8));
+                float combined_sc = w_d * x_d;
+                
+                /* Load input int8 values */
+                __m256i x_i8 = _mm256_loadu_si256((const __m256i*)(xbp + 2));
+                __m256i x_lo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(x_i8));
+                __m256i x_hi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(x_i8, 1));
+                
+                /* VPMADDWD: int16×int16→int32 with adjacent pair summation */
+                __m256i dot = _mm256_add_epi32(
+                    _mm256_madd_epi16(w_lo, x_lo),
+                    _mm256_madd_epi16(w_hi, x_hi));
+                
+                /* Horizontal sum of 8 int32 → single int32 */
+                __m128i sum_hi = _mm256_extracti128_si256(dot, 1);
+                __m128i sum_lo = _mm256_castsi256_si128(dot);
+                sum_lo = _mm_add_epi32(sum_lo, sum_hi);
+                sum_lo = _mm_hadd_epi32(sum_lo, sum_lo);
+                sum_lo = _mm_hadd_epi32(sum_lo, sum_lo);
+                int dot_val = _mm_cvtsi128_si32(sum_lo);
+                
+                acc[b] += combined_sc * (float)dot_val;
+            }
+        }
+        for (int b = 0; b < B; b++) out[(size_t)b * n_rows + r] = acc[b];
+        if (B > 8 && acc != acc_buf) free(acc);
+    }
+}
+
+/* =========================================================================
  * MXFP4 matmul  (17 bytes per 32 values)
  *
  * Block layout:
@@ -416,7 +488,7 @@ void q8_0_matmul_omp(const uint8_t *restrict W, const float *restrict x,
  *
  * Dequantization: value = nibble_sign_ext * 2^(e - 127)
  * Optimizations: int-bit-trick scale, FMA, vertical accum, prefetch
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
 /* MXFP4 block structure */
 typedef struct {
@@ -653,7 +725,7 @@ void q6_k_matmul_omp(const uint8_t *restrict W, const float *restrict x,
     q6_k_matmul_avx2_omp(W, x, out, n_rows, n_cols);
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * Q6_K dequantize to F32 (for verification and output requantization)
  *
  * Q6_K layout (210 bytes per 256 values):
@@ -674,7 +746,7 @@ void q6_k_matmul_omp(const uint8_t *restrict W, const float *restrict x,
  *             d * sc[is*2+2] * q2,
  *             d * sc[is*2+4] * q3,
  *             d * sc[is*2+6] * q4
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
 void q6_k_dequantize_row(const uint8_t *restrict W, float *restrict out, int n_values) {
     int nb = n_values / QK_K;
@@ -713,9 +785,9 @@ void q6_k_dequantize_row(const uint8_t *restrict W, float *restrict out, int n_v
     }
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * Q5_K dequantize to F32 (for verification)
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
 
 void q4_k_dequantize_row(const uint8_t *restrict W, float *restrict out, int n_values) {
@@ -778,9 +850,9 @@ void q5_k_dequantize_row(const uint8_t *restrict W, float *restrict out, int n_v
     }
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * Q8_0 dequantize to F32 (for verification)
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
 void q8_0_dequantize_row(const uint8_t *restrict W, float *restrict out, int n_values) {
     int nb = n_values / QK8_0;
@@ -794,9 +866,9 @@ void q8_0_dequantize_row(const uint8_t *restrict W, float *restrict out, int n_v
     }
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * F32 matrix-vector multiply (OMP parallel)
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
 void f32_matmul_omp(const float *restrict W, const float *restrict x,
                      float *restrict out, int n_rows, int n_cols) {
@@ -829,9 +901,9 @@ void f32_matmul_omp(const float *restrict W, const float *restrict x,
     }
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * Batched matmul: up to 7 projections in one OpenMP call (Q4_0/Q4_1 only)
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
 #define MAX_PROJ 7
 
@@ -866,9 +938,9 @@ void batch_matmul(const uint8_t* w[MAX_PROJ], const float* x, float* out[MAX_PRO
     }
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * RMS normalization (AVX2 vectorized)
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
 void rms_norm(const float* x, const float* weight, float* out, int n) {
     __m256 ss_vec = _mm256_setzero_ps();
@@ -891,9 +963,9 @@ void rms_norm(const float* x, const float* weight, float* out, int n) {
     for (; i < n; i++) out[i] = x[i] * inv_rms * weight[i];
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * SiLU activation
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
 void silu(float* x, int n) {
     int i;
@@ -910,9 +982,9 @@ void silu(float* x, int n) {
     }
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * Softmax
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
 void softmax(float* x, int n) {
     float max_val = x[0];
@@ -927,9 +999,9 @@ void softmax(float* x, int n) {
     for (int i = 0; i < n; i++) x[i] *= inv;
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * OMP SiLU (parallel)
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
 void silu_omp(float* x, int n) {
     #pragma omp parallel for schedule(static)
@@ -939,20 +1011,20 @@ void silu_omp(float* x, int n) {
     }
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * Thread control
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
 int get_max_threads(void) { return omp_get_max_threads(); }
 void set_num_threads(int n) { omp_set_num_threads(n); }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * Batched layer matmul — computes attention QKV + output in a single
  * OMP parallel region, eliminating 6 fork/join barriers per layer.
  *
  * Compared to 7 separate quant_matmul_omp calls, this saves ~0.1-0.3ms
  * per layer from reduced thread synchronization overhead.
- * ═════════════════════════════════════════════════════════════════════════ */
+ * ========================================================================= */
 
 /* Internal: compute a single matmul row for Q4_0 */
 static float q4_0_row_dot(const uint8_t *restrict W, const float *restrict x,
@@ -1022,6 +1094,9 @@ static void matmul_row_range(const uint8_t *restrict W, const float *restrict x,
                 break;
             case 3: /* Q4_1 */
                 total = q4_1_row_dot(W, x, bpr32, r);
+                break;
+            case 6: /* Q5_0 */
+                total = q5_0_row_dot(W + (size_t)r * ((n_cols+31)/32) * 22, x, n_cols);
                 break;
             case 8: /* Q8_0 */
                 total = q8_0_row_dot(W, x, bpr32, r);
@@ -1135,11 +1210,75 @@ void batch_gate_up_omp(const uint8_t *restrict Wg, const uint8_t *restrict Wu,
     if (x_q8 && x_q8 != x_q8_buf) free(x_q8);
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
- * Unified dispatch: quant_matmul_omp
+/* =========================================================================
+
+/* =========================================================================
+ * Q5_0 matmul (type 6) — 22 bytes per 32-element block
+ * Format: 2B f16 scale + 4B high bits + 16B low nibbles
+ * Dequant: signed_val = (nibble | (high_bit << 4)) - 16
+ * ======================================================================= */
+
+void q5_0_matmul_omp(const uint8_t *restrict W, const float *restrict x,
+                      float *restrict out, int n_rows, int n_cols) {
+    int bpr = n_cols / 32;
+    #pragma omp parallel for schedule(static)
+    for (int r = 0; r < n_rows; r++) {
+        float total = 0.0f;
+        const uint8_t *row = W + (size_t)r * bpr * 22;
+        for (int blk = 0; blk < bpr; blk++) {
+            __builtin_prefetch(row + (blk + 1) * 22, 0, 1);
+            __builtin_prefetch(x + (blk + 1) * 32, 0, 1);
+            const uint8_t *bp = row + blk * 22;
+            float d = f16_to_f32(*(const uint16_t*)bp);
+            const uint8_t *qh = bp + 2, *ql = bp + 6;
+            int off = blk * 32;
+            __m256 d_v = _mm256_set1_ps(d), acc = _mm256_setzero_ps();
+            for (int h = 0; h < 2; h++) {
+                int hh = h * 16;
+                __m128i q8 = _mm_loadl_epi64((const __m128i*)(ql + hh/2));
+                __m128i lo = _mm_and_si128(q8, _mm_set1_epi8(0x0F));
+                __m128i hi = _mm_and_si128(_mm_srli_epi16(q8, 4), _mm_set1_epi8(0x0F));
+                __m256i nb = _mm256_cvtepu8_epi16(_mm_unpacklo_epi8(lo, hi));
+                uint16_t qw; memcpy(&qw, qh + h, 2);
+                __m256i qv = _mm256_set1_epi16((short)qw);
+                __m256i ms = _mm256_set_epi16(0x8000,0x4000,0x2000,0x1000,
+                    0x0800,0x0400,0x0200,0x0100,0x0080,0x0040,0x0020,0x0010,
+                    0x0008,0x0004,0x0002,0x0001);
+                __m256i bt = _mm256_andnot_si256(_mm256_cmpeq_epi16(
+                    _mm256_and_si256(qv, ms), _mm256_setzero_si256()), _mm256_set1_epi16(16));
+                __m256i v16 = _mm256_sub_epi16(_mm256_or_si256(nb, bt), _mm256_set1_epi16(16));
+                for (int i = 0; i < 16; i += 8) {
+                    __m128i c = i==0 ? _mm256_extracti128_si256(v16,0):_mm256_extracti128_si256(v16,1);
+                    __m128i i32l = _mm_cvtepi16_epi32(c), i32h = _mm_cvtepi16_epi32(_mm_unpackhi_epi64(c,c));
+                    __m256 vf = _mm256_cvtepi32_ps(_mm256_set_m128i(i32h,i32l));
+                    acc = _mm256_fmadd_ps(_mm256_mul_ps(vf, d_v), _mm256_loadu_ps(x+off+hh+i), acc);
+                }
+            }
+            __m128 hh128 = _mm256_extractf128_ps(acc,1), ll128 = _mm256_castps256_ps128(acc);
+            __m128 s = _mm_hadd_ps(_mm_hadd_ps(_mm_add_ps(ll128,hh128), _mm_add_ps(ll128,hh128)), _mm_add_ps(ll128,hh128));
+            total += _mm_cvtss_f32(s);
+        }
+        out[r] = total;
+    }
+}
+
+float q5_0_row_dot(const uint8_t *row, const float *x, int n_cols) {
+    int bpr = n_cols / 32; float total = 0;
+    for (int b = 0; b < bpr; b++) {
+        const uint8_t *bp = row + b * 22;
+        float d = f16_to_f32(*(const uint16_t*)bp);
+        const uint8_t *qh = bp+2, *ql = bp+6;
+        for (int j = 0; j < 32; j++) {
+            int8_t v = (int8_t)(((ql[j/2]>>((j%2)*4))&0x0F)|(((qh[j/8]>>(j%8))&1)<<4))-16;
+            total += v * d * x[b*32+j];
+        }
+    }
+    return total;
+}
+/* Unified dispatch: quant_matmul_omp
  *
  * quant_type: 0=F32, 2=Q4_0, 3=Q4_1, 7=Q4_K, 8=Q8_0, 9=Q5_K, 14=Q6_K
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
 void quant_matmul_omp(const uint8_t *restrict W, const float *restrict x,
                        float *restrict out, int n_rows, int n_cols, int quant_type) {
@@ -1152,6 +1291,9 @@ void quant_matmul_omp(const uint8_t *restrict W, const float *restrict x,
             break;
         case 3:  /* Q4_1 */
             q4_1_matmul_omp(W, x, out, n_rows, n_cols);
+            break;
+        case 6:  /* Q5_0 */
+            q5_0_matmul_omp(W, x, out, n_rows, n_cols);
             break;
         case 8:  /* Q8_0 */
             q8_0_matmul_omp(W, x, out, n_rows, n_cols);
@@ -1173,7 +1315,7 @@ void quant_matmul_omp(const uint8_t *restrict W, const float *restrict x,
     }
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * QUANTIZED-ACTIVATION PATH — the key llama.cpp optimization
  *
  * Instead of dequantizing weights to FP32, we:
@@ -1183,7 +1325,7 @@ void quant_matmul_omp(const uint8_t *restrict W, const float *restrict x,
  *
  * This halves memory bandwidth because weight data stays in packed form
  * (4-6 bits/value) instead of being expanded to FP32 (32 bits/value).
- * ═════════════════════════════════════════════════════════════════════════ */
+ * ========================================================================= */
 
 /* Quantize FP32 vector to Q8_0 (34 bytes per 32 values: 2-byte fp16 scale + 32 int8 values)
  * AVX2 vectorized: processes 8 floats per iteration for absmax + quantize.
@@ -1424,12 +1566,12 @@ void batch_gate_up_q8_omp(const uint8_t *restrict Wg, const uint8_t *restrict Wu
         }
     }
 }
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * Q4_K × Q8_0 QUANTIZED-ACTIVATION DOT — AVX2 vectorized
  *
  * Uses _mm_maddubs_epi16 for packed integer dot products.
  * 8 Q8_0 blocks × 32 values each, matching Q4_K's 8 sub-groups.
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 static inline float dot_q4_k_q8_0(const uint8_t *restrict qk, const uint8_t *restrict q8) {
     float d   = f16_to_f32(*(const uint16_t*)qk);
     float min = f16_to_f32(*(const uint16_t*)(qk + 2));
@@ -1543,7 +1685,7 @@ void q4_k_q8_0_matmul_omp(const uint8_t *restrict W, const uint8_t *restrict x_q
     }
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * Q6_K AVX2 DEQUANT + FMA — vectorized inner loop
  *
  * Q6_K layout per 256-value super-block:
@@ -1553,7 +1695,7 @@ void q4_k_q8_0_matmul_omp(const uint8_t *restrict W, const uint8_t *restrict x_q
  *   d[2]: fp16 super-block scale
  *
  * AVX2 processes the 4 quadrants in parallel, 8 values at a time per quadrant.
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */
 
 /* Dequant 8 Q6_K values from one quadrant into 8 floats.
  * ql_ptr: points to ql[l] for this quadrant
@@ -1698,13 +1840,13 @@ void q6_k_matmul_avx2_omp(const uint8_t *restrict W, const float *restrict x,
     }
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * MOE FUSED KERNEL — AVX2-accelerated
  *
  * Phase 1: Quantize x_norm to Q8_0 once for Q4_K gate/up matmuls
  * Phase 2: Gate + Up using Q4_K × Q8_0 quantized-activation path
  * Phase 3: Down using Q6_K AVX2 dequant + FMA
- * ═════════════════════════════════════════════════════════════════════════ */
+ * ========================================================================= */
 
 /* ─── Q4_K row-dot with float activation — AVX2 vectorized ───
  *
@@ -1826,10 +1968,11 @@ void moe_forward_omp(
     int total_gate    = top_k * n_ff_expert;
     int total_down    = top_k * n_embd;
 
-    /* ── Phase 1: Gate + Up ── */
+    /* ── Phase 1: Gate + Up (V8 fused with contiguous rows per chunk) ── */
     if (qt_gate == 39 && qt_up == 39) {
-        /* MXFP4 fast path: fused OMP over ALL gate+up rows for all experts.
-         * Single parallel region per layer avoids 8× OMP fork-join overhead. */
+        /* V8: Keep fused OMP region but group iterations by expert for better L3 reuse.
+         * With schedule(static), each thread gets rows from one expert contiguously,
+         * keeping that expert's weights in L3 cache. */
         int total = total_gate;
         #pragma omp parallel for schedule(static)
         for (int i = 0; i < total * 2; i++) {
@@ -1860,6 +2003,8 @@ void moe_forward_omp(
             } else if (qt_gate == 3) {
                 int bpr = n_embd / 32;
                 gv = q4_1_row_dot(gate_raw[e], x_norm, bpr, row);
+            } else if (qt_gate == 6) {
+                gv = q5_0_row_dot(gate_raw[e] + (size_t)row * ((n_embd+31)/32)*22, x_norm, n_embd);
             } else {
                 gv = 0.0f;
             }
@@ -1873,6 +2018,8 @@ void moe_forward_omp(
             } else if (qt_up == 3) {
                 int bpr = n_embd / 32;
                 uv = q4_1_row_dot(up_raw[e], x_norm, bpr, row);
+            } else if (qt_up == 6) {
+                uv = q5_0_row_dot(up_raw[e] + (size_t)row * ((n_embd+31)/32)*22, x_norm, n_embd);
             } else {
                 uv = 0.0f;
             }
@@ -1917,6 +2064,8 @@ void moe_forward_omp(
             } else if (qt_down == 2) {
                 int bpr = n_ff_expert / 32;
                 dot = q4_0_row_dot(down_raw[e], s, bpr, row);
+            } else if (qt_down == 6) {
+                dot = q5_0_row_dot(down_raw[e] + (size_t)row * ((n_embd+31)/32)*22, s, n_ff_expert);
             } else {
                 dot = 0.0f;
             }
@@ -1929,7 +2078,7 @@ void moe_forward_omp(
     if (x_q8_alloced)  free(x_q8_alloced);
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * Gemma4 fused matmuls — all 6 projections in one OMP region with shared Q8_0
  */
 void gemma4_batch_matmuls(
@@ -1955,7 +2104,7 @@ void gemma4_batch_matmuls(
     }
 }
 
-/* ═════════════════════════════════════════════════════════════════════════
+/* =========================================================================
  * Q4_K matmul replacement — auto-quantizes activation to Q8_0
  * Backward-compatible replacement for the old scalar q4_k_matmul_omp.
- * ═══════════════════════════════════════════════════════════════════════ */
+ * ======================================================================= */

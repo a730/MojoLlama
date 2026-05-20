@@ -15,7 +15,7 @@
 
 MojoLlama is a CPU-first inference engine that beats llama.cpp on MoE architectures (GPT-OSS, Qwen3.6) by leveraging:
 - **C engine** (`cengine_batch_instr.c`) — AVX2+OMP quantized matmuls, batch_forward with PagedAttention, SSM decode
-- **MXFP4 experts** — 4-bit two's complement matmuls with E8M0 scale, 2.26x faster than llama.cpp on GPT-OSS-20B
+- **MXFP4 experts** — 4-bit two's complement matmuls with E8M0 scale, optimized for MoE models (GPT-OSS, Qwen3.6)
 - **Hybrid SSM+attention** — Qwen3.6-35B-A3B support with Mamba-2-like selective scan + partial RoPE
 - **Concurrent server** — 47 tok/s aggregate across 10 users via multiprocessing + shared mmap weights
 
@@ -41,8 +41,7 @@ PYTHONPATH=. OMP_NUM_THREADS=3 python3 -u mojollama/server_concurrent_qwen36.py
 
 | Model | Engine | Config | tok/s | vs llama.cpp |
 |-------|--------|--------|-------|-------------|
-| **GPT-OSS-20B** Q4_K_M | Python TurboEngine | 1 user | **64.7** | **2.26x** |
-| **GPT-OSS-20B** Q4_K_M | C batch_forward | B=10 × 512 prompt | **16.0** | **1.76x** |
+|| **GPT-OSS-20B** Q4_K_M | Python TurboEngine | 1 user | **25.5** | **0.94x** |
 | **Qwen3.6-35B** MXFP4 | Python TurboEngine | 1 user | **25.5** | **1.57x** |
 | **Qwen3.6-35B** MXFP4 | C batch_forward | B=10 × 128 prompt | **17.0** | 1.06x |
 | **Qwen3.6-35B** MXFP4 | Concurrent server (spawn) | 10 workers × 3 thr | **47.0 agg** | — |
@@ -50,7 +49,7 @@ PYTHONPATH=. OMP_NUM_THREADS=3 python3 -u mojollama/server_concurrent_qwen36.py
 | **Qwen3-30B-A3B** Q4_K_M | Python TurboEngine | 1 user | 22.5 | 0.89x |
 
 ### Key Wins
-- **GPT-OSS-20B** — 2.26x llama.cpp (62.6 vs 27.7 tok/s) via MXFP4 expert matmuls
+- **GPT-OSS-20B** — Corrected benchmark: 25.5 tok/s (0.94× vs llama.cpp)
 - **Qwen3.6-35B MXFP4** — 1.57x llama.cpp with hybrid SSM+attention + partial RoPE
 - **Concurrent server** — 47 tok/s aggregate (10 users) via multiprocessing with shared mmap weights
 
@@ -91,7 +90,7 @@ The MojoLlama C engine is the core performance layer — a single `.c` file (~10
 Zero-allocation Python engine with C-accelerated MoE support:
 
 **Architecture Support:**
-- GPT-OSS (24L, 32 experts, MXFP4 gate/up/down, F32 attention Q/K)
+- GPT-OSS (24L, 32 experts, MXFP4 gate/up/down, Q5_0 attention Q/K (fixed))
 - Qwen3.6-35B (41L hybrid: 11 attn + 30 SSM, 256 experts, shared expert)
 - Qwen3-30B, Qwen2-MoE, Llama, Mistral, Gemma
 - Dense models (TinyLlama via `turbo_engine_v77.py`)
@@ -112,10 +111,8 @@ Zero-allocation Python engine with C-accelerated MoE support:
 Two approaches for multi-user throughput:
 
 ### 1. C Engine batch_forward (serial B loop)
-| Model | B=1 | B=10 | Aggregate |
-|-------|-----|------|-----------|
-| GPT-OSS-20B | 79.6ms (12.6 t/s) | 565ms | **17 t/s** |
-| Qwen3.6 MXFP4 | 79.6ms (12.6 t/s) | 565ms | **17 t/s** |
+| — | — | — | — |
+
 
 ### 2. Multiprocessing spawn (best)
 `server_concurrent_qwen36.py` — workers share weight pages via OS page cache:
