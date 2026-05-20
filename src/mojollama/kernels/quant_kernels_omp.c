@@ -32,6 +32,7 @@
 #define Q5_K_BS   176
 #define Q6_K_BS   210
 #define Q8_0_BS   34
+#define MXFP4_BS  17
 
 static inline float f16_to_f32(uint16_t h) { return _cvtsh_ss(h); }
 

@@ -13,9 +13,9 @@ class ForwardZaya(ArchitectureForwardPass):
     def __init__(self, engine):
         super().__init__(engine)
         e = engine
-        # Single thread optimal for ZAYA's small matrices
-        e.n_threads = 1
-        os.environ['OMP_NUM_THREADS'] = '1'
+        # Use engine's thread count (MXFP4 benefits from multi-threading)
+        nt = max(1, getattr(e, 'n_threads', 1))
+        os.environ['OMP_NUM_THREADS'] = str(nt)
         e.vocab_size = 262272
         e.head_dim = 128
         e.rope_dim = 64
@@ -29,58 +29,92 @@ class ForwardZaya(ArchitectureForwardPass):
             if t.name in ('token_embd.weight', 'model.embed_tokens.weight'):
                 f32 = gguf.dequantize(t.data, t.tensor_type).astype(np.float32)
                 in_dim, out_dim = int(t.shape[0]), int(t.shape[1])
-                e.emb = np.ascontiguousarray(f32.reshape(out_dim, in_dim))
+                arr = np.ascontiguousarray(f32.reshape(out_dim, in_dim))
+                # Ensure correct orientation: [vocab_size, n_embd]
+                if arr.shape[1] != e.n_embd:
+                    arr = np.ascontiguousarray(arr.T)
+                e.emb = arr
                 break
+        if e.emb is not None and e._kern is not None:
+            pass  # Output via np.dot
 
     def init_pointers(self, layer_idx, pfx, lw):
-        """Set per-layer weight pointers. The engine's _preload_pointers
-        runs AFTER this and overwrites attn_q_raw etc. from self.raw_weights."""
+        """Set per-layer weight pointers."""
         e = self.engine
         weights = e.weights
+        raw = e.raw_weights
+        wi = e.weight_info
+        cu_p = ctypes.POINTER(ctypes.c_uint8)
 
         # Norm + scaling (always present)
         lw.attn_norm_w = weights.get(f'{pfx}.attn_norm.weight')
         lw.res_scale_hs_w = weights.get(f'{pfx}.res_scale_hs.weight',
-                                          np.ones(e.n_embd, dtype=np.float32))
+                                          np.ones(e.n_embd, dtype=np.float32)).ravel()
         lw.res_scale_hs_b = weights.get(f'{pfx}.res_scale_hs.bias',
-                                          np.zeros(e.n_embd, dtype=np.float32))
+                                          np.zeros(e.n_embd, dtype=np.float32)).ravel()
         rw = weights.get(f'{pfx}.res_scale_res.weight')
-        lw.res_scale_res_w = rw if rw is not None else np.ones(e.n_embd, dtype=np.float32)
+        lw.res_scale_res_w = rw.ravel() if rw is not None else np.ones(e.n_embd, dtype=np.float32)
         rb = weights.get(f'{pfx}.res_scale_res.bias')
-        lw.res_scale_res_b = rb if rb is not None else np.zeros(e.n_embd, dtype=np.float32)
+        lw.res_scale_res_b = rb.ravel() if rb is not None else np.zeros(e.n_embd, dtype=np.float32)
 
         if layer_idx % 2 == 1:  # MoE layers
             lw.ffn_gate_inp_w = weights.get(f'{pfx}.ffn_gate_inp.weight')
             lw.ffn_gate_inp_b = weights.get(f'{pfx}.ffn_gate_inp.bias')
+            if lw.ffn_gate_inp_b is not None:
+                lw.ffn_gate_inp_b = lw.ffn_gate_inp_b.ravel()
             lw.ffn_gate_w = weights.get(f'{pfx}.ffn_gate.weight')
             lw.ffn_gate_b = weights.get(f'{pfx}.ffn_gate.bias')
+            if lw.ffn_gate_b is not None:
+                lw.ffn_gate_b = lw.ffn_gate_b.ravel()
             lw.ffn_norm_w = weights.get(f'{pfx}.ffn_norm.weight')
             lw.zaya_router_mlp2_w = weights.get(f'{pfx}.zaya_router_mlp2.weight')
             lw.zaya_router_mlp2_b = weights.get(f'{pfx}.zaya_router_mlp2.bias')
+            if lw.zaya_router_mlp2_b is not None:
+                lw.zaya_router_mlp2_b = lw.zaya_router_mlp2_b.ravel()
             lw.zaya_router_mlp4_w = weights.get(f'{pfx}.zaya_router_mlp4.weight')
             lw.zaya_router_biases_w = weights.get(f'{pfx}.zaya_router_biases.weight')
+            if lw.zaya_router_biases_w is not None:
+                lw.zaya_router_biases_w = lw.zaya_router_biases_w.ravel()
 
-            # Store raw weight arrays and info for on-the-fly expert pointer calc
+            # Load expert raw pointers — try per-expert first, then packed 3D
             cu_p = ctypes.POINTER(ctypes.c_uint8)
+            n_exp = e.n_experts or 16
             for attr, wname in [('gate_up', 'ffn_gate_up_exps'), ('down', 'ffn_down_exps')]:
-                qname = f'{pfx}.{wname}.weight'
-                info = e.weight_info.get(qname)
-                raw = e.raw_weights.get(qname)
-                if info and raw is not None:
-                    out_dim, in_dim, bs, qt, n_exp = info
-                    bv = BLOCK_VALS.get(qt, 256)
-                    rb = ((in_dim + bv - 1) // bv) * bs
-                    eb = out_dim * rb
-                    # Pre-compute all expert pointers
-                    raw_ptr = raw.ctypes.data_as(cu_p)
-                    base_addr = ctypes.addressof(raw_ptr.contents) if raw_ptr else 0
-                    ptrs = []
+                ptrs, info = [], None
+                # Try per-expert format: blk.N.wname.E.weight
+                per_exp = any(e.raw_weights.get(f'{pfx}.{wname}.{ex}.weight') is not None for ex in range(1))
+                if per_exp:
                     for exp in range(n_exp):
-                        addr = base_addr + exp * eb
-                        ptrs.append(ctypes.cast(addr, cu_p))
+                        eqname = f'{pfx}.{wname}.{exp}.weight'
+                        raw = e.raw_weights.get(eqname)
+                        winfo = e.weight_info.get(eqname)
+                        if raw is not None and winfo is not None:
+                            ptr = raw.ctypes.data_as(cu_p)
+                            ptrs.append(ptr)
+                            if info is None:
+                                info = (winfo[0], winfo[1], winfo[3])
+                        else:
+                            ptrs.append(ctypes.cast(0, cu_p))
+                else:
+                    # Packed 3D format: blk.N.wname.weight  [out_dim, in_dim, n_exp]
+                    pname = f'{pfx}.{wname}.weight'
+                    raw = e.raw_weights.get(pname)
+                    winfo = e.weight_info.get(pname)
+                    if raw is not None and winfo is not None:
+                        out_dim, in_dim, bs, qt, n_exp2 = winfo
+                        bv = {8: 32, 12: 256, 14: 256, 39: 32}.get(qt, 32)
+                        rb = ((in_dim + bv - 1) // bv) * bs
+                        eb = out_dim * rb
+                        raw_ptr = raw.ctypes.data_as(cu_p)
+                        info = (out_dim, in_dim, qt)
+                        for exp in range(n_exp2):
+                            addr = ctypes.addressof(raw_ptr.contents) + exp * eb
+                            ptrs.append(ctypes.cast(addr, cu_p))
+                if ptrs:
                     arr_type = cu_p * n_exp
                     setattr(lw, f'{attr}_ptrs', arr_type(*ptrs))
-                    setattr(lw, f'{attr}_info', (out_dim, in_dim, qt))
+                    if info:
+                        setattr(lw, f'{attr}_info', info)
 
     def _rope(self, x, pos, n_heads, hd):
         half = self.engine.rope_dim // 2
@@ -108,7 +142,25 @@ class ForwardZaya(ArchitectureForwardPass):
         b_ffn = e._ffn_out; b_oproj = e._o_proj; b_log = e._logits
 
         kern = e._kern; simd = e._simd; eps = e._eps_f
-        cf = ctypes.POINTER(ctypes.c_float); ci = ctypes.c_int
+        cf = ctypes.POINTER(ctypes.c_float); ci = ctypes.c_int; cu = ctypes.POINTER(ctypes.c_uint8)
+        
+        # Use cengine's mxfp4 matmul for MXFP4 model (type 39)
+        ce = getattr(e, '_cengine', None)
+        if ce is not None and not hasattr(ce, '_mxfp4_ready'):
+            ce.mxfp4_batch_matmul.argtypes = [cu, cf, cf, ci, ci, ci]
+            ce.mxfp4_batch_matmul.restype = None
+            ce._mxfp4_ready = True
+        # Use ce's mxfp4 matmul when qt == 39 (MXFP4)
+        _mxm_ce_count = [0]
+        def mxm(w, x, out, nr, nc, qt):
+            qtv = qt.value if isinstance(qt, ctypes.c_int) else qt
+            if qtv == 39:
+                _mxm_ce_count[0] += 1
+                ce.mxfp4_batch_matmul(w, x, out, nr, nc, ci(1))
+            else:
+                kern.quant_matmul_omp(w, x, out, nr, nc, qt)
+        import forward.zaya as _zmod_mxm
+        _zmod_mxm._mxm_ce_count = _mxm_ce_count
 
         np.copyto(b_x, e.emb[token_id])
 
@@ -119,8 +171,8 @@ class ForwardZaya(ArchitectureForwardPass):
             simd.rms_norm(e._p_x_norm, e._p_x, lw.attn_norm_w.ctypes.data_as(cf), N, eps)
 
             if i % 2 == 0:  # ATTN layer
-                kern.quant_matmul_omp(lw.attn_q_raw, e._p_x_norm, e._p_q, ci(NQ), ci(N), lw.attn_q_qt)
-                kern.quant_matmul_omp(lw.attn_k_raw, e._p_x_norm, e._p_k, ci(NK), ci(N), lw.attn_k_qt)
+                mxm(lw.attn_q_raw, e._p_x_norm, e._p_q, ci(NQ), ci(N), lw.attn_q_qt)
+                mxm(lw.attn_k_raw, e._p_x_norm, e._p_k, ci(NK), ci(N), lw.attn_k_qt)
 
                 b_q[:] = self._rope(b_q, e.pos, NH, HD)
                 b_k[:NK] = self._rope(b_k[:NK], e.pos, NKH, HD)
@@ -141,8 +193,8 @@ class ForwardZaya(ArchitectureForwardPass):
                 b_att[:NQ] = at.reshape(-1)
                 e.kv_len[i] += 1
 
-                kern.quant_matmul_omp(lw.attn_out_raw, e._p_att_out, e._p_o_proj,
-                                       lw.attn_out_nr, lw.attn_out_nc, lw.attn_out_qt)
+                mxm(lw.attn_out_raw, e._p_att_out, e._p_o_proj,
+                    lw.attn_out_nr, lw.attn_out_nc, lw.attn_out_qt)
                 b_x[:N] = b_r[:N] * lw.res_scale_res_w + lw.res_scale_res_b + \
                           b_oproj[:N] * lw.res_scale_hs_w + lw.res_scale_hs_b
             else:  # MoE layer
@@ -161,9 +213,9 @@ class ForwardZaya(ArchitectureForwardPass):
                 if ec < 16 and ew > 0.01:
                     ew /= ms[:16].sum()
                     od, id_, qt = lw.gate_up_info
-                    kern.quant_matmul_omp(lw.gate_up_ptrs[ec], e._p_x_norm,
-                                           self._fused_gate_up.ctypes.data_as(cf),
-                                           ci(od), ci(id_), ci(qt))
+                    mxm(lw.gate_up_ptrs[ec], e._p_x_norm,
+                        self._fused_gate_up.ctypes.data_as(cf),
+                        ci(od), ci(id_), ci(qt))
                     F2 = od // 2  # 2048
                     np.copyto(b_silu[:F2], self._fused_gate_up[:F2])
                     np.copyto(b_up[:F2], self._fused_gate_up[F2:])
@@ -171,8 +223,8 @@ class ForwardZaya(ArchitectureForwardPass):
                     b_silu[:F2] *= b_up[:F2]
 
                     od2, id2, qt2 = lw.down_info
-                    kern.quant_matmul_omp(lw.down_ptrs[ec], e._p_silu_gate, e._p_ffn,
-                                           ci(od2), ci(id2), ci(qt2))
+                    mxm(lw.down_ptrs[ec], e._p_silu_gate, e._p_ffn,
+                        ci(od2), ci(id2), ci(qt2))
                     b_ffn[:N] *= ew
                 else:
                     b_ffn[:N] = 0.0

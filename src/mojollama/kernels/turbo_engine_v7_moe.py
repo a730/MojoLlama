@@ -416,23 +416,86 @@ class TurboEngineV7MoE:
             self._out_norm_w = self.weights['model.final_norm.weight']
             self.weights['output_norm.weight'] = self._out_norm_w
 
-        # ZAYA MXFP4 naming adapter: map model.layers.N.zaya_block. → blk.N.
-        if self.arch_name == 'zaya' and 'model.layers.0.zaya_block.attn_k.weight' in self.raw_weights:
-            print("  Detected HF naming convention — adding blk.N aliases...", flush=True)
+        # ZAYA MXFP4 naming adapter
+        if self.arch_name == 'zaya' and 'model.layers.0.input_norm.weight' in self.weights:
+            print("  MXFP4 full naming adapter...", flush=True)
             import re as _re
-            for old_name in list(self.weights.keys()):
-                m = _re.match(r'model\.layers\.(\d+)\.zaya_block\.(.+)', old_name)
-                if m:
-                    new_name = f'blk.{m.group(1)}.{m.group(2)}'
-                    self.weights[new_name] = self.weights[old_name]
-            for old_name in list(self.raw_weights.keys()):
-                m = _re.match(r'model\.layers\.(\d+)\.zaya_block\.(.+)', old_name)
-                if m:
-                    new_name = f'blk.{m.group(1)}.{m.group(2)}'
-                    self.raw_weights[new_name] = self.raw_weights[old_name]
-                    info = self.weight_info.get(old_name)
-                    if info:
-                        self.weight_info[new_name] = info
+            n_layer = self.n_layers
+            n_exp = self.n_experts
+            
+            # Helper to create weight/raw aliases
+            def _alias(src, dst):
+                if src in self.weights and dst not in self.weights:
+                    self.weights[dst] = self.weights[src]
+                if src in self.raw_weights and dst not in self.raw_weights:
+                    self.raw_weights[dst] = self.raw_weights[src]
+                    if src in self.weight_info:
+                        self.weight_info[dst] = self.weight_info[src]
+            
+            # Global tensors
+            _alias('model.embed_tokens.weight', 'token_embd.weight')
+            _alias('model.final_norm.weight', 'output_norm.weight')
+            for sn in ['hidden_states_scale','hidden_states_bias','residual_scale','residual_bias']:
+                src = f'model.res_scale.{sn}'
+                if src in self.weights:
+                    d32 = self.weights[src].ravel()
+                    if np.any(np.abs(d32) > 1e6) or np.any(d32 < -1):
+                        continue
+                    pref = 'res_scale_hs' if 'hidden' in sn else 'res_scale_res'
+                    suff = 'weight' if 'scale' in sn else 'bias'
+                    self.weights[f'{pref}.{suff}'] = d32
+            
+            # Per-layer
+            for l in range(n_layer):
+                ps, pd = f'model.layers.{l}', f'blk.{l}'
+                even = l % 2 == 0
+                # input_norm → attn_norm
+                _alias(f'{ps}.input_norm.weight', f'{pd}.attn_norm.weight')
+                
+                if even:
+                    for s, d in [('self_attn.qkv.linear_q','attn_q'),('self_attn.qkv.linear_k','attn_k'),
+                                  ('self_attn.o_proj','attn_output')]:
+                        _alias(f'{ps}.{s}.weight', f'{pd}.{d}.weight')
+                    for i in [1,2]:
+                        _alias(f'{ps}.self_attn.qkv.val_proj{i}.weight', f'{pd}.cca_val_proj{i}.weight')
+                    for sf in ['weight','bias']:
+                        _alias(f'{ps}.self_attn.qkv.conv_qk.0.{sf}', f'{pd}.ssm_conv1d.{sf}')
+                    # Res scales — skip broken MXFP4 [N,1] dequant, use defaults
+                else:
+                    rmap = [
+                        ('zaya_block.router.rmsnorm_eda.weight','ffn_norm.weight'),
+                        ('zaya_block.router.down_proj.weight','ffn_gate_inp.weight'),
+                        ('zaya_block.router.down_proj.bias','ffn_gate_inp.bias'),
+                        ('zaya_block.router.router_mlp.0.weight','ffn_gate.weight'),
+                        ('zaya_block.router.router_mlp.0.bias','ffn_gate.bias'),
+                        ('zaya_block.router.router_mlp.2.weight','zaya_router_mlp2.weight'),
+                        ('zaya_block.router.router_mlp.2.bias','zaya_router_mlp2.bias'),
+                        ('zaya_block.router.router_mlp.4.weight','zaya_router_mlp4.weight'),
+                    ]
+                    for s, d in rmap:
+                        _alias(f'{ps}.{s}', f'{pd}.{d}')
+                    # balancing_biases → zaya_router_biases
+                    src = f'{ps}.zaya_block.router.balancing_biases'
+                    dst = f'{pd}.zaya_router_biases.weight'
+                    if src in self.weights and dst not in self.weights:
+                        w = self.weights[src]
+                        self.weights[dst] = w.ravel()[:17] if w.ndim > 1 else w[:17]
+                    # Res scales
+                    for sn in ['hidden_states_scale','hidden_states_bias','residual_scale','residual_bias']:
+                        src = f'{ps}.res_scale.{sn}'
+                        if src in self.weights:
+                            d32 = self.weights[src].ravel()
+                            # Filter: skip broken MXFP4 [N,1] dequant (>1e6 or < -1)
+                            if np.any(np.abs(d32) > 1e6) or np.any(d32 < -1):
+                                continue
+                            pref = 'res_scale_hs' if 'hidden' in sn else 'res_scale_res'
+                            self.weights[f'{pd}.{pref}.{"weight" if "scale" in sn else "bias"}'] = d32
+                    # Per-expert weights
+                    for e in range(n_exp):
+                        for src_w, dst_w in [('linear_fc1','ffn_gate_up_exps'),('linear_fc2','ffn_down_exps')]:
+                            _alias(f'{ps}.zaya_block.experts.local_experts.{e}.{src_w}.weight',
+                                   f'{pd}.{dst_w}.{e}.weight')
+            print(f"  Alias map: {n_layer}L x {n_exp}E", flush=True)
 
         if self._arch_forward is not None:
             self._arch_forward.init_weights(self.weights, self.raw_weights, self.weight_info, self.weight_qtypes)
