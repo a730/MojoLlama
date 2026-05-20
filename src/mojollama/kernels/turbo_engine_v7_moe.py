@@ -524,7 +524,7 @@ class TurboEngineV7MoE:
                 self._kern.q4_k_dequantize_row(
                     ptr, f32[r].ctypes.data_as(ctypes.POINTER(ctypes.c_float)), ctypes.c_int(n_cols))
         elif orig_qt == 1:  # F16 — view as float16 then convert to float32
-            raw_u16 = np.frombuffer(bytes(raw_weights[:n_rows*n_cols*2]), dtype=np.uint16).reshape(n_rows, n_cols)
+            raw_u16 = np.frombuffer(raw_weights[:n_rows*n_cols*2], dtype=np.uint16).copy().reshape(n_rows, n_cols)
             f32 = raw_u16.astype(np.float32).view(np.float32)
         else:
             raise NotImplementedError(f"Requantize from type {orig_qt}")

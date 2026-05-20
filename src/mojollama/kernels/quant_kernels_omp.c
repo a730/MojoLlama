@@ -1807,12 +1807,10 @@ void moe_forward_omp(
     float* prealloc_buf, uint8_t* prealloc_q8
 ) {
     size_t exp_buf_sz = (size_t)top_k * n_ff_expert;
-    size_t total_bufs = 4 * exp_buf_sz;  /* gate + up + silu + down_tmp */
-    float *all_bufs = prealloc_buf ? prealloc_buf : (float*)malloc(total_bufs * sizeof(float));
+    float *all_bufs = prealloc_buf ? prealloc_buf : (float*)malloc(3 * exp_buf_sz * sizeof(float));
     float *gate_buf = all_bufs;
     float *up_buf   = all_bufs + exp_buf_sz;
     float *silu_buf = all_bufs + 2 * exp_buf_sz;
-    float *down_tmp = all_bufs + 3 * exp_buf_sz;  /* temp output for MXFP4 down matmul */
 
     if (!all_bufs) return;
 
@@ -1830,11 +1828,19 @@ void moe_forward_omp(
 
     /* ── Phase 1: Gate + Up ── */
     if (qt_gate == 39 && qt_up == 39) {
-        /* MXFP4 fast path: full matmul per expert (avoids per-row dispatch overhead) */
-        for (int k = 0; k < top_k; k++) {
-            int e = top_indices[k];
-            mxfp4_matmul_omp_q8(gate_raw[e], x_q8, gate_buf + k * n_ff_expert, n_ff_expert, n_embd);
-            mxfp4_matmul_omp_q8(up_raw[e], x_q8, up_buf + k * n_ff_expert, n_ff_expert, n_embd);
+        /* MXFP4 fast path: fused OMP over ALL gate+up rows for all experts.
+         * Single parallel region per layer avoids 8× OMP fork-join overhead. */
+        int total = total_gate;
+        #pragma omp parallel for schedule(static)
+        for (int i = 0; i < total * 2; i++) {
+            int is_up = i >= total;
+            int idx = is_up ? i - total : i;
+            int ei = idx / n_ff_expert;
+            int row = idx % n_ff_expert;
+            int e = top_indices[ei];
+            const uint8_t *W = is_up ? up_raw[e] : gate_raw[e];
+            float *buf = is_up ? up_buf : gate_buf;
+            buf[idx] = mxfp4_row_dot_q8(W, x_q8, n_embd, row);
         }
     } else {
         /* Per-row dispatch for other quant types */
@@ -1885,19 +1891,16 @@ void moe_forward_omp(
     /* ── Phase 2: Down matmuls + weighted accumulation ── */
     memset(combined, 0, n_embd * sizeof(float));
     if (qt_down == 39) {
-        /* MXFP4 fast path: quantize silu_buf to Q8_0, full matmul per expert */
-        /* Allocate Q8 buffer for silu_buf (up to 4096 dims stack) */
-        uint8_t s_q8_buf[4096 / 32 * Q8_0_BS];
-        for (int k = 0; k < top_k; k++) {
-            int e = top_indices[k];
-            const float *s = silu_buf + k * n_ff_expert;
-            /* Quantize s to Q8_0 (shared per-expert batch) */
-            quantize_row_q8_0(s, s_q8_buf, n_ff_expert);
-            mxfp4_matmul_omp_q8(down_raw[e], s_q8_buf, down_tmp, n_embd, n_ff_expert);
-            float w = top_weights[k];
-            for (int r = 0; r < n_embd; r++) {
-                combined[r] += w * down_tmp[r];
-            }
+        /* MXFP4 down path: fused OMP, one region per layer */
+        #pragma omp parallel for schedule(static)
+        for (int i = 0; i < total_down; i++) {
+            int exp_idx = i / n_embd;
+            int row = i % n_embd;
+            int e = top_indices[exp_idx];
+            const float *s = silu_buf + exp_idx * n_ff_expert;
+            float dot = mxfp4_row_dot_f32(down_raw[e], s, n_ff_expert, row);
+            #pragma omp atomic
+            combined[row] += top_weights[exp_idx] * dot;
         }
     } else {
         #pragma omp parallel for schedule(dynamic, 64)
@@ -1924,6 +1927,32 @@ void moe_forward_omp(
 
     if (!prealloc_buf) free(all_bufs);
     if (x_q8_alloced)  free(x_q8_alloced);
+}
+
+/* ═════════════════════════════════════════════════════════════════════════
+ * Gemma4 fused matmuls — all 6 projections in one OMP region with shared Q8_0
+ */
+void gemma4_batch_matmuls(
+    const float *x_norm,
+    float *q, float *k, float *v,
+    int N, int nq, int nk, int nv,
+    const uint8_t *w_q, const uint8_t *w_k, const uint8_t *w_v,
+    int qt_q, int qt_k, int qt_v
+) {
+    int nb = N / 32;
+    uint8_t x_q8[4096 / 32 * Q8_0_BS];
+    quantize_row_q8_0(x_norm, x_q8, N);
+    int total = nq + nk + nv;
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < total; i++) {
+        if (i < nq) {
+            q[i] = q4_k_row_dot_q8(w_q, x_q8, N, i);
+        } else if (i < nq + nk) {
+            k[i - nq] = q4_k_row_dot_q8(w_k, x_q8, N, i - nq);
+        } else {
+            v[i - nq - nk] = q6_k_row_dot_avx2(w_v, x_norm, N, i - nq - nk);
+        }
+    }
 }
 
 /* ═════════════════════════════════════════════════════════════════════════

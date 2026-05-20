@@ -60,7 +60,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        curl ca-certificates libomp-dev \
+        curl ca-certificates libomp-dev libgomp1 \
         && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -r mojollama && \
