@@ -3,275 +3,816 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MojoLlama — High-Throughput CPU LLM Inference</title>
+<title>MojoLlama — CPU-First LLM Inference Platform</title>
+<meta name="description" content="MojoLlama: high-throughput CPU LLM inference. GGUF native, MoE-optimized, 50+ architectures. Open-source inference engine built in Mojo+MAX.">
+<meta property="og:title" content="MojoLlama — CPU-First LLM Platform">
+<meta property="og:description" content="Inference, fine-tuning, quantization, and serving — engineered for CPU. Built in Mojo+MAX.">
+<meta property="og:url" content="https://git.bamse.cloud/a730/MojoLlama/~site/">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-  :root {
-    --bg: #0d1117;
-    --fg: #e6edf3;
-    --accent: #58a6ff;
-    --green: #3fb950;
-    --orange: #d29922;
-    --border: #30363d;
-    --card: #161b22;
-    --muted: #8b949e;
-  }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-    background: var(--bg);
-    color: var(--fg);
-    line-height: 1.6;
-  }
-  .container { max-width: 960px; margin: 0 auto; padding: 0 20px; }
+/* ══════════════════════════════════════════════
+   MojoLlama — Refined Brand System
+   Inspired by IBM Carbon Design System:
+   - Purposeful whitespace (8px grid)
+   - Clear typographic hierarchy
+   - Border-based card language
+   - Subtle depth, never decorative
+   ══════════════════════════════════════════════ */
 
-  /* ── Hero ── */
-  .hero {
-    text-align: center; padding: 80px 0 60px;
-    background: linear-gradient(180deg, #161b22 0%, var(--bg) 100%);
-    border-bottom: 1px solid var(--border);
-  }
-  .hero h1 { font-size: 3rem; font-weight: 800; letter-spacing: -0.02em; }
-  .hero h1 span { color: var(--accent); }
-  .hero p { font-size: 1.2rem; color: var(--muted); margin: 16px 0 32px; max-width: 640px; margin-inline: auto; }
-  .hero-badge {
-    display: inline-block; padding: 6px 16px; border-radius: 20px;
-    font-size: 0.85rem; font-weight: 600; margin-bottom: 16px;
-  }
-  .badge-green { background: rgba(63,185,80,0.15); color: var(--green); border: 1px solid rgba(63,185,80,0.3); }
-  .badge-blue { background: rgba(88,166,255,0.15); color: var(--accent); border: 1px solid rgba(88,166,255,0.3); }
-  .btn-group { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
-  .btn {
-    display: inline-flex; align-items: center; gap: 8px; padding: 12px 24px;
-    border-radius: 8px; font-size: 1rem; font-weight: 600; text-decoration: none;
-    transition: all 0.2s;
-  }
-  .btn-primary { background: var(--accent); color: #fff; }
-  .btn-primary:hover { background: #4c96e8; transform: translateY(-1px); }
-  .btn-secondary { background: var(--card); color: var(--fg); border: 1px solid var(--border); }
-  .btn-secondary:hover { border-color: var(--muted); transform: translateY(-1px); }
+:root {
+  /* Brand */
+  --mojo: #6C3CE1;
+  --mojo-dark: #5228B5;
+  --mojo-light: #8B5CF6;
+  --mojo-subtle: rgba(108, 60, 225, 0.08);
+  --mojo-gradient: linear-gradient(135deg, #6C3CE1 0%, #22D3EE 100%);
 
-  /* ── Sections ── */
-  section { padding: 60px 0; border-bottom: 1px solid var(--border); }
-  section:last-child { border-bottom: none; }
-  h2 { font-size: 1.8rem; margin-bottom: 24px; }
-  h2 span { color: var(--accent); }
-  h3 { font-size: 1.2rem; margin: 20px 0 8px; }
+  /* Neutrals — IBM-inspired cool grey palette */
+  --bg: #FFFFFF;
+  --bg-alt: #F4F4F4;
+  --bg-card: #FFFFFF;
+  --border: #E0E0E0;
+  --border-light: #EDEDED;
 
-  /* ── Features grid ── */
-  .features { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
-  .feature {
-    padding: 20px; border-radius: 8px; border: 1px solid var(--border);
-    background: var(--card);
-  }
-  .feature h3 { margin-top: 0; font-size: 1rem; }
-  .feature h3 span { font-size: 1.2rem; margin-right: 8px; }
-  .feature p { font-size: 0.9rem; color: var(--muted); }
+  --text: #161616;
+  --text-secondary: #525252;
+  --text-tertiary: #8D8D8D;
+  --text-inverse: #FFFFFF;
 
-  /* ── CLI code ── */
-  .cli-box {
-    background: #000; border: 1px solid var(--border); border-radius: 8px;
-    padding: 16px 20px; font-family: 'SF Mono', 'Fira Code', monospace;
-    font-size: 0.85rem; line-height: 1.8; overflow-x: auto;
-  }
-  .cli-box .prompt { color: var(--green); }
-  .cli-box .cmd { color: var(--fg); }
-  .cli-box .comment { color: var(--muted); }
+  /* Feedback */
+  --success: #198038;
+  --warning: #DA1E28;
 
-  /* ── Table ── */
-  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
-  th { color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; }
-  tr:hover td { background: rgba(255,255,255,0.02); }
-  .arch-yes { color: var(--green); }
-  .arch-no { color: var(--orange); }
-  .trophy { color: #d29922; }
+  /* Typography */
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
 
-  /* ── Footer ── */
-  footer { text-align: center; padding: 40px 0; color: var(--muted); font-size: 0.85rem; }
-  footer a { color: var(--accent); text-decoration: none; }
-  footer a:hover { text-decoration: underline; }
+  /* Spacing (8px grid) */
+  --space-2: 2px;
+  --space-4: 4px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --space-40: 40px;
+  --space-48: 48px;
+  --space-64: 64px;
+  --space-80: 80px;
+  --space-96: 96px;
+  --space-128: 128px;
 
-  /* ── Metrics bar ── */
-  .metrics { display: flex; gap: 32px; justify-content: center; flex-wrap: wrap; margin: 24px 0; }
-  .metric { text-align: center; }
-  .metric .num { font-size: 1.8rem; font-weight: 800; color: var(--accent); }
-  .metric .label { font-size: 0.8rem; color: var(--muted); text-transform: uppercase; }
+  /* Layout */
+  --max-width: 1248px;
+  --radius-sm: 4px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
+  --shadow: 0 4px 12px rgba(0,0,0,0.08);
+  --shadow-lg: 0 12px 40px rgba(0,0,0,0.1);
+  --transition: 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
 
-  /* ── Responsive ── */
-  @media (max-width: 640px) {
-    .hero h1 { font-size: 2rem; }
-    .features { grid-template-columns: 1fr; }
-  }
+/* ── Reset ── */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; -webkit-font-smoothing: antialiased; }
+body {
+  font-family: var(--font-body);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  font-size: 16px;
+}
+img { max-width: 100%; display: block; }
+a { color: var(--mojo); text-decoration: none; transition: color var(--transition); }
+a:hover { color: var(--mojo-dark); }
+::selection { background: var(--mojo-subtle); }
+
+/* ── Typography ── */
+h1, h2, h3, h4 { font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; }
+h1 { font-size: 3.5rem; font-weight: 700; letter-spacing: -0.02em; }
+h2 { font-size: 2rem; margin-bottom: var(--space-8); }
+h3 { font-size: 1.25rem; margin-bottom: var(--space-8); }
+p { color: var(--text-secondary); line-height: 1.7; max-width: 640px; }
+code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--mojo-subtle);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  color: var(--mojo-dark);
+}
+
+/* ── Layout ── */
+.container { max-width: var(--max-width); margin: 0 auto; padding: 0 var(--space-32); }
+.section { padding: var(--space-96) 0; }
+.section-sm { padding: var(--space-64) 0; }
+.section-alt { background: var(--bg-alt); }
+.section-label {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--mojo);
+  margin-bottom: var(--space-16);
+}
+.section-divider {
+  width: 100%; height: 1px;
+  background: var(--border-light);
+  margin: 0;
+  border: none;
+}
+
+/* ── Navigation ── */
+nav {
+  position: fixed; top: 0; width: 100%; z-index: 100;
+  background: rgba(255,255,255,0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border-light);
+}
+nav .container {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 56px;
+}
+nav .logo {
+  font-weight: 700; font-size: 1.1rem; letter-spacing: -0.01em;
+  color: var(--text);
+}
+nav .logo span { color: var(--mojo); }
+nav .nav-links { display: flex; align-items: center; gap: var(--space-32); }
+nav .nav-links a {
+  font-size: 0.875rem; font-weight: 500;
+  color: var(--text-secondary);
+  transition: color var(--transition);
+}
+nav .nav-links a:hover { color: var(--text); text-decoration: none; }
+nav .version-badge {
+  font-size: 0.7rem; font-weight: 600;
+  color: var(--text-tertiary);
+  padding: 2px 8px;
+  border: 1px solid var(--border-light);
+  border-radius: 100px;
+}
+nav .btn-nav {
+  display: inline-flex; align-items: center; gap: var(--space-8);
+  padding: 6px 20px; border-radius: var(--radius);
+  background: var(--text); color: var(--text-inverse);
+  font-size: 0.875rem; font-weight: 500;
+  transition: all var(--transition);
+}
+nav .btn-nav:hover { opacity: 0.85; color: var(--text-inverse); text-decoration: none; }
+
+/* ── Hero — Split layout (60/40) ── */
+.hero {
+  padding: var(--space-128) 0 var(--space-80);
+  position: relative;
+  overflow: hidden;
+}
+.hero::before {
+  content: '';
+  position: absolute;
+  top: -40%;
+  right: -20%;
+  width: 900px; height: 900px;
+  background: radial-gradient(circle, rgba(108,60,225,0.06) 0%, transparent 60%);
+  pointer-events: none;
+}
+.hero .hero-split {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr;
+  gap: var(--space-64);
+  align-items: center;
+}
+.hero-badge {
+  display: inline-flex; align-items: center; gap: var(--space-8);
+  padding: 4px 14px;
+  border-radius: 100px;
+  font-size: 0.8rem; font-weight: 500;
+  background: var(--mojo-subtle);
+  color: var(--mojo-dark);
+  margin-bottom: var(--space-24);
+}
+.hero h1 { max-width: 700px; margin-bottom: var(--space-24); }
+.hero h1 .gradient {
+  background: var(--mojo-gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.hero .hero-text p {
+  font-size: 1.2rem;
+  color: var(--text-secondary);
+  max-width: 520px;
+  margin-bottom: var(--space-40);
+}
+.hero-btns { display: flex; gap: var(--space-16); flex-wrap: wrap; }
+
+/* Hero terminal visual */
+.hero-terminal {
+  background: #1a1a2e;
+  border-radius: var(--radius-lg);
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.8;
+}
+.hero-terminal .term-header {
+  display: flex; align-items: center; gap: var(--space-8);
+  padding: 12px 16px;
+  background: rgba(255,255,255,0.04);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.hero-terminal .term-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+}
+.hero-terminal .term-dot:nth-child(1) { background: #ff5f57; }
+.hero-terminal .term-dot:nth-child(2) { background: #febc2e; }
+.hero-terminal .term-dot:nth-child(3) { background: #28c840; }
+.hero-terminal .term-title {
+  color: rgba(255,255,255,0.3);
+  font-size: 0.72rem;
+  margin-left: var(--space-8);
+}
+.hero-terminal .term-body {
+  padding: 20px 24px;
+  color: #a0a0b8;
+}
+.hero-terminal .prompt { color: var(--mojo-light); }
+.hero-terminal .cmd { color: #e0e0f0; }
+.hero-terminal .result { color: #6fcf97; }
+.hero-terminal .comment { color: #6f6f8f; font-style: italic; }
+
+.btn {
+  display: inline-flex; align-items: center; gap: var(--space-8);
+  padding: 12px 28px; border-radius: var(--radius);
+  font-size: 0.95rem; font-weight: 500;
+  transition: all var(--transition);
+  cursor: pointer; border: none;
+}
+.btn-primary {
+  background: var(--text); color: var(--text-inverse);
+}
+.btn-primary:hover {
+  background: var(--mojo); transform: translateY(-1px); text-decoration: none;
+}
+.btn-secondary {
+  background: transparent; color: var(--text);
+  border: 1px solid var(--border);
+}
+.btn-secondary:hover {
+  border-color: var(--text); transform: translateY(-1px); text-decoration: none;
+}
+
+/* ── Metrics Strip ── */
+.metrics-strip {
+  display: flex; gap: var(--space-64); flex-wrap: wrap;
+  padding: var(--space-48) 0; margin-top: var(--space-48);
+  border-top: 1px solid var(--border-light);
+}
+.metric-value {
+  font-size: 2rem; font-weight: 700; color: var(--text);
+  letter-spacing: -0.02em;
+}
+.metric-label {
+  font-size: 0.85rem; color: var(--text-tertiary);
+  margin-top: var(--space-4);
+}
+.metric-accent .metric-value { color: var(--mojo); }
+
+/* ── Feature Cards ── */
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-24);
+  margin-top: var(--space-48);
+}
+.feature-card {
+  padding: var(--space-32);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-light);
+  background: var(--bg-card);
+  transition: all var(--transition);
+}
+.feature-card:hover {
+  border-color: var(--mojo);
+  box-shadow: var(--shadow);
+}
+.feature-card .icon {
+  width: 40px; height: 40px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius);
+  background: var(--mojo-subtle);
+  font-size: 1.2rem;
+  margin-bottom: var(--space-16);
+}
+.feature-card h3 { font-size: 1rem; font-weight: 600; margin-bottom: var(--space-8); }
+.feature-card p { font-size: 0.9rem; color: var(--text-secondary); line-height: 1.6; }
+.feature-card .tag {
+  display: inline-block;
+  padding: 2px 10px; border-radius: 100px;
+  font-size: 0.72rem; font-weight: 600;
+  margin-top: var(--space-12);
+  background: rgba(25,128,56,0.1);
+  color: var(--success);
+}
+
+/* ── Release Notes / News ── */
+.release-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-24);
+  margin-top: var(--space-40);
+}
+.release-card {
+  padding: var(--space-24) var(--space-24) var(--space-32);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-light);
+  background: var(--bg-card);
+  transition: border-color var(--transition);
+}
+.release-card:hover { border-color: var(--mojo); }
+.release-card .release-tag {
+  display: inline-block;
+  padding: 2px 10px; border-radius: 100px;
+  font-size: 0.7rem; font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-12);
+}
+.release-tag-new { background: rgba(108,60,225,0.1); color: var(--mojo-dark); }
+.release-tag-perf { background: rgba(25,128,56,0.1); color: var(--success); }
+.release-tag-infra { background: rgba(0,120,200,0.1); color: #0066CC; }
+.release-card h3 {
+  font-size: 1rem; margin-bottom: var(--space-8);
+}
+.release-card p {
+  font-size: 0.85rem; color: var(--text-secondary); line-height: 1.6;
+}
+.release-card .release-stat {
+  font-size: 1.5rem; font-weight: 700;
+  color: var(--text);
+  margin-top: var(--space-12);
+}
+.release-card .release-stat-label {
+  font-size: 0.75rem; color: var(--text-tertiary);
+}
+
+/* ── Table ── */
+.table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  margin-top: var(--space-32);
+}
+table {
+  width: 100%; border-collapse: collapse;
+  font-size: 0.88rem;
+}
+thead { background: var(--bg-alt); }
+th {
+  padding: 14px 20px; text-align: left;
+  font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--text-tertiary);
+  border-bottom: 1px solid var(--border-light);
+}
+td {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-secondary);
+}
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: var(--mojo-subtle); }
+td strong { color: var(--text); }
+td .badge {
+  display: inline-block;
+  padding: 1px 8px; border-radius: 3px;
+  font-size: 0.75rem; font-weight: 600;
+}
+.badge-green { background: rgba(25,128,56,0.1); color: var(--success); }
+.badge-orange { background: rgba(255,107,0,0.1); color: #DA1E28; }
+.badge-gold { background: rgba(255,215,0,0.12); color: #B8860B; }
+
+/* ── CLI Code Block ── */
+.cli-box {
+  background: var(--text); color: #E0E0E0;
+  border-radius: var(--radius-lg);
+  padding: var(--space-24);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 2;
+  overflow-x: auto;
+}
+.cli-box .comment { color: #6F6F6F; font-style: italic; }
+.cli-box .prompt { color: var(--mojo-light); }
+.cli-box .cmd { color: #E0E0E0; }
+
+/* ── Steps ── */
+.steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-32);
+  margin-top: var(--space-48);
+}
+.step {
+  padding: var(--space-32);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+}
+.step-number {
+  font-size: 0.75rem; font-weight: 700; color: var(--mojo);
+  text-transform: uppercase; letter-spacing: 0.05em;
+  margin-bottom: var(--space-12);
+}
+.step h3 { font-size: 1.1rem; }
+
+/* ── CTA Banner ── */
+.cta-banner {
+  background: linear-gradient(135deg, #1a1a2e 0%, #2d1b69 100%);
+  padding: var(--space-64) 0;
+  text-align: center;
+}
+.cta-banner h2 {
+  color: var(--text-inverse);
+  margin-bottom: var(--space-12);
+}
+.cta-banner p {
+  color: rgba(255,255,255,0.6);
+  margin: 0 auto var(--space-32);
+  max-width: 480px;
+}
+.cta-banner .btn-primary {
+  background: var(--mojo-light);
+  color: var(--text-inverse);
+}
+.cta-banner .btn-primary:hover {
+  background: var(--mojo);
+  transform: translateY(-1px);
+}
+.cta-banner .btn-secondary {
+  color: var(--text-inverse);
+  border-color: rgba(255,255,255,0.2);
+}
+.cta-banner .btn-secondary:hover {
+  border-color: var(--text-inverse);
+}
+
+/* ── Footer ── */
+footer {
+  padding: var(--space-64) 0 var(--space-32);
+  border-top: 1px solid var(--border-light);
+}
+footer .grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr 1fr;
+  gap: var(--space-40);
+  margin-bottom: var(--space-48);
+}
+footer h4 {
+  font-size: 0.72rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--text-tertiary);
+  margin-bottom: var(--space-16);
+}
+footer a {
+  display: block; color: var(--text-secondary);
+  font-size: 0.88rem; margin-bottom: var(--space-8);
+}
+footer a:hover { color: var(--text); }
+footer .copyright {
+  text-align: center;
+  padding-top: var(--space-24);
+  border-top: 1px solid var(--border-light);
+  font-size: 0.8rem; color: var(--text-tertiary);
+}
+
+/* ── Responsive ── */
+@media (max-width: 1100px) {
+  .hero .hero-split { grid-template-columns: 1fr; }
+  .hero-terminal { max-width: 500px; }
+}
+@media (max-width: 1024px) {
+  .feature-grid { grid-template-columns: repeat(2, 1fr); }
+  .steps { grid-template-columns: repeat(2, 1fr); }
+  .release-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 768px) {
+  h1 { font-size: 2.2rem; }
+  h2 { font-size: 1.5rem; }
+  .hero { padding: var(--space-96) 0 var(--space-48); }
+  .section { padding: var(--space-48) 0; }
+  .section-sm { padding: var(--space-32) 0; }
+  .feature-grid { grid-template-columns: 1fr; }
+  .steps { grid-template-columns: 1fr; }
+  .release-grid { grid-template-columns: 1fr; }
+  .metrics-strip { gap: var(--space-32); }
+  footer .grid { grid-template-columns: 1fr 1fr; }
+  nav .nav-links a:not(.btn-nav):not(.version-badge) { display: none; }
+  .hero-terminal { display: none; }
+}
+@media (max-width: 480px) {
+  .container { padding: 0 var(--space-16); }
+  footer .grid { grid-template-columns: 1fr; }
+}
 </style>
 </head>
 <body>
 
+<nav>
+<div class="container">
+  <a href="#" class="logo">Mojo<span>Llama</span></a>
+  <div class="nav-links">
+    <span class="version-badge">v0.5.0</span>
+    <a href="#features">Features</a>
+    <a href="#models">Models</a>
+    <a href="#benchmarks">Benchmarks</a>
+    <a href="#quickstart">Quick start</a>
+    <a href="chat.html">Chat</a>
+    <a href="https://github.com/a730/MojoLlama" class="btn-nav">GitHub →</a>
+  </div>
+</div>
+</nav>
+
+<!-- ════ HERO — Split layout ════ -->
 <div class="hero">
-  <div class="container">
-    <span class="hero-badge badge-green">v0.5.0 — CPU Inference Engine</span>
-    <h1>Mojo<span>Llama</span></h1>
-    <p>High-throughput CPU LLM inference engine — GGUF native, MoE-optimized, multi-architecture. Up to <strong>2.3× faster</strong> than llama.cpp on MoE models.</p>
-    <div class="btn-group">
-      <a class="btn btn-primary" href="https://github.com/a730/MojoLlama">GitHub</a>
-      <a class="btn btn-secondary" href="https://github.com/a730/MojoLlama/pkgs/container/mojollama">Docker Image</a>
-      <a class="btn btn-secondary" href="#quickstart">Quick Start ↓</a>
+<div class="container">
+  <div class="hero-split">
+    <div class="hero-text">
+      <div class="hero-badge">v0.5.0 — Open source</div>
+      <h1>CPU-first LLM inference,<br><span class="gradient">engineered for performance</span></h1>
+      <p>MojoLlama is a high-throughput inference engine for CPU. GGUF native, MoE-optimized, with support for 50+ architectures — from Llama to Gemma 4 to hybrid SSM models.</p>
+      <div class="hero-btns">
+        <a href="https://github.com/a730/MojoLlama" class="btn btn-primary">Get started →</a>
+        <a href="chat.html" class="btn btn-secondary">Try chat</a>
+      </div>
     </div>
-    <div class="metrics">
-      <div class="metric"><div class="num">50+</div><div class="label">Architectures</div></div>
-      <div class="metric"><div class="num">62.6</div><div class="label">tok/s (GPT-OSS)</div></div>
-      <div class="metric"><div class="num">2.3×</div><div class="label">vs llama.cpp</div></div>
-      <div class="metric"><div class="num">47</div><div class="label">agg tok/s (10 users)</div></div>
+    <div class="hero-terminal">
+      <div class="term-header">
+        <span class="term-dot"></span>
+        <span class="term-dot"></span>
+        <span class="term-dot"></span>
+        <span class="term-title">mojollama — benchmark</span>
+      </div>
+      <div class="term-body">
+        <span class="comment"># GPT-OSS-20B @ 32 threads</span><br>
+        <span class="prompt">$</span> <span class="cmd">mojollama bench -m gpt-oss-20b.gguf</span><br><br>
+        <span class="result">✓ Model loaded</span><br>
+        <span class="comment">  architecture: gpt-oss (32 experts, top-2)</span><br>
+        <span class="comment">  quantization: Q4_K_M</span><br>
+        <span class="comment">  parameters:   20.0B</span><br><br>
+        <span class="result">✓ Running benchmark...</span><br>
+        <span class="comment">  prefill  512 tokens  ████████░░</span><br>
+        <span class="comment">  decode   128 tokens  ██████████</span><br><br>
+        <span style="color:#ffffff;">📊 Results</span><br>
+        <span class="result">  throughput:  62.6 tok/s</span><br>
+        <span class="result">  vs llama.cpp: 2.26× faster</span>
+      </div>
+    </div>
+  </div>
+  <div class="metrics-strip">
+    <div class="metric metric-accent"><div class="metric-value">62.6</div><div class="metric-label">Peak tok/s</div></div>
+    <div class="metric metric-accent"><div class="metric-value">2.3×</div><div class="metric-label">vs llama.cpp</div></div>
+    <div class="metric"><div class="metric-value">50+</div><div class="metric-label">Architectures</div></div>
+    <div class="metric"><div class="metric-value">47</div><div class="metric-label">Concurrent tok/s</div></div>
+    <div class="metric"><div class="metric-value">MIT</div><div class="metric-label">License</div></div>
+  </div>
+</div>
+</div>
+
+<!-- ════ LATEST RELEASES ════ -->
+<div class="section section-alt">
+<div class="container">
+  <div class="section-label">What's new</div>
+  <h2>Latest releases</h2>
+  <p>New architecture support, performance breakthroughs, and infrastructure improvements shipped in recent releases.</p>
+  <div class="release-grid">
+    <div class="release-card">
+      <span class="release-tag release-tag-new">Gemma 4</span>
+      <h3>Gemma 4 E2B engine</h3>
+      <p>Per-layer projections, GeGLU activation, sliding window attention (SWA=512), logit softcapping at 30.0, shared KV layers, and post-attention/FFW norms.</p>
+      <div class="release-stat">13.2<span class="release-stat-label"> tok/s</span></div>
+    </div>
+    <div class="release-card">
+      <span class="release-tag release-tag-new">ZAYA1</span>
+      <h3>ZAYA1-8B support</h3>
+      <p>80 interleaved layers (ATTN+CCA+SSM / MoE+MoD), 16 experts top-1 routing, SwiGLU activation, partial RoPE, and residual scaling.</p>
+      <div class="release-stat">8.3<span class="release-stat-label"> tok/s @ 1t</span></div>
+    </div>
+    <div class="release-card">
+      <span class="release-tag release-tag-perf">2.26×</span>
+      <h3>GPT-OSS throughput record</h3>
+      <p>C-accelerated fused MoE forward kernel with expert dispatch pushes GPT-OSS-20B to 62.6 tok/s — 2.26× faster than llama.cpp on identical hardware.</p>
+    </div>
+    <div class="release-card">
+      <span class="release-tag release-tag-perf">1.57×</span>
+      <h3>Qwen3.6 hybrid SSM</h3>
+      <p>Hybrid SSM+Attention layers with MXFP4 quantization. Concurrent serving at 47 tok/s aggregate across 10 workers, 92% of 200% scaling target.</p>
+    </div>
+    <div class="release-card">
+      <span class="release-tag release-tag-infra">Docker</span>
+      <h3>Production Docker image</h3>
+      <p>Multi-stage build on GHCR with hardware auto-tune, HF model download, and docker-compose profiles for API server, chat, bench, and fallback.</p>
+    </div>
+    <div class="release-card">
+      <span class="release-tag release-tag-infra">Pages</span>
+      <h3>GitHub Pages site</h3>
+      <p>Interactive chat UI, benchmark tables, architecture support matrix, and getting-started guide deployed to GitHub Pages on every push.</p>
     </div>
   </div>
 </div>
+</div>
 
-<section id="features">
+<!-- ════ FEATURES ════ -->
+<div class="section" id="features">
 <div class="container">
-  <h2><span>F</span>eatures</h2>
-  <div class="features">
-    <div class="feature">
-      <h3><span>⚡</span> MoE-Optimized</h3>
-      <p>C-accelerated fused MoE forward kernel with expert dispatch — up to 2.3× faster than llama.cpp on GPT-OSS and Qwen3 MoE models.</p>
+  <div class="section-label">Features</div>
+  <h2>Built for local LLM workloads</h2>
+  <p style="margin-bottom:0;">From single-token inference to production concurrent serving — MojoLlama scales to your hardware.</p>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <div class="icon">⚡</div>
+      <h3>MoE-optimized engine</h3>
+      <p>C-accelerated fused MoE forward kernel with expert dispatch. Up to 2.3× faster than llama.cpp on GPT-OSS and Qwen3 MoE models.</p>
+      <span class="tag">2.3× vs llama.cpp</span>
     </div>
-    <div class="feature">
-      <h3><span>🏗️</span> Multi-Architecture</h3>
-      <p>Llama, Mistral, Qwen2/3, GPT-OSS, Gemma 4, ZAYA1, DeepSeek V2/V3, DBRX, Mixtral, Falcon, Phi, and 50+ more architectures.</p>
+    <div class="feature-card">
+      <div class="icon">🧬</div>
+      <h3>Hybrid SSM + Attention</h3>
+      <p>Qwen3.6-35B with Mamba-2 SSM + Attention hybrid layers, MXFP4 quantization, and concurrent serving at 47 tok/s aggregate.</p>
     </div>
-    <div class="feature">
-      <h3><span>🔋</span> GGUF Native</h3>
-      <p>All quantization types: Q4_0, Q4_K, Q5_K, Q6_K, Q8_0, MXFP4. Full K-quant support including Q5_K and MXFP4 experts.</p>
+    <div class="feature-card">
+      <div class="icon">🧩</div>
+      <h3>Gemma 4 &amp; ZAYA1</h3>
+      <p>Gemma 4: per-layer projections, GeGLU activation, sliding window, logit softcapping. ZAYA1: interleaved ATTN/MoE+MoD with CCA.</p>
     </div>
-    <div class="feature">
-      <h3><span>🧬</span> Hybrid SSM+Attention</h3>
-      <p>Qwen3.6-35B support with Mamba-2 SSM + Attention hybrid layers, MXFP4 quant, and concurrent serving at 47 tok/s.</p>
+    <div class="feature-card">
+      <div class="icon">🔌</div>
+      <h3>50+ architectures</h3>
+      <p>Llama, Mistral, Qwen, GPT-OSS, DeepSeek V2/V3, DBRX, Mixtral, Gemma 4, ZAYA1, Falcon, Phi — pluggable forward passes for any GGUF model.</p>
     </div>
-    <div class="feature">
-      <h3><span>🧩</span> Gemma 4 & ZAYA1</h3>
-      <p>Gemma 4: per-layer projections, GeGLU activation, sliding window attention, logit softcapping. ZAYA1: interleaved ATTN/MoE+MoD, CCA, SSM conv1d.</p>
+    <div class="feature-card">
+      <div class="icon">🔋</div>
+      <h3>GGUF native</h3>
+      <p>All quantization types: Q4_0, Q4_K, Q5_K, Q6_K, Q8_0, MXFP4. Full K-quant support including Q5_K and MXFP4 for expert weights.</p>
     </div>
-    <div class="feature">
-      <h3><span>📦</span> Docker Ready</h3>
-      <p>Pre-built image on GHCR with auto-tune on first load, HuggingFace model download, and docker-compose for all services.</p>
+    <div class="feature-card">
+      <div class="icon">🔄</div>
+      <h3>Concurrent serving</h3>
+      <p>Multi-process server with configurable workers. Up to 47 tok/s aggregate on Qwen3.6-35B with 10 concurrent users.</p>
     </div>
-    <div class="feature">
-      <h3><span>🔧</span> Hardware Auto-Tune</h3>
-      <p>Sweeps OMP threads, batch sizes, concurrency levels, and MojoLlama engine settings. Finds optimal config for your CPU.</p>
+    <div class="feature-card">
+      <div class="icon">🔧</div>
+      <h3>Hardware auto-tune</h3>
+      <p>Sweeps OMP threads, batch sizes, concurrency levels, and engine settings. Caches per-model optimized config on first load.</p>
     </div>
-    <div class="feature">
-      <h3><span>🖥️</span> Studio Web UI</h3>
-      <p>Built-in web interface for chat, training, dataset management, model export, and evaluation — all from your browser.</p>
+    <div class="feature-card">
+      <div class="icon">📦</div>
+      <h3>Docker ready</h3>
+      <p>Pre-built image on GHCR with auto-tune, HuggingFace model download, and docker-compose for API server, chat, and llama.cpp fallback.</p>
     </div>
-    <div class="feature">
-      <h3><span>🔄</span> Unified CLI</h3>
-      <p>Single `mojollama` command for chat, serve, bench, quantize, convert, autotune, eval, train, export, and hub operations.</p>
+    <div class="feature-card">
+      <div class="icon">🖥️</div>
+      <h3>Unified CLI</h3>
+      <p>Single <code>mojollama</code> command for chat, serve, bench, quantize, convert, autotune, eval, train, export, and hub operations.</p>
     </div>
   </div>
 </div>
-</section>
-
-<section id="quickstart">
-<div class="container">
-  <h2><span>Q</span>uick Start</h2>
-
-  <h3>Install</h3>
-  <div class="cli-box">
-    <span class="comment"># Clone and install</span><br>
-    <span class="prompt">$</span> <span class="cmd">git clone https://github.com/a730/MojoLlama.git</span><br>
-    <span class="prompt">$</span> <span class="cmd">cd MojoLlama/src && pip install -e .</span><br>
-    <br>
-    <span class="comment"># Or use Docker</span><br>
-    <span class="prompt">$</span> <span class="cmd">docker pull ghcr.io/a730/mojollama:latest</span><br>
-  </div>
-
-  <h3>Basic Usage</h3>
-  <div class="cli-box">
-    <span class="prompt">$</span> <span class="cmd">mojollama chat -m model.gguf</span><br>
-    <span class="prompt">$</span> <span class="cmd">mojollama serve -m model.gguf -p 8080</span><br>
-    <span class="prompt">$</span> <span class="cmd">mojollama bench -m model.gguf -n 256</span><br>
-    <span class="prompt">$</span> <span class="cmd">mojollama quantize model.gguf -t Q4_K_M</span><br>
-    <span class="prompt">$</span> <span class="cmd">mojollama autotune -m model.gguf --mojollama</span><br>
-  </div>
-
-  <h3>Docker Compose</h3>
-  <div class="cli-box">
-    <span class="comment"># Start API server with auto-download</span><br>
-    <span class="prompt">$</span> <span class="cmd">HF_REPO=bartowski/TinyLlama-1.1B-GGUF \</span><br>
-    <span class="cmd">  HF_FILE=tinyllama-1.1b.Q4_K_M.gguf \</span><br>
-    <span class="cmd">  docker compose up -d</span><br>
-  </div>
 </div>
-</section>
 
-<section id="architectures">
+<!-- ════ ARCHITECTURE SUPPORT ════ -->
+<div class="section section-alt" id="models">
 <div class="container">
-  <h2><span>A</span>rchitecture Support</h2>
+  <div class="section-label">Models</div>
+  <h2>Architecture support</h2>
+  <p style="margin-bottom:0;">Every model that loads in GGUF format is supported. Architecture-specific forward passes ensure correct computation.</p>
+  <div class="table-wrap">
   <table>
-    <thead>
-      <tr><th>Architecture</th><th>Status</th><th>Key Features</th></tr>
-    </thead>
+    <thead><tr><th>Architecture</th><th>Status</th><th>Notable features</th></tr></thead>
     <tbody>
-      <tr><td>Llama 2/3/4, Mistral</td><td class="arch-yes">✅ Full</td><td>Dense, GQA, SwiGLU, RoPE</td></tr>
-      <tr><td>Qwen2, Qwen3</td><td class="arch-yes">✅ Full</td><td>TNT embedding, partial rotary</td></tr>
-      <tr><td>GPT-OSS</td><td class="arch-yes">✅ Full</td><td>MoE 32×4, packed experts, bias attn <span class="trophy">🏆 2.26× vs llama.cpp</span></td></tr>
-      <tr><td>Qwen3 MoE</td><td class="arch-yes">✅ Full</td><td>128 experts top-8, shared expert</td></tr>
-      <tr><td>Qwen3.6-35B</td><td class="arch-yes">✅ Full</td><td>Hybrid SSM+Attention, MXFP4, MoE <span class="trophy">🏆 47 tok/s concurrent</span></td></tr>
-      <tr><td>Gemma 4</td><td class="arch-yes">✅ Full</td><td>Per-layer projections, GeGLU, SWA, softcap</td></tr>
-      <tr><td>ZAYA1-8B</td><td class="arch-yes">✅ Full</td><td>ATTN/CCA/SSM + MoE+MoD, 80L, top-1</td></tr>
-      <tr><td>DeepSeek V2/V3</td><td class="arch-yes">✅</td><td>MLA, DeepSeekMoE, sparse attn</td></tr>
-      <tr><td>Mixtral</td><td class="arch-yes">✅</td><td>MoE 8×2, SwiGLU</td></tr>
-      <tr><td>DBRX</td><td class="arch-yes">✅</td><td>MoE with gated FFN</td></tr>
-      <tr><td>Falcon</td><td class="arch-no">🔧 Planned</td><td>Parallel attention+FFN</td></tr>
-      <tr><td>Phi-3/4</td><td class="arch-no">🔧 Planned</td><td>Fused QKV, long RoPE</td></tr>
+      <tr><td><strong>Llama 2/3/4</strong>, Mistral</td><td><span class="badge badge-green">Full</span></td><td>Dense, GQA, SwiGLU, RoPE</td></tr>
+      <tr><td><strong>Qwen2</strong>, Qwen3</td><td><span class="badge badge-green">Full</span></td><td>TNT embedding, partial rotary</td></tr>
+      <tr><td><strong>GPT-OSS</strong></td><td><span class="badge badge-green">Full</span></td><td>MoE 32 experts, packed experts, bias attention — <strong>2.26× vs llama.cpp</strong></td></tr>
+      <tr><td><strong>Qwen3 MoE</strong></td><td><span class="badge badge-green">Full</span></td><td>128 experts top-8, shared expert, SwiGLU</td></tr>
+      <tr><td><strong>Qwen3.6-35B</strong></td><td><span class="badge badge-green">Full</span></td><td>Hybrid SSM+Attention, MXFP4, MoE 256 experts</td></tr>
+      <tr><td><strong>Gemma 4</strong></td><td><span class="badge badge-green">Full</span></td><td>Per-layer projections, GeGLU, sliding window, logit softcapping</td></tr>
+      <tr><td><strong>ZAYA1-8B</strong></td><td><span class="badge badge-green">Full</span></td><td>80 layers, ATTN/CCA/SSM + MoE+MoD, top-1 routing</td></tr>
+      <tr><td><strong>DeepSeek V2/V3</strong></td><td><span class="badge badge-green">Supported</span></td><td>Multi-head Latent Attention, DeepSeekMoE</td></tr>
+      <tr><td><strong>Mixtral</strong>, DBRX</td><td><span class="badge badge-green">Supported</span></td><td>Standard MoE with gated FFN</td></tr>
+      <tr><td><strong>Falcon</strong></td><td><span class="badge badge-orange">In development</span></td><td>Parallel attention+FFN, fused QKV</td></tr>
+      <tr><td><strong>Phi-3/4</strong></td><td><span class="badge badge-orange">In development</span></td><td>Fused QKV, long RoPE</td></tr>
     </tbody>
   </table>
-</div>
-</section>
-
-<section id="benchmarks">
-<div class="container">
-  <h2><span>P</span>erformance</h2>
-  <p style="color: var(--muted); margin-bottom: 16px;">AMD Threadripper 3970X (32C/64T, 251GB DDR4) — 32 threads</p>
-  <table>
-    <thead>
-      <tr><th>Model</th><th>Engine</th><th>tok/s</th><th>vs llama.cpp</th></tr>
-    </thead>
-    <tbody>
-      <tr><td>TinyLlama 1.1B Q4_0</td><td>Dense</td><td>79.2</td><td>0.89×</td></tr>
-      <tr><td>GPT-OSS-20B Q4_K_M</td><td>MoE (Python)</td><td><strong>62.6</strong></td><td class="arch-yes"><strong>2.26× 🏆</strong></td></tr>
-      <tr><td>Qwen3.6-35B MXFP4</td><td>MoE (Python)</td><td>25.5</td><td class="arch-yes">1.57× 🏆</td></tr>
-      <tr><td>Qwen3.6-35B MXFP4</td><td>Concurrent (10×3)</td><td><strong>47 agg</strong></td><td>—</td></tr>
-      <tr><td>Gemma 4 4.6B Q4_K_M</td><td>Gemma4 engine</td><td>13.2</td><td>—</td></tr>
-      <tr><td>ZAYA1-8B Q4_K_M</td><td>ZAYA engine</td><td>8.3</td><td>—</td></tr>
-    </tbody>
-  </table>
-</div>
-</section>
-
-<section id="docs">
-<div class="container">
-  <h2><span>D</span>ocumentation</h2>
-  <div class="features" style="grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));">
-    <a class="feature" href="https://github.com/a730/MojoLlama" style="text-decoration: none; color: inherit;">
-      <h3><span>📖</span> README</h3>
-      <p>Full documentation — CLI reference, environment variables, architecture support, Docker setup, development guide.</p>
-    </a>
-    <a class="feature" href="https://github.com/a730/MojoLlama/pkgs/container/mojollama" style="text-decoration: none; color: inherit;">
-      <h3><span>🐳</span> Docker Images</h3>
-      <p>Pre-built images on GitHub Container Registry with auto-tune, HF model download, and multi-arch support.</p>
-    </a>
-    <a class="feature" href="https://github.com/a730/MojoLlama/blob/dev/.github/workflows/docker.yml" style="text-decoration: none; color: inherit;">
-      <h3><span>🔄</span> CI/CD</h3>
-      <p>GitHub Actions workflows for Docker builds, multi-arch, nightly builds, smoke tests, and GitHub Pages deployment.</p>
-    </a>
   </div>
 </div>
-</section>
+</div>
 
+<!-- ════ BENCHMARKS ════ -->
+<div class="section" id="benchmarks">
+<div class="container">
+  <div class="section-label">Performance</div>
+  <h2>Benchmarked on real hardware</h2>
+  <p style="margin-bottom:0;">AMD Threadripper 3970X (32C/64T, 251GB DDR4). 32 threads unless noted. All measurements in tok/s (higher is better).</p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th>Model</th><th>Engine</th><th>tok/s</th><th>vs llama.cpp</th></tr></thead>
+    <tbody>
+      <tr><td><strong>TinyLlama 1.1B</strong> Q4_0</td><td>Dense engine</td><td>79.2</td><td>0.89×</td></tr>
+      <tr><td><strong>GPT-OSS-20B</strong> Q4_K_M</td><td>MoE (Python)</td><td><strong>62.6</strong></td><td><span class="badge badge-gold">2.26× 🏆</span></td></tr>
+      <tr><td><strong>Qwen3.6-35B</strong> MXFP4</td><td>MoE (Python)</td><td>25.5</td><td><span class="badge badge-green">1.57× 🏆</span></td></tr>
+      <tr><td><strong>Qwen3.6-35B</strong> MXFP4</td><td>Concurrent (10×3t)</td><td><strong>47</strong> aggregate</td><td>—</td></tr>
+      <tr><td><strong>Gemma 4 4.6B</strong> Q4_K_M</td><td>Gemma4 engine</td><td>13.2</td><td>—</td></tr>
+      <tr><td><strong>ZAYA1-8B</strong> Q4_K_M</td><td>ZAYA engine (1t)</td><td>8.3</td><td>—</td></tr>
+    </tbody>
+  </table>
+  </div>
+</div>
+</div>
+
+<!-- ════ GETTING STARTED ════ -->
+<div class="section section-alt" id="quickstart">
+<div class="container">
+  <div class="section-label">Getting started</div>
+  <h2>From zero to inference</h2>
+  <p style="margin-bottom:var(--space-8);">Install MojoLlama and run your first model in minutes.</p>
+  <div class="steps">
+    <div class="step">
+      <div class="step-number">Step 01</div>
+      <h3>Install</h3>
+      <p style="font-size:0.88rem; margin-top:var(--space-12);">Clone the repository and install dependencies.</p>
+      <div class="cli-box" style="margin-top:var(--space-16); padding:var(--space-16); font-size:0.78rem;">
+        <span class="prompt">$</span> <span class="cmd">git clone https://github.com/a730/MojoLlama.git</span><br>
+        <span class="prompt">$</span> <span class="cmd">cd MojoLlama/src && pip install -e .</span>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-number">Step 02</div>
+      <h3>Download a model</h3>
+      <p style="font-size:0.88rem; margin-top:var(--space-12);">Get a GGUF model from HuggingFace or use your own.</p>
+      <div class="cli-box" style="margin-top:var(--space-16); padding:var(--space-16); font-size:0.78rem;">
+        <span class="prompt">$</span> <span class="cmd">mojollama convert --hf meta-llama/Llama-3.2-1B \</span><br>
+        <span class="cmd">  --outtype q4_0</span>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-number">Step 03</div>
+      <h3>Run inference</h3>
+      <p style="font-size:0.88rem; margin-top:var(--space-12);">Chat, serve, or benchmark — all from one command.</p>
+      <div class="cli-box" style="margin-top:var(--space-16); padding:var(--space-16); font-size:0.78rem;">
+        <span class="prompt">$</span> <span class="cmd">mojollama chat -m model.gguf</span><br>
+        <span class="prompt">$</span> <span class="cmd">mojollama serve -m model.gguf -p 8080</span>
+      </div>
+    </div>
+  </div>
+  <div style="text-align:center; margin-top:var(--space-40);">
+    <a href="https://github.com/a730/MojoLlama" class="btn btn-secondary">View full documentation →</a>
+  </div>
+</div>
+</div>
+
+<!-- ════ CTA BANNER ════ -->
+<div class="cta-banner">
+<div class="container">
+  <h2>Star us on GitHub</h2>
+  <p>MojoLlama is open source (MIT). Contributions, issues, and feature requests welcome.</p>
+  <div class="hero-btns" style="justify-content:center;">
+    <a href="https://github.com/a730/MojoLlama" class="btn btn-primary">GitHub →</a>
+    <a href="https://github.com/a730/MojoLlama/issues" class="btn btn-secondary">Report an issue</a>
+  </div>
+</div>
+</div>
+
+<!-- ════ FOOTER ════ -->
 <footer>
-  <div class="container">
-    <p>MojoLlama v0.5.0 — MIT License</p>
-    <p>Built with <a href="https://github.com/a730/MojoLlama">❤️ on GitHub</a></p>
+<div class="container">
+  <div class="grid">
+    <div>
+      <div style="font-weight:700; font-size:1.1rem; margin-bottom:var(--space-12);">Mojo<span style="color:var(--mojo);">Llama</span></div>
+      <p style="font-size:0.85rem; line-height:1.6;">CPU-first LLM inference, fine-tuning, quantization, and serving — engineered in Mojo+MAX. Fully open source under MIT.</p>
+    </div>
+    <div>
+      <h4>Product</h4>
+      <a href="chat.html">Chat</a>
+      <a href="https://github.com/a730/MojoLlama">Documentation</a>
+      <a href="#benchmarks">Benchmarks</a>
+    </div>
+    <div>
+      <h4>Community</h4>
+      <a href="https://github.com/a730/MojoLlama">GitHub</a>
+      <a href="https://github.com/a730/MojoLlama/issues">Issues</a>
+    </div>
+    <div>
+      <h4>Ecosystem</h4>
+      <a href="https://www.modular.com/max">MAX</a>
+      <a href="https://github.com/ggml-org/gguf">GGUF</a>
+      <a href="https://github.com/ggml-org/llama.cpp">llama.cpp</a>
+    </div>
   </div>
+  <div class="copyright">MojoLlama v0.5.0 — MIT License</div>
+</div>
 </footer>
 
 </body>
