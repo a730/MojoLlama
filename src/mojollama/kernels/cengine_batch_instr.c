@@ -511,9 +511,13 @@ void moe_ffn(const BC *c, int l, float *x, float *gate_buf, float *up_buf, float
     size_t gate_stride = (size_t)M * (N / QK_K) * sizeof(block_q4_K);
     size_t up_stride = (size_t)M * (N / QK_K) * sizeof(block_q4_K);
     size_t down_stride = (size_t)N * (M / QK_K) * sizeof(block_q6_K);
+    if (c->gate_exp_quant == 13) gate_stride = (size_t)M * (N / QK_K) * sizeof(block_q5_K);
     if (c->gate_exp_quant == 14) gate_stride = (size_t)M * (N / QK_K) * sizeof(block_q6_K);
+    if (c->up_exp_quant == 13) up_stride = (size_t)M * (N / QK_K) * sizeof(block_q5_K);
     if (c->up_exp_quant == 14) up_stride = (size_t)M * (N / QK_K) * sizeof(block_q6_K);
     if (c->down_exp_quant == 12) down_stride = (size_t)N * (M / QK_K) * sizeof(block_q4_K);
+    if (c->down_exp_quant == 13) down_stride = (size_t)N * (M / QK_K) * sizeof(block_q5_K);
+    if (c->down_exp_quant == 14) down_stride = (size_t)N * (M / QK_K) * sizeof(block_q6_K);
     if (c->gate_exp_quant == 39) gate_stride = (size_t)M * (N / 32) * sizeof(block_mxfp4);
     if (c->up_exp_quant == 39) up_stride = (size_t)M * (N / 32) * sizeof(block_mxfp4);
     if (c->down_exp_quant == 39) down_stride = (size_t)N * (M / 32) * sizeof(block_mxfp4);
@@ -581,7 +585,9 @@ void moe_ffn(const BC *c, int l, float *x, float *gate_buf, float *up_buf, float
             }
             
             const uint8_t *down_w = c->w_down_exps[l] + (size_t)e * down_stride;
-            if (c->down_exp_quant == 14)
+            if (c->down_exp_quant == 13)
+                q5_k_batch_matmul(down_w, gate_buf, up_buf, N, M, 1);
+            else if (c->down_exp_quant == 14)
                 q6_k_batch_matmul(down_w, gate_buf, up_buf, N, M, 1);
             else if (c->down_exp_quant == 2)
                 q4_0_batch_matmul(down_w, gate_buf, up_buf, N, M, 1);
@@ -780,7 +786,7 @@ void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
     /* ── Hybrid SSM/Attention Block ── */
     int is_ssm = (c->layer_types && c->layer_types[l] == 1);
     
-        if (is_ssm && c->ssm_conv1d) {
+        if (is_ssm && c->ssm_conv1d && c->ssm_conv1d[l] != NULL) {
             /* ═══ SSM path ═══ */
         int groups = ssm_groups, state_size = ssm_state_size;
         int dt_rank = ssm_dt_rank;
