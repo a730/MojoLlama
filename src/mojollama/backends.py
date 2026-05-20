@@ -287,7 +287,7 @@ class MAXBackend(BackendBase):
         """
         self.model_path = (
             model_path
-            or "/tmp/models/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf"
+            or "/models/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf"
         )
         self.weight_path = (
             weight_path

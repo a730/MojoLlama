@@ -54,6 +54,8 @@ x-common: &common
     # ── HuggingFace ──
     HF_TOKEN: "${HF_TOKEN:-}"
     HUGGINGFACE_TOKEN: "${HF_TOKEN:-}"
+    HF_REPO: "${HF_REPO:-}"
+    HF_FILE: "${HF_FILE:-}"
     HF_HOME: "${HF_HOME:-/cache/huggingface}"
     HUGGINGFACE_HUB_CACHE: "${HUGGINGFACE_HUB_CACHE:-/cache/huggingface/hub}"
 
@@ -66,11 +68,6 @@ x-common: &common
     - "${CONFIG_VOLUME:-./config}:/root/.mojollama"
     - "${CACHE_VOLUME:-./cache}:/cache"
     - "${DATA_VOLUME:-./data}:/data"
-  deploy:
-    resources:
-      limits:
-        cpus: "${CPU_LIMIT:-0}"
-        memory: "${MEM_LIMIT:-128G}"
   restart: unless-stopped
   healthcheck:
     test: ["CMD", "curl", "-sf", "http://localhost:${PORT:-8080}/health"]

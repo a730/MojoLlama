@@ -146,6 +146,10 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 # ── Expose ports ──
 EXPOSE 8080 8081
 
+# ── Health check ──
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD curl -sf http://localhost:${PORT:-8080}/health || exit 1
+
 # ── Entry point ──
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["--help"]

@@ -91,7 +91,23 @@ class LayerWeights:
                  'post_attn_norm_w', 'post_ffw_norm_w', 'post_norm_w',
                  'per_layer_proj', 'per_layer_inp_gate', 'layer_scale',
                  'gemma4_nq', 'gemma4_nk', 'gemma4_nv', 'gemma4_head_dim',
-                 'gemma4_is_swa', 'gemma4_rope_dim', 'gemma4_freq_base', 'gemma4_kv_idx']
+                'gemma4_is_swa', 'gemma4_rope_dim', 'gemma4_freq_base', 'gemma4_kv_idx',
+                 # ZAYA specific fields
+                 'res_scale_hs_w', 'res_scale_hs_b', 'res_scale_res_w', 'res_scale_res_b',
+                 'ffn_gate_inp_w', 'ffn_gate_inp_b', 'ffn_gate_w', 'ffn_gate_b', 'ffn_norm_w',
+                 'zaya_router_mlp2_w', 'zaya_router_mlp2_b', 'zaya_router_mlp4_w',
+                 'zaya_router_biases_w', 'zaya_router_eda_w',
+                 'cca_val_proj1_w', 'cca_val_proj2_w',
+                 'cca_vp1_raw', 'cca_vp2_raw', 'cca_vp1_nr', 'cca_vp2_nr',
+                 'cca_vp1_nc', 'cca_vp2_nc', 'cca_vp1_qt', 'cca_vp2_qt',
+                 'ssm_conv1d_w', 'ssm_conv1d_b',
+                 'gate_up_exps_raw_arr', 'down_exps_raw_arr',
+                 'gate_up_exps_nr', 'down_exps_nr',
+                 'gate_up_exps_nc', 'down_exps_nc',
+                 'gate_up_exps_qt', 'down_exps_qt',
+                 'gate_up_exps_n_exp', 'down_exps_n_exp',
+                 'gate_up_ptrs', 'down_ptrs',
+                 'gate_up_info', 'down_info']
 
 
 class TurboEngineV7MoE:
@@ -112,6 +128,9 @@ class TurboEngineV7MoE:
         if self.arch_name == 'gemma4':
             from forward.gemma4 import ForwardGemma4
             self._arch_forward = ForwardGemma4(self)
+        elif self.arch_name == 'zaya':
+            from forward.zaya import ForwardZaya
+            self._arch_forward = ForwardZaya(self)
         
         self._load_kernels()
         t0 = time.perf_counter()
@@ -371,7 +390,8 @@ class TurboEngineV7MoE:
         # Output weight
         self.out_w_name = 'output.weight' if 'output.weight' in self.raw_weights or 'output.weight' in self.weights else 'token_embd.weight'
         out_info = self.weight_info.get(self.out_w_name)
-        if out_info is not None and self._kern is not None:
+        if out_info is not None and self._kern is not None and self.arch_name != 'zaya':
+            # Skip requantization for arch-specific forward passes that use np.dot
             self._out_nr = ctypes.c_int(out_info[0])
             self._out_nc = ctypes.c_int(out_info[1])
             self._out_qt_orig = ctypes.c_int(out_info[3])
@@ -506,6 +526,8 @@ class TurboEngineV7MoE:
                 lw.ffn_norm_w = self.weights[f'{pfx}.ffn_norm.weight']
             elif f'{pfx}.post_attention_norm.weight' in self.weights:
                 lw.ffn_norm_w = self.weights[f'{pfx}.post_attention_norm.weight']
+            elif self._arch_forward is not None:
+                lw.ffn_norm_w = None
             else:
                 raise KeyError(f'No FFN norm weight found for layer {i}')
 

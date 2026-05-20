@@ -27,6 +27,26 @@ for arg in "$@"; do
     esac
 done
 
+# ── Auto-download model from HuggingFace if not found locally ──
+if [ -n "$MODEL" ] && [ ! -f "$MODEL" ] && [ -n "$HF_REPO" ] && [ -n "$HF_FILE" ]; then
+    echo "=================================================="
+    echo "  Downloading $HF_REPO/$HF_FILE ..."
+    echo "=================================================="
+    python3 -c "
+from huggingface_hub import hf_hub_download
+import os
+os.makedirs(os.path.dirname('$MODEL'), exist_ok=True)
+path = hf_hub_download(repo_id='$HF_REPO', filename='$HF_FILE',
+    local_dir=os.path.dirname('$MODEL') or '/models')
+print(f'Downloaded to {path}')
+"
+    if [ -f "$MODEL" ]; then
+        echo "  ✓ Download complete"
+    else
+        echo "  ⚠ Download may have failed; check HF_REPO/HF_FILE"
+    fi
+fi
+
 # ── Auto-tune on first model load ──────────────────────
 # Skip if AUTO_TUNE=false or the model doesn't exist
 if [ "${AUTO_TUNE:-true}" = "true" ] && [ -n "$MODEL" ] && [ -f "$MODEL" ]; then
