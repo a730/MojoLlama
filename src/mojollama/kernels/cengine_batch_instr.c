@@ -514,6 +514,9 @@ void moe_ffn(const BC *c, int l, float *x, float *gate_buf, float *up_buf, float
     if (c->gate_exp_quant == 14) gate_stride = (size_t)M * (N / QK_K) * sizeof(block_q6_K);
     if (c->up_exp_quant == 14) up_stride = (size_t)M * (N / QK_K) * sizeof(block_q6_K);
     if (c->down_exp_quant == 12) down_stride = (size_t)N * (M / QK_K) * sizeof(block_q4_K);
+    if (c->gate_exp_quant == 39) gate_stride = (size_t)M * (N / 32) * sizeof(block_mxfp4);
+    if (c->up_exp_quant == 39) up_stride = (size_t)M * (N / 32) * sizeof(block_mxfp4);
+    if (c->down_exp_quant == 39) down_stride = (size_t)N * (M / 32) * sizeof(block_mxfp4);
     float router_logits[256];
     int top_idx[16]; float top_val[16];
     const float *w_router = c->w_gate_inp[l];
@@ -560,12 +563,16 @@ void moe_ffn(const BC *c, int l, float *x, float *gate_buf, float *up_buf, float
                 q4_k_batch_matmul(gate_w, xb, gate_buf, M, N, 1);
             else if (c->gate_exp_quant == 2)
                 q4_0_batch_matmul(gate_w, xb, gate_buf, M, N, 1);
+            else if (c->gate_exp_quant == 39)
+                mxfp4_batch_matmul(gate_w, xb, gate_buf, M, N, 1);
             
             const uint8_t *up_w = c->w_up_exps[l] + (size_t)e * up_stride;
             if (c->up_exp_quant == 12)
                 q4_k_batch_matmul(up_w, xb, up_buf, M, N, 1);
             else if (c->up_exp_quant == 2)
                 q4_0_batch_matmul(up_w, xb, up_buf, M, N, 1);
+            else if (c->up_exp_quant == 39)
+                mxfp4_batch_matmul(up_w, xb, up_buf, M, N, 1);
             
             for (int i = 0; i < M; i++) {
                 float g = gate_buf[i];
@@ -578,6 +585,8 @@ void moe_ffn(const BC *c, int l, float *x, float *gate_buf, float *up_buf, float
                 q6_k_batch_matmul(down_w, gate_buf, up_buf, N, M, 1);
             else if (c->down_exp_quant == 2)
                 q4_0_batch_matmul(down_w, gate_buf, up_buf, N, M, 1);
+            else if (c->down_exp_quant == 39)
+                mxfp4_batch_matmul(down_w, gate_buf, up_buf, N, M, 1);
             
             for (int i = 0; i < N; i++) ffn_buf[i] += weight * up_buf[i];
         }
