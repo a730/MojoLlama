@@ -64,6 +64,12 @@ class ForwardPassType(str, Enum):
     """Mixture-of-Experts transformer (Qwen3 MoE, DeepSeek V2, Mixtral, GPT-OSS).
        Uses: RMSNorm → attention → RoPE → router → top-k experts."""
 
+    DEEPSEEK_V4 = "deepseek_v4"
+    """DeepSeek V4 Flash (MLA, HC, sparse attention, hash+learned MoE routing).
+       43L/4096D/64H/1KV, Q_lora=1024, O_lora=1024, 256 experts×6.
+       Uses: embed → HC-expand → (HC-pre → attn_norm → MLA → HC-post → 
+              HC-pre → ffn_norm → MoE-FFN → HC-post)x43 → HC-head → norm → lm_head."""
+
     GEMMA = "gemma"
     """Google Gemma/Gemma2 (GeGLU activation, pre-norm, no RoPE on K).
        Uses: RMSNorm → attention → GeGLU FFN (or gating variant)."""
@@ -151,6 +157,7 @@ GGUF_ARCH_MAP: Dict[str, ForwardPassType] = {
     "mixtral":    ForwardPassType.MOE,
     "deepseek2":  ForwardPassType.MOE,
     "deepseek3":  ForwardPassType.MOE,
+    "deepseek_v4": ForwardPassType.DEEPSEEK_V4,
     "dbrx":       ForwardPassType.MOE,
     "qwen3next":  ForwardPassType.MOE,
     "olmoe":      ForwardPassType.MOE,

@@ -13,6 +13,8 @@ import time
 import gguf
 from gguf.constants import GGMLQuantizationType as QT
 
+from forward.base import ArchitectureForwardPass
+
 GGML_F32  = 0; GGML_F16 = 1; GGML_Q4_0 = 2; GGML_Q4_1 = 3
 GGML_Q8_0 = 8; GGML_Q4_K = 12; GGML_Q5_K = 13; GGML_Q6_K = 14; GGML_MXFP4 = 39
 
@@ -84,7 +86,12 @@ class LayerWeights:
                  'shexp_gate_raw', 'shexp_gate_nr', 'shexp_gate_nc', 'shexp_gate_qt', 'shexp_gate_use_c',
                  'shexp_up_raw', 'shexp_up_nr', 'shexp_up_nc', 'shexp_up_qt', 'shexp_up_use_c',
                  'shexp_down_raw', 'shexp_down_nr', 'shexp_down_nc', 'shexp_down_qt', 'shexp_down_use_c',
-                 'shexp_router_ptr', 'shexp_router_nr']
+                 'shexp_router_ptr', 'shexp_router_nr',
+                 # Gemma4 specific fields
+                 'post_attn_norm_w', 'post_ffw_norm_w', 'post_norm_w',
+                 'per_layer_proj', 'per_layer_inp_gate', 'layer_scale',
+                 'gemma4_nq', 'gemma4_nk', 'gemma4_nv', 'gemma4_head_dim',
+                 'gemma4_is_swa', 'gemma4_rope_dim', 'gemma4_freq_base', 'gemma4_kv_idx']
 
 
 class TurboEngineV7MoE:
@@ -99,6 +106,12 @@ class TurboEngineV7MoE:
         self.reader = gguf.GGUFReader(model_path)
         self._parse_metadata()
         print(f"  GGUFReader: {time.perf_counter()-t_start:.1f}s", flush=True)
+
+        # Architecture forward dispatch
+        self._arch_forward = None
+        if self.arch_name == 'gemma4':
+            from forward.gemma4 import ForwardGemma4
+            self._arch_forward = ForwardGemma4(self)
         
         self._load_kernels()
         t0 = time.perf_counter()
@@ -130,11 +143,31 @@ class TurboEngineV7MoE:
                         if hasattr(data, '__iter__') and len(data) == 1:
                             return int(data[0])
                         return data
-        arch = 'llama'
-        for prefix in ['gpt-oss', 'qwen35moe', 'qwen3moe', 'qwen2moe', 'qwen2', 'llama', 'mistral']:
-            for key in fields:
-                if f'{prefix}.block_count' in key:
-                    arch = prefix; break
+        
+        # Read architecture from GGUF metadata (general.architecture)
+        arch_raw = _get('general.architecture')
+        if arch_raw is not None:
+            if isinstance(arch_raw, bytes):
+                arch = arch_raw.decode('utf-8')
+            elif isinstance(arch_raw, str):
+                arch = arch_raw
+            elif hasattr(arch_raw, 'tobytes'):
+                # numpy array of uint8 (GGUF string encoding)
+                arch = bytes(arch_raw.tolist()).decode('utf-8')
+            else:
+                arch = str(arch_raw)
+        else:
+            # Fallback: detect from known prefixes
+            arch = 'llama'
+            for prefix in ['gpt-oss', 'qwen35moe', 'qwen3moe', 'qwen2moe', 'qwen2', 'llama', 'mistral', 'falcon', 'gemma', 'starcoder2', 'phi3', 'deepseek2', 'mixtral']:
+                for key in fields:
+                    if f'{prefix}.block_count' in key:
+                        arch = prefix; break
+                if arch != 'llama':
+                    break
+        
+        self.arch_name = arch
+        self.arch_prefix = arch
         self.n_layers = int(_get(f'{arch}.block_count') or 16)
         self.n_embd = int(_get(f'{arch}.embedding_length') or 2048)
         self.n_ff = int(_get(f'{arch}.feed_forward_length') or self.n_embd * 4)
@@ -322,7 +355,7 @@ class TurboEngineV7MoE:
         # Token embedding: must dequantize for lookup
         print(f"  Loading token embedding...", flush=True)
         for t in self.reader.tensors:
-            if 'token_embd' in t.name:
+            if t.name == 'token_embd.weight':
                 qtype = QT(t.tensor_type).value
                 f32 = gguf.dequantize(t.data, t.tensor_type).astype(np.float32)
                 if len(t.shape) == 2:
@@ -355,6 +388,9 @@ class TurboEngineV7MoE:
             self._out_use_c = False
 
         self._out_norm_w = self.weights['output_norm.weight']
+
+        if self._arch_forward is not None:
+            self._arch_forward.init_weights(self.weights, self.raw_weights, self.weight_info, self.weight_qtypes)
 
     def _requantize_output(self, raw_weights, out_info):
         """Requantize output from K-quant to Q8_0 for faster logits projection."""
@@ -431,6 +467,10 @@ class TurboEngineV7MoE:
         for i in range(self.n_layers):
             lw = LayerWeights()
             pfx = f'blk.{i}'
+
+            # Architecture-specific pointer setup
+            if self._arch_forward is not None:
+                self._arch_forward.init_pointers(i, pfx, lw)
             
             # Dense projection weights
             proj_names = {
@@ -732,6 +772,9 @@ class TurboEngineV7MoE:
         self._eps_f = ctypes.c_float(self.eps)
         self._gqa_rep = self.n_head // self.n_kv_head if self.n_head != self.n_kv_head else 1
 
+        if self._arch_forward is not None:
+            self._arch_forward.init_buffers()
+
     def reset(self):
         self.kv_len[:] = 0
         self.pos = 0
@@ -741,6 +784,8 @@ class TurboEngineV7MoE:
         """Reset SSM state to zeros (call between sequences)."""
         if self._ssm_state is not None:
             self._ssm_state.fill(0.0)
+        if self._arch_forward is not None:
+            self._arch_forward.reset_state()
 
     def _apply_rope_fast(self, x, pos, n_heads, rope_dim=None):
         hd = self.head_dim
@@ -765,6 +810,9 @@ class TurboEngineV7MoE:
 
     def forward(self, token_id):
         """Single-token forward pass."""
+        # Architecture-specific dispatch
+        if self._arch_forward is not None:
+            return self._arch_forward.forward(token_id)
         b_x = self._x; b_r = self._residual; b_qn = self._x_norm
         b_q = self._q; b_k = self._k; b_v = self._v
         b_att = self._att_out; b_gate = self._gate; b_up = self._up
