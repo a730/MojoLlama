@@ -1,21 +1,19 @@
 [Mojo llama](https://git.bamse.cloud/a730/MojoLlama/~site)
 # MojoLlama
 
-**High‑throughput LLM serving engine** with GGUF support, continuous batching, and a full Studio suite for training, export, dataset management, and chat.
+**High‑throughput CPU LLM inference engine** — GGUF native, MoE-optimized, with C acceleration and a full Studio suite.
 
-![Python](https://img.shields.io/badge/Python-3.11-blue?style=flat-square) ![Mojo](https://img.shields.io/badge/Mojo-🔥-orange?style=flat-square) ![MAX](https://img.shields.io/badge/MAX-Serve-blue?style=flat-square) ![GGUF](https://img.shields.io/badge/Format-GGUF-green?style=flat-square) ![License](https://img.shields.io/badge/License-Apache%202.0-lightgrey?style=flat-square)
+![Python](https://img.shields.io/badge/Python-3.11-blue?style=flat-square) ![C](https://img.shields.io/badge/C-AVX2%2B%20OMP-green?style=flat-square) ![GGUF](https://img.shields.io/badge/Format-GGUF-green?style=flat-square) ![License](https://img.shields.io/badge/License-Apache%202.0-lightgrey?style=flat-square)
 
 ---
 
 ## ✨ Overview
 
-MojoLlama is a production-ready inference server and model development studio. It loads **GGUF** models directly, runs them on CPU (with optional GPU via MAX), and provides:
-
-- **MojoLlama Studio** — web UI + CLI for training, export, dataset creation, and chat
-- **Inference server** — OpenAI-compatible API with SSE streaming
-- **AutoBackend** — auto-selects fastest backend (llama.cpp CPU, MAX GPU, numpy fallback)
-- **Bridge** — Python-native forward pass with GGUF loading, KV cache, tokenizer
-- **Mojo SIMD kernels** — AVX2-optimized Q4_0 matmul, attention, norms (R&D)
+MojoLlama is a CPU-first inference engine that beats llama.cpp on MoE architectures (GPT-OSS, Qwen3.6) by leveraging:
+- **C engine** (`cengine_batch_instr.c`) — AVX2+OMP quantized matmuls, batch_forward with PagedAttention, SSM decode
+- **MXFP4 experts** — 4-bit two's complement matmuls with E8M0 scale, 2.26x faster than llama.cpp on GPT-OSS-20B
+- **Hybrid SSM+attention** — Qwen3.6-35B-A3B support with Mamba-2-like selective scan + partial RoPE
+- **Concurrent server** — 47 tok/s aggregate across 10 users via multiprocessing + shared mmap weights
 
 ---
 
@@ -23,200 +21,130 @@ MojoLlama is a production-ready inference server and model development studio. I
 
 ```bash
 # Clone
-git clone https://git.bamseqoud/a730/MojoLlama.git
+git clone https://github.com/a730/MojoLlama.git
 cd MojoLlama
 
-# Start the inference server
-python3 -m mojollama.server --model model.gguf --port 8080
+# C engine benchmark (GPT-OSS-20B, 10 users)
+cd src && PYTHONPATH=. OMP_NUM_THREADS=32 python3 -u mojollama/bench_batch_gptoss.py
 
-# Or use the Studio
-python3 -m mojollama.studio info
-python3 -m mojollama.studio chat --model model.gguf --port 8080
-
-# Open the web UI
-# → http://localhost:8080/studio.html  (full Studio SPA)
-# → http://localhost:8080/chat.html     (standalone streaming chat)
+# Concurrent server (Qwen3.6 MXFP4, 10 workers)
+PYTHONPATH=. OMP_NUM_THREADS=3 python3 -u mojollama/server_concurrent_qwen36.py
 ```
 
 ---
 
-## 🎯 Features
+## 🏆 Performance Benchmarks
 
-### Inference Server (`server.py`)
-- **OpenAI-compatible API** — `/v1/chat/completions`, `/v1/completions`, `/v1/models`
-- **SSE streaming** — token-by-token response via EventSource
-- **Bounded thread pool** — configurable `--max-workers` (default 32) with request queue and 503 backpressure
-- **Connection pooling** — thread-safe pool of 16 persistent HTTP connections to llama.cpp backend
-- **CORS support** — works with browser-based clients
-- **Health checks** — `/health`, `/backend`, `/api/backend`
-- **Port isolation** — `--llama-port` (default 8081) avoids conflicts with proxy port
+| Model | Engine | Config | tok/s | vs llama.cpp |
+|-------|--------|--------|-------|-------------|
+| **GPT-OSS-20B** Q4_K_M | Python TurboEngine | 1 user | **64.7** | **2.26x** |
+| **GPT-OSS-20B** Q4_K_M | C batch_forward | B=10 × 512 prompt | **16.0** | **1.76x** |
+| **Qwen3.6-35B** MXFP4 | Python TurboEngine | 1 user | **25.5** | **1.57x** |
+| **Qwen3.6-35B** MXFP4 | C batch_forward | B=10 × 128 prompt | **17.0** | 1.06x |
+| **Qwen3.6-35B** MXFP4 | Concurrent server (spawn) | 10 workers × 3 thr | **47.0 agg** | — |
+| **TinyLlama 1.1B** Q4_0 | Python TurboEngine | 1 user | 79.2 | 0.89x |
+| **Qwen3-30B-A3B** Q4_K_M | Python TurboEngine | 1 user | 22.5 | 0.89x |
 
-### MojoLlama Studio (`studio.py`)
-| Command | Description |
-|---------|-------------|
-| `info` | System info, backends, available models |
-| `chat` | Interactive chat with streaming |
-| `serve` | Full API server with AutoBackend |
-| `train` | LoRA fine-tuning via llama.cpp |
-| `export` | HF model → GGUF conversion (supports Q4_0+ via two-step) |
-| `dataset create` | Create training datasets interactively |
-| `dataset view` | Browse dataset contents |
-| `dataset auto-label` | Auto-generate completions using loaded model |
-| `merge` | Merge LoRA adapter into base GGUF model |
-| `benchmark` | Measure tok/s for prompt processing and generation |
-| `autotune` | Auto-tune server settings with hardware detection (`--deep`) |
-
-### Hardware Detector (`detect.py`)
-- **CPU**: Architecture (x86_64/ARM), ISA features (AVX2, AVX-512, AMX, NEON, SVE, FMA, F16C)
-- **GPU**: NVIDIA CUDA (version + VRAM), AMD ROCm, Intel SYCL, Vulkan, Apple Metal
-- **Memory**: Total/available RAM, DDR type/speed/channel estimation, bandwidth
-- **Storage**: NVMe vs SSD, sequential read benchmark
-- **Network**: Interface detection, RDMA capability
-- **Power**: TDP estimation, thermal throttling risk
-- **Outputs**: Recommended llama-server flags, JSON for automation, persistent save
-- **Usage**: `python3 -m mojollama.detect` or `studio autotune --deep`
-
-### Web UI (`www/`)
-- **`studio.html`** — Full dark-theme SPA with 6 tabs:
-  - 💬 Chat (token-by-token streaming via SSE)
-  - 🎓 Train (Live loss chart via Chart.js + SSE metrics)
-  - 📊 Dataset (Create, browse, auto-label)
-  - 📤 Export (Async HF→GGUF with live log)
-  - ⚡ Benchmark (tok/s results table)
-  - 🔗 Merge (LoRA→base model)
-- **`chat.html`** — Standalone streaming chat with quick prompts
-- **`index.html`** — Landing page with performance benchmarks
-
-### AutoBackend (`backends.py`)
-Auto-detects best available hardware and routes inference accordingly:
-
-```
-Priority: MAX GPU (when available) > llama.cpp CPU (85 tok/s) > MAX CPU > numpy fallback
-```
-
-On Threadripper 3970X (64 cores): llama.cpp backend achieves **85 tok/s** sequential,
-**272 tok/s** with 4 concurrent users.
-
-### Bridge (`bridge.py`)
-Pure Python forward pass engine:
-- Loads GGUF models with full KV cache
-- Supports Q4_0, Q8_0, F16, and other quantizations (via gguf library)
-- Full op graph: RMSNorm, RoPE, SiLU, Multi-Head Attention, SwiGLU FFN
-- Tokenizer integration with BPE encoding/decoding
-
-```python
-from mojollama.bridge import MojoLlamaBridge
-m = MojoLlamaBridge('model.gguf')
-logits = m.forward([128000, 9906, 1492, 12, 7888, 0])
-print(f'Forward: {logits.shape} ✓')
-```
-
-### Parallel & Mojo SIMD Inference (`kernels/`)
-- **numpy + multiprocessing** — 13.6× speedup on 64-core CPU via shared memory
-- **Mojo SIMD** — AVX2 Q4_0 matmul kernels with **3.63 tok/s** (1 core, up from 0.88 baseline):
-  - **Vectorized SIMD nibble extraction**: 4.4× speedup vs scalar (VPAND+VPSRLW+VPMOVSX)
-  - **4-row register blocking**: +10–20% (input stays in L1 across 4 weight rows)
-  - **Fused QKV / FFN gate+up**: 3–4× memory bandwidth savings
-  - **Per-core gap to hand-tuned AVX2**: only 1.2× (1.04ms vs 0.86ms for 2048×2048)
-  - **At 32 cores**: memory-bandwidth bound at **~81 tok/s** — within 0.4% of llama.cpp
-  - **IPC bridge** reverse-engineered from MAX: `unchecked_downcast_value` + `PyArrayObject` for zero-copy numpy→Mojo data transfer
-- **C AVX2 reference kernel** (q4_kernel_avx2.c/.so): hand-tuned AVX2 intrinsics,
-  benchmarks against and validates the Mojo SIMD path. OpenMP variant (q4_kernel_omp.c)
-  achieves 15,385 matmul/s at 32 threads (0.065ms per 2048×2048 Q4_0).
-- **line-q4_quanter** — benchmark and compare quantization levels
+### Key Wins
+- **GPT-OSS-20B** — 2.26x llama.cpp (62.6 vs 27.7 tok/s) via MXFP4 expert matmuls
+- **Qwen3.6-35B MXFP4** — 1.57x llama.cpp with hybrid SSM+attention + partial RoPE
+- **Concurrent server** — 47 tok/s aggregate (10 users) via multiprocessing with shared mmap weights
 
 ---
 
-## 📊 Quantization Benchmarks
+## 🧠 C Engine (`kernels/cengine_batch_instr.c`)
 
-TinyLlama 1.1B on Threadripper 3970X (64 cores, AVX2+FMA):
+The MojoLlama C engine is the core performance layer — a single `.c` file (~1000 lines) with AVX2+OMP-accelerated operations:
 
-| Quant | Size | Prompt (tok/s) | Gen (tok/s) | BPW |
-|-------|------|---------------|-------------|-----|
-| TQ2_0 | 325 MB | 623 | 48 | 2.06 |
-| Q2_K | 411 MB | 526 | **71** | 3.14 |
-| Q3_K | 522 MB | 497 | 55 | 3.98 |
-| **Q4_0** | **607 MB** | **595** | **66** | **4.63** |
-| Q5_0 | 730 MB | 516 | 55 | 5.57 |
-| Q6_K | 861 MB | 449 | 39 | 6.56 |
-| Q8_0 | 1.09 GB | 525 | 44 | 8.50 |
-| F16 | 2.05 GB | 564 | 23 | 16.00 |
+**Quantized Matmul Types:**
+| Type | Block Size | Operations |
+|------|-----------|------------|
+| Q4_0 | 32 elems | 4-bit, 18B/block, symmetric |
+| Q4_K | 256 elems | K-quant 4-bit, 144B/block |
+| Q5_K | 256 elems | K-quant 5-bit, 176B/block |
+| Q6_K | 256 elems | K-quant 6-bit, 210B/block |
+| Q8_0 | 32 elems | 8-bit, 34B/block |
+| **MXFP4** | 32 elems | 4-bit two's complement + E8M0 scale |
 
-**Insights:**
-- Q4_0 is the size/speed sweet spot (66 tok/s gen, 607 MB)
-- Q2_K has the fastest generation (71 tok/s) but lowest quality
-- All quants are 2–3× faster than F16 (memory-bandwidth bound)
-- Gemma 3 12B at Q4_K_M: 230 tok/s prompt, 15 tok/s generation
+**Key Components:**
+- `batch_forward()` — single C call for entire forward pass (41 layers, SSM + attention + MoE + shared expert)
+- `moe_ffn()` — MoE FFN dispatch with per-expert quant matmul, stride calculation for mixed quant types
+- `ssm_decode_step()` — Mamba-2-like selective scan kernel (conv1d + state update + SiLU gate)
+- `gqa()` — Grouped Query Attention with softmax + weighted sum
+- `PagedAttention` — page table with KV block allocation, free list, physical-logical mapping
+- `fused clamp+rms` — NaN-safe RMS norm with SIMD clamp [-1000, 1000]
 
----
-
-## 📐 Architecture
-
-```
-┌──────────────────────────────────────────────────────┐
-│  www/       Web UI (studio.html, chat.html, index)   │
-├──────────────────────────────────────────────────────┤
-│  server.py  OpenAI API + SSE streaming + REST API    │
-├──────────────────────────────────────────────────────┤
-│  studio.py  CLI: train, export, dataset, merge, chat │
-├──────────────────────────────────────────────────────┤
-│  backends.py  AutoBackend (llama.cpp, MAX, numpy)    │
-├──────────────────────────────────────────────────────┤
-│  bridge.py     Python forward pass + GGUF loading    │
-│  kernels/      Mojo SIMD + numpy parallel matmul     │
-│  model/        C kernel + Python inference scaffold  │
-└──────────────────────────────────────────────────────┘
-```
-
-New architectures (AttnRes, MLA) = new graph wiring in `graph/ops.mojo`.
-Backends are swappable: Python (works now) → Mojo SIMD (kernels ready) → MAX GPU (future).
+### Built-in Fixes
+- F32→Q8_0 converter uses **float16 scale** (Q8_0_BS=34) — float32 caused heap corruption
+- Output matmul uses `x` (RMS-normed), not `xn` (stale attention norm buffer)
+- Per-layer SSM check: `c->ssm_conv1d[l] != NULL` — prevents NULL deref on hybrid layers
+- Q5_K stride + dispatch in moe_ffn — enables Qwen3.6 down experts
 
 ---
 
-## 🖥️ Performance Benchmarks
+## 🔧 TurboEngine v7-MoE (`kernels/turbo_engine_v7_moe.py`)
 
-| Model | Backend | Prompt | Generation | Concurrent |
-|-------|---------|--------|-----------|------------|
-| Llama 3.2 1B (Q4_0) | llama.cpp | 1,514 tok/s | 162 tok/s | 272 tok/s (4×) |
-| Qwen3-30B-A3B (Q4_K_M) | llama.cpp | 150 tok/s | 28.5 tok/s | — |
-| MAX CPU | MAX | — | 14.5 tok/s | — |
-| Mojo SIMD Q4_0 | Mojo | 172 matmul/s | ~1 tok/s | — |
-| Numpy parallel (64-core) | Python | 8.7 matmul/s | 0.3 tok/s | — |
+Zero-allocation Python engine with C-accelerated MoE support:
+
+**Architecture Support:**
+- GPT-OSS (24L, 32 experts, MXFP4 gate/up/down, F32 attention Q/K)
+- Qwen3.6-35B (41L hybrid: 11 attn + 30 SSM, 256 experts, shared expert)
+- Qwen3-30B, Qwen2-MoE, Llama, Mistral, Gemma
+- Dense models (TinyLlama via `turbo_engine_v77.py`)
+
+**Fused MoE Dispatch:**
+- `moe_forward_omp()` — single C call replaces 24 ctypes calls per layer
+- Pre-built expert pointer arrays (zero construction cost in hot path)
+- Quantizes input to Q8_0 once for all Q4_K quantized-activation rows
+
+**Weight Sharing:**
+- Large quantized tensors stored as mmap views (no `.copy()`) — enables OS page cache sharing across spawn'd workers
+- 4s worker load time (vs 88s with copy)
 
 ---
 
-## 🧪 Test Commands
+## 🔄 Concurrent Server
 
-```bash
-# Start server (with auto-tuned settings)
-python3 -m mojollama.server --model model.gguf --port 8080 --llama-port 8081
+Two approaches for multi-user throughput:
 
-# Hardware detection
-python3 -m mojollama.detect
-python3 -m mojollama.detect --model model.gguf --json --save
+### 1. C Engine batch_forward (serial B loop)
+| Model | B=1 | B=10 | Aggregate |
+|-------|-----|------|-----------|
+| GPT-OSS-20B | 79.6ms (12.6 t/s) | 565ms | **17 t/s** |
+| Qwen3.6 MXFP4 | 79.6ms (12.6 t/s) | 565ms | **17 t/s** |
 
-# Auto-tune server settings  
-python3 -m mojollama.studio autotune --model model.gguf --deep --quick
+### 2. Multiprocessing spawn (best)
+`server_concurrent_qwen36.py` — workers share weight pages via OS page cache:
 
-# Chat via curl
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":50}'
+| Workers × OMP thr | Per-worker | Aggregate | CPU util |
+|-------------------|-----------|-----------|----------|
+| 10 × 1 | 3.6 t/s | 36 t/s | 10/32 cores |
+| **10 × 3** | **4.7 t/s** | **47 t/s** 🏆 | **30/32 threads** |
+| 8 × 4 | 5.7 t/s | 46 t/s | 32/32 threads |
+| 10 × 4 | 4.6 t/s | 46 t/s | 40/32 (over) |
+| 10 × 5 | 2.4 t/s | 24 t/s | 50/32 (over) |
 
-# Streaming chat (SSE)
-curl -N -X POST http://localhost:8080/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{"prompt":"Count to 5","max_tokens":30,"stream":true}'
+**Load time:** ~4s per worker (patched engine, no `.copy()`)
 
-# Benchmark quants
-./llama-bench -m model.gguf -p 512 -n 128 -t 64
+---
 
-# Concurrent benchmark
-python3 bench_concurrency.py --url http://localhost:8080 --concurrency "1,4,8,16,32"
+## 🗺️ Future Plans
 
-# Parallel matmul benchmark
-python3 src/mojollama/kernels/parallel_q4.py --rows 2048 --cols 2048
-```
+### Near-term
+- **Q8_0 input quantization** in C engine batch_matmul functions — match `quant_kernels_omp` performance (2-4× per-matmul improvement)
+- **True continuous batching** — merge B users' MoE routing into single batched matmuls
+- **Fix Qwen3.6 MXFP4 cleanup crash** — heap corruption on exit (`corrupted size vs. prev_size`)
+
+### Medium-term
+- **MAX GPU backend** — zero-copy tensor dispatch to NVIDIA GPUs
+- **Speculative decoding** — TinyLlama draft + Qwen3 target (21% acceptance → improve via shared-vocab model pairs)
+- **Prefix caching** — LRU with SHA-256 hash (implemented, needs deployment)
+- **Docker + desktop app** — Electron wiring for MojoLlama Studio
+
+### Long-term
+- **Full GGUF quant pipeline** — imatrix → dynamic 2-bit quantization
+- **MojoLlama Studio** as Unsloth+LLaMA-Factory replacement
+- **Perplexity evaluation** — verify output quality matches llama.cpp reference
 
 ---
 
@@ -224,103 +152,28 @@ python3 src/mojollama/kernels/parallel_q4.py --rows 2048 --cols 2048
 
 ```
 src/mojollama/
-├── server.py           OpenAI API server (SSE streaming, REST API)
-├── backends.py         AutoBackend (llama.cpp, MAX, numpy)
-├── studio.py           CLI Studio (train, export, dataset, merge, chat, autotune)
-├── bridge.py           Python forward pass + GGUF loader
-├── detect.py           Hardware detector (CPU/GPU/memory/storage/power)
-├── autotune.py         Auto-tuning benchmark sweeper
-├── scheduler.py        Request batcher for high throughput
-├── llama_backend.py    llama.cpp server bridge
-├── graph/ops.mojo      Op graph definitions (Mojo)
 ├── kernels/
-│   ├── q4_matmul.mojo     Q4_0 AVX2 dot product
-│   ├── parallel_q4.py     Parallel Q4_0 matmul (Python+multiprocessing)
-│   ├── parallel_matmul.mojo  Mojo SIMD matmul CLI (blocked on unsafe_from_address)
-│   ├── moe.mojo           MoE SIMD ops (router, expert matmul)
-│   ├── attention.mojo     Softmax + MHA
-│   └── norms.mojo         RMSNorm + RoPE + SiLU
-├── model/
-│   ├── inference.py    Original Python inference
-│   └── q4_matmul_c.c   C Q4_0 kernel (broken nibble order — use gguf.dequantize)
-├── mojollama_studio    CLI entry point for Studio
-www/
-├── studio.html         Full Studio SPA (6 tabs, streaming chat, charts)
-├── chat.html           Standalone streaming chat
-└── index.html          Landing page with benchmarks
+│   ├── cengine_batch_instr.c     C engine (~1000 lines: batch_forward, moe_ffn, SSM, PagedAttention)
+│   ├── cengine_batch_instr.so    Compiled shared library
+│   ├── turbo_engine_v7_moe.py    Python MoE engine (Qwen3.6, GPT-OSS, shared expert, SSM)
+│   ├── turbo_engine_v77.py       Dense engine (TinyLlama, Lance Text)
+│   ├── ssm_forward.c             SSM C kernel reference
+│   ├── quant_kernels_omp.c       OMP quant matmul library
+│   └── simd_ops.c                SIMD ops (rms_norm, silu, rope)
+├── server_moe.py                 HTTP inference server
+├── server_batch_moe.py           Continuous batching server (PagedAttention)
+├── server_concurrent_qwen36.py   Multiprocessing concurrent server
+├── studio.py                     CLI Studio (25 commands)
+├── autotune.py                   Auto-tuning benchmark sweeper
+├── model/architectures.py        50+ arch detection
+├── prefix_cache.py               LRU prefix caching
+├── speculative.py                Draft-target speculative decoding
+├── bench_batch_gptoss.py         GPT-OSS batch_forward B=10 benchmark
+├── bench_batch_qwen36.py         Qwen3.6 C engine wrapper
+├── bench_concurrent_qwen36.py    Multi-user concurrency benchmark
+├── profile_qwen36.py             Per-component profiling
+└── www/studio.html               Web UI (14 panels, 77 JS functions)
 ```
-
----
-
-## 🐳 Docker
-
-### Build the Image
-
-```bash
-docker build -t mojollama:latest .
-```
-
-Multi-stage build: Stage 1 compiles `llama-server` from source, Stage 2 builds the
-runtime image on `python:3.11-slim` (~500 MB final image).
-
-### Run
-
-Mount your GGUF model file and expose the API port:
-
-```bash
-docker run --rm -it \
-  -p 8080:8080 \
-  -v /path/to/models:/models:ro \
-  mojollama:latest --model /models/my-model.gguf
-```
-
-**Auto-detection:** If you omit `--model`, the entrypoint scans `/models/` and `/app/`
-for `.gguf` files and picks the first one found.
-
-```bash
-# Auto-detect model in /models volume
-docker run --rm -it \
-  -p 8080:8080 \
-  -v /path/to/models:/models:ro \
-  mojollama:latest
-```
-
-### Configuration
-
-Mount a custom `~/.mojollama/config.json` for llama.cpp tuning:
-
-```bash
-docker run --rm -it \
-  -p 8080:8080 \
-  -v /path/to/models:/models:ro \
-  -v /path/to/config.json:/home/mojollama/.mojollama/config.json:ro \
-  mojollama:latest
-```
-
-If no config is mounted, the entrypoint creates a sensible default.
-
-### Options
-
-| Argument | Env var | Default | Description |
-|----------|---------|---------|-------------|
-| `--model` | `MODEL_PATH` | auto-detect | Path to GGUF model |
-| `--port` | `PORT` | `8080` | MojoLlama API port |
-| `--llama-port` | `LLAMA_PORT` | `8081` | llama.cpp backend port |
-| `--max-workers` | — | `32` | Max concurrent requests |
-| `--weight` | `WEIGHT_PATH` | — | MAX weight file path |
-
-### Health Check
-
-```bash
-curl http://localhost:8080/health
-```
-
-### Volumes
-
-| Mount point | Purpose |
-|-------------|---------|
-| `/models` | GGUF model files (ro recommended) |
-| `~/.mojollama` | Server config (`config.json`) |
 
 ---
 
