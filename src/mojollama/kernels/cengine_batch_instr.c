@@ -732,11 +732,10 @@ void ssm_decode_step(
 
 void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
     int N=c->N, NH=c->NH, NKH=c->NKH, HD=c->HD, FF=c->FF, L=c->L, nc=c->nc;
-    int inner = NH * HD; /* attention/SSM intermediate dimension (4096) */
+    int inner = NH * HD;
     int S = N; if (NH*HD > S) S = NH*HD; if (FF > S) S = FF; if (NKH*HD > S) S = NKH*HD;
-    int qk_fused = NH*HD + NKH*HD;  /* for fused QK output (if fusion enabled) */
+    int qk_fused = NH*HD + NKH*HD;
     if (qk_fused > S) S = qk_fused;
-    /* For Qwen3.6 with attn_qkv producing 8192 dims or SSM with 2*inner */
     if (S < 8192) S = 8192;
     
     float *x = ws, *xn = ws + B*S, *res = ws + 2*B*S;
@@ -751,7 +750,6 @@ void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
             memcpy(x + b*N, c->emb + (size_t)tokens[b] * N, N * sizeof(float));
     }
     
-    /* Qwen3.6 SSM parameters */
     int ssm_groups = 32, ssm_state_size = 128, ssm_dt_rank = 32;
     int ssm_conv_kernel = 4;
     
@@ -782,8 +780,8 @@ void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
     /* ── Hybrid SSM/Attention Block ── */
     int is_ssm = (c->layer_types && c->layer_types[l] == 1);
     
-    if (is_ssm && c->ssm_conv1d) {
-        /* ═══ SSM path ═══ */
+        if (is_ssm && c->ssm_conv1d) {
+            /* ═══ SSM path ═══ */
         int groups = ssm_groups, state_size = ssm_state_size;
         int dt_rank = ssm_dt_rank;
         
@@ -820,10 +818,10 @@ void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
         for (int b = 0; b < B; b++)
             for (int i = 0; i < N; i++) x[b*N+i] = res[b*N+i] + oproj[b*N+i];
             
-    } else {
-        /* ═══ Full Attention path ═══ */
-        /* Use attn_qkv fused weight when available, else separate Q/K/V */
-        if (c->wQKV && c->wQKV[l] != NULL) {
+        } else {
+            /* ═══ Full Attention path ═══ */
+            /* Use attn_qkv fused weight when available, else separate Q/K/V */
+            if (c->wQKV && c->wQKV[l] != NULL) {
             /* attn_qkv maps N→8192 (Q:4096, K:2048, V:2048) */
             int n_qkv = 8192;
             batch_matmul(c->qkv_quant[l], c->wQKV[l], xn, q, n_qkv, nc, B);
@@ -991,5 +989,5 @@ void batch_forward(const BC *c, const int *tokens, int B, float *ws) {
         float rms_val = sqrtf(ss / N + c->eps);
         for(int j=0;j<N;j++) xb[j] = (xb[j] / rms_val) * c->onw[j];
     }
-    batch_matmul(c->outQuant, c->wOut, xn, c->logits, c->outNR, c->outNC, B);
+    batch_matmul(c->outQuant, c->wOut, x, c->logits, c->outNR, c->outNC, B);
 }
