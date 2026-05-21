@@ -60,9 +60,12 @@ def _load_engine(model_path, threads):
     if key in ENGINE_CACHE:
         return ENGINE_CACHE[key]
     _md = os.path.dirname(os.path.abspath(__file__))
+    _kd = os.path.dirname(_md) + "/kernels"  # src/mojollama/kernels/
     _bd = os.path.dirname(os.path.dirname(_md))  # src/
     if _bd not in sys.path:
         sys.path.insert(0, _bd)
+    if _kd not in sys.path:
+        sys.path.insert(0, _kd)
     os.environ["OMP_NUM_THREADS"] = str(threads)
     etype = detect_engine_type(model_path)
     if etype in ("moe", "gemma4"):

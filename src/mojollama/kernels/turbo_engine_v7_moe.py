@@ -145,6 +145,10 @@ class TurboEngineV7MoE:
         self._init_buffers()
         print(f"  Buffers: {time.perf_counter()-t0:.1f}s", flush=True)
         
+        t0 = time.perf_counter()
+        self._init_c_batch_caches()
+        print(f"  C batch caches: {time.perf_counter()-t0:.1f}s", flush=True)
+        
         self.reset()
         moe_str = f'/MoE-{self.n_experts}x{self.n_experts_per_tok}' if self.is_moe else ''
         print(f"TurboEngine v7-MoE: {self.n_layers}L/{self.n_embd}D/"
@@ -228,7 +232,9 @@ class TurboEngineV7MoE:
         cu = ctypes.POINTER(ctypes.c_uint8)
         ci = ctypes.c_int
 
-        so_path = os.path.join(kernel_dir, 'quant_kernels_omp.so')
+        # Load combined engine (merged quant_kernels + cengine_batch_instr, with Q5_0 Q8_0 kernel)
+        combined_path = os.path.join(kernel_dir, 'combined_engine.so')
+        so_path = combined_path if os.path.exists(combined_path) else os.path.join(kernel_dir, 'quant_kernels_omp.so')
         if os.path.exists(so_path):
             so = ctypes.CDLL(so_path)
             so.quant_matmul_omp.argtypes = [cu, cf, cf, ci, ci, ci]
@@ -242,6 +248,56 @@ class TurboEngineV7MoE:
             so.set_num_threads.argtypes = [ci]
             so.set_num_threads.restype = None
             so.set_num_threads(self.n_threads)
+            # Fused SSM layer forward — replaces 3 ctypes calls
+            so.ssm_layer_fused.argtypes = [
+                cf, cf, cf,  # x, residual, output
+                cf, cf, cf,  # conv1d_w, a_param, dt_bias
+                cf, cf, cf,  # alpha, beta, ssm_norm_w
+                cf,          # state
+                cu, ci, ci, ci,  # gate_raw, gate_nr, gate_nc, gate_qt
+                cu, ci, ci, ci,  # ssm_out_raw, ssm_out_nr, ssm_out_nc, ssm_out_qt
+                ci, ci, ci, ci, ci, ci, ci]  # B, N, inner, groups, state_size, conv_kernel, dt_rank
+            so.ssm_layer_fused.restype = None
+            # Full C batch forward — eliminates Python loop overhead
+            so.qwen36_batch_forward.argtypes = [
+                # Scalars (18: 7+4+7 ints+float)
+                ci, ci, ci, ci, ci, ci, ci,  # B, L, N, NH, n_kv_h, HD, FF
+                ci, ci, ci, ctypes.c_float,      # n_experts, top_k, n_ff_expert, eps
+                ci, ci, ci, ci, ci, ci, ci,   # rope_dim, max_ctx, ssm_inner, ssm_groups, ssm_state_size, ssm_conv_kernel, ssm_dt_rank
+                # Embedding
+                cf, ci,   # emb, emb_quant
+                # Arrays (pointers)
+                ctypes.POINTER(ci),   # layer_types
+                ctypes.POINTER(ci),   # tokens
+                cf,                   # logits
+                # Per-layer weight pointer arrays
+                ctypes.POINTER(cf), ctypes.POINTER(cf),  # attn_norm_w, ffn_norm_w
+                ctypes.POINTER(cu), ctypes.POINTER(ci), ctypes.POINTER(ci), ctypes.POINTER(ci),  # attn_qkv_raw, qkv_nr, qkv_nc, qkv_qt
+                ctypes.POINTER(cu), ctypes.POINTER(ci), ctypes.POINTER(ci), ctypes.POINTER(ci),  # attn_gate_raw, gate_nr, gate_nc, gate_qt
+                ctypes.POINTER(cu), ctypes.POINTER(ci), ctypes.POINTER(ci), ctypes.POINTER(ci),  # ssm_out_raw, ssm_out_nr, ssm_out_nc, ssm_out_qt
+                ctypes.POINTER(cu), ctypes.POINTER(ci), ctypes.POINTER(ci), ctypes.POINTER(ci),  # attn_out_raw, out_nr, out_nc, out_qt
+                ctypes.POINTER(cu), ctypes.POINTER(ci),  # gate_exp_raw, gate_exp_qt
+                ctypes.POINTER(cu), ctypes.POINTER(ci),  # up_exp_raw, up_exp_qt
+                ctypes.POINTER(cu), ctypes.POINTER(ci),  # down_exp_raw, down_exp_qt
+                ctypes.POINTER(cf), ctypes.POINTER(cf), ctypes.POINTER(cf),  # shexp_gate_raw, shexp_up_raw, shexp_down_raw
+                ctypes.POINTER(cf),  # shexp_router
+                ctypes.POINTER(ci),  # shexp_int
+                # Added MoE params
+                ctypes.POINTER(cu), ctypes.POINTER(ci),  # moe_router_raw, moe_router_qt
+                ctypes.POINTER(ci), ctypes.POINTER(ci), ctypes.POINTER(ci),  # shexp_gate_qt, shexp_up_qt, shexp_down_qt
+                # Output norm + proj
+                cf, cu, ci, ci, ci,  # out_norm_w, out_w, out_nr_final, out_nc_final, out_qt_final
+                # SSM per-layer
+                ctypes.POINTER(cf), ctypes.POINTER(cf), ctypes.POINTER(cf),  # ssm_conv1d, ssm_a, ssm_dt_bias
+                ctypes.POINTER(cf), ctypes.POINTER(cf), ctypes.POINTER(cf),  # ssm_alpha, ssm_beta, ssm_norm
+                cf,  # ssm_state
+                # KV cache
+                cf, cf, ctypes.POINTER(ci),  # kv_k, kv_v, kv_lens
+                cf, cf,  # cos_table, sin_table
+                # Workspace
+                cf, cu,  # ws, q8_ws
+            ]
+            so.qwen36_batch_forward.restype = None
             # MoE fused kernel — eliminates 1,152 ctypes calls/token
             so.moe_forward_omp.argtypes = [
                 ctypes.POINTER(cu),  # gate_raw[] — array of per-expert uint8_t*
@@ -264,7 +320,7 @@ class TurboEngineV7MoE:
             if os.path.exists(gqa_path):
                 self._gqa_attn = ctypes.CDLL(gqa_path)
                 self._gqa_attn.gqa_attention_decode.argtypes = [
-                    cf, cf, cf, cf, ci, ci, ci, ci]
+                    cf, cf, cf, cf, ci, ci, ci, ci, cf]
                 self._gqa_attn.gqa_attention_decode.restype = None
             else:
                 self._gqa_attn = None
@@ -837,7 +893,12 @@ class TurboEngineV7MoE:
         buf_sz = 3 * max_top_k * FF_expert
         self._moe_prealloc_buf = np.zeros(buf_sz, dtype=np.float32)
         n_blocks_x = N // 32
-        self._moe_prealloc_q8 = np.zeros(n_blocks_x * 34, dtype=np.uint8)
+        # Buffers for Q8_0 activation on MoE down path: top_k experts × n_ff_expert blocks
+        self._moe_prealloc_q8 = np.zeros(self.n_experts_per_tok * FF_expert * 34 // 32, dtype=np.uint8)
+
+        # GQA attention workspace: n_head * max_seq_len floats for scores
+        self._gqa_ws_size = self.n_head * 4096
+        self._gqa_workspace = np.zeros(self._gqa_ws_size, dtype=np.float32)
 
         self._logits = np.zeros(self.vocab_size, dtype=np.float32)
 
@@ -877,6 +938,7 @@ class TurboEngineV7MoE:
         self._p_moe_silu = self._moe_silu_out.ctypes.data_as(cf)
         self._p_moe_expert = self._moe_expert_out.ctypes.data_as(cf)
         self._p_moe_combined = self._moe_combined.ctypes.data_as(cf)
+        self._p_gqa_ws = self._gqa_workspace.ctypes.data_as(cf)
 
         # RoPE tables
         HD = self.head_dim
@@ -887,6 +949,268 @@ class TurboEngineV7MoE:
 
         if self._arch_forward is not None:
             self._arch_forward.init_buffers()
+
+    def _init_c_batch_caches(self):
+        """Pre-compute per-layer pointer/dimension arrays for forward_c_batch.
+        
+        Assembles L-length arrays of pointers/int32 values needed by qwen36_batch_forward.
+        Works for models with fused QKV + optional SSM (qwen35moe architecture).
+        Checks for prerequisites before initializing.
+        """
+        # Check C function availability
+        if not hasattr(self, '_kern') or self._kern is None:
+            self._c_batch_ready = False
+            return
+        
+        if not hasattr(self._kern, 'qwen36_batch_forward'):
+            self._c_batch_ready = False
+            return
+        
+        # Check model has fused QKV weights (required by C function's attention path)
+        if (self.n_layers == 0
+            or not getattr(self._layers[0], 'attn_qkv_use_c', False)):
+            self._c_batch_ready = False
+            return
+        
+        L = self.n_layers
+        cf = ctypes.POINTER(ctypes.c_float)
+        cu = ctypes.POINTER(ctypes.c_uint8)
+        
+        # ── Layer type flags ──
+        self._c_layer_types = np.array(self.layer_types, dtype=np.int32)
+        c_layer_types_ptr = self._c_layer_types.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+        
+        # ── Per-layer float pointer arrays (L-length) ──
+        arr_cf = cf * L
+        arr_cu = cu * L
+        
+        # attn_norm_w / ffn_norm_w (F32 norm vectors)
+        self._c_attn_norm_w = arr_cf()
+        self._c_ffn_norm_w = arr_cf()
+        for i, lw in enumerate(self._layers):
+            self._c_attn_norm_w[i] = lw.attn_norm_w.ctypes.data_as(cf)
+            self._c_ffn_norm_w[i] = lw.ffn_norm_w.ctypes.data_as(cf)
+        
+        # quantized weight pointer arrays + dimension int arrays
+        def _make_quant_pointers(attr_prefix, has_use_c=True):
+            """Build uint8_t** pointer array and dim/quant int arrays."""
+            ptr_arr = arr_cu()
+            nr_arr = np.zeros(L, dtype=np.int32)
+            nc_arr = np.zeros(L, dtype=np.int32)
+            qt_arr = np.zeros(L, dtype=np.int32)
+            for i, lw in enumerate(self._layers):
+                raw_attr = getattr(lw, f'{attr_prefix}_raw', None)
+                use_attr = getattr(lw, f'{attr_prefix}_use_c', False) if has_use_c else True
+                nr = getattr(lw, f'{attr_prefix}_nr', None)
+                nc = getattr(lw, f'{attr_prefix}_nc', None)
+                qt = getattr(lw, f'{attr_prefix}_qt', None)
+                if raw_attr is not None and use_attr:
+                    ptr_arr[i] = raw_attr
+                    if nr is not None: nr_arr[i] = nr.value
+                    if nc is not None: nc_arr[i] = nc.value
+                    if qt is not None: qt_arr[i] = qt.value
+            return ptr_arr, nr_arr, nc_arr, qt_arr
+        
+        # attn_qkv
+        (self._c_attn_qkv_raw,
+         self._c_qkv_nr, self._c_qkv_nc, self._c_qkv_qt) = _make_quant_pointers('attn_qkv')
+        
+        # attn_gate (SSM gate, N→inner)
+        (self._c_attn_gate_raw,
+         self._c_gate_nr, self._c_gate_nc, self._c_gate_qt) = _make_quant_pointers('attn_gate')
+        
+        # ssm_out (inner→N)
+        (self._c_ssm_out_raw,
+         self._c_ssm_out_nr, self._c_ssm_out_nc, self._c_ssm_out_qt) = _make_quant_pointers('ssm_out')
+        
+        # attn_out (standard attention output projection)
+        (self._c_attn_out_raw,
+         self._c_out_nr, self._c_out_nc, self._c_out_qt) = _make_quant_pointers('attn_out')
+        
+        # ── SSM per-layer F32 pointer arrays ──
+        def _make_ssm_ptr_array(attr_name):
+            """Build const float** array for SSM F32 parameters."""
+            ptr_arr = arr_cf()
+            for i, lw in enumerate(self._layers):
+                val = getattr(lw, attr_name, None)
+                ptr_arr[i] = val if val is not None else ctypes.cast(0, cf)
+            return ptr_arr
+        
+        self._c_ssm_conv1d = _make_ssm_ptr_array('ssm_conv1d_ptr')
+        self._c_ssm_a = _make_ssm_ptr_array('ssm_a_ptr')
+        self._c_ssm_dt_bias = _make_ssm_ptr_array('ssm_dt_bias_ptr')
+        self._c_ssm_alpha = _make_ssm_ptr_array('ssm_alpha_ptr')
+        self._c_ssm_beta = _make_ssm_ptr_array('ssm_beta_ptr')
+        self._c_ssm_norm = _make_ssm_ptr_array('ssm_norm_ptr')
+        
+        # ── MoE expert weights (raw uint8_t**) ──
+        def _make_moe_ptr_array(exp_name):
+            """Build uint8_t** array for MoE expert weights.
+            
+            Each element points to the base of the flat raw uint8 buffer
+            containing all experts' weights for that layer (concatenated).
+            """
+            ptr_arr = arr_cu()
+            for i in range(L):
+                me = self._moe_layers[i]
+                raw_list = getattr(me, f'{exp_name}_raw', None)
+                if raw_list is not None and len(raw_list) > 0:
+                    # First expert view starts at offset 0 in the raw buffer
+                    ptr_arr[i] = raw_list[0].ctypes.data_as(cu)
+                else:
+                    ptr_arr[i] = ctypes.cast(0, cu)
+            return ptr_arr
+        
+        def _make_moe_qt_array(exp_name, default_val=12):
+            """Build int array for MoE expert quant types."""
+            arr = np.zeros(L, dtype=np.int32)
+            for i in range(L):
+                me = self._moe_layers[i]
+                qt = getattr(me, f'{exp_name}_qt', None)
+                arr[i] = qt.value if qt is not None else default_val
+            return arr
+        
+        self._c_gate_exp_raw = _make_moe_ptr_array('gate')
+        self._c_up_exp_raw = _make_moe_ptr_array('up')
+        self._c_down_exp_raw = _make_moe_ptr_array('down')
+        self._c_gate_exp_qt = _make_moe_qt_array('gate', 12)
+        self._c_up_exp_qt = _make_moe_qt_array('up', 12)
+        self._c_down_exp_qt = _make_moe_qt_array('down', 14)
+        
+        # ── MoE router ──
+        def _make_router_ptr_array():
+            """Build uint8_t** array for MoE router weights."""
+            ptr_arr = arr_cu()
+            qt_arr = np.zeros(L, dtype=np.int32)
+            for i in range(L):
+                me = self._moe_layers[i]
+                ptr_arr[i] = me.router_raw if me.router_raw is not None else ctypes.cast(0, cu)
+                qt_arr[i] = getattr(me, 'router_qt', ctypes.c_int(0)).value if hasattr(me, 'router_qt') and me.router_qt is not None else 0
+            return ptr_arr, qt_arr
+        
+        (self._c_moe_router_raw, self._c_moe_router_qt) = _make_router_ptr_array()
+        
+        # ── Shared expert (quantized weights cast as float** in C) ──
+        def _make_shexp_ptr_array(attr_name):
+            """Build const float** array for shared expert weights.
+            
+            The weights are quantized (uint8_t*) but passed as float* in C interface.
+            """
+            ptr_arr = arr_cf()
+            for i, lw in enumerate(self._layers):
+                raw = getattr(lw, f'{attr_name}', None)
+                if raw is not None:
+                    # Cast uint8_t* → float* (C code casts back internally)
+                    ptr_arr[i] = ctypes.cast(raw, cf)
+                else:
+                    ptr_arr[i] = ctypes.cast(0, cf)
+            return ptr_arr
+        
+        def _make_shexp_qt_array(attr_name, default_val=39):
+            arr = np.zeros(L, dtype=np.int32)
+            for i, lw in enumerate(self._layers):
+                qt = getattr(lw, f'{attr_name}', None)
+                arr[i] = qt.value if qt is not None else default_val
+            return arr
+        
+        self._c_shexp_gate_raw = _make_shexp_ptr_array('shexp_gate_raw')
+        self._c_shexp_up_raw = _make_shexp_ptr_array('shexp_up_raw')
+        self._c_shexp_down_raw = _make_shexp_ptr_array('shexp_down_raw')
+        self._c_shexp_gate_qt = _make_shexp_qt_array('shexp_gate_qt', 39)
+        self._c_shexp_up_qt = _make_shexp_qt_array('shexp_up_qt', 39)
+        self._c_shexp_down_qt = _make_shexp_qt_array('shexp_down_qt', 39)
+        
+        # ── Shared expert router (1D F32 vector per layer) ──
+        self._c_shexp_router = arr_cf()
+        shexp_int_arr = np.zeros(L, dtype=np.int32)
+        for i, lw in enumerate(self._layers):
+            rptr = getattr(lw, 'shexp_router_ptr', None)
+            if rptr is not None:
+                self._c_shexp_router[i] = rptr
+            else:
+                self._c_shexp_router[i] = ctypes.cast(0, cf)
+            # shexp_int = shared expert intermediate dim (gate output dim)
+            nr = getattr(lw, 'shexp_gate_nr', None)
+            shexp_int_arr[i] = nr.value if nr is not None else 512
+        self._c_shexp_int = shexp_int_arr
+        
+        # ── RoPE tables (precompute for max_ctx positions) ──
+        max_ctx = 4096
+        rope_dim = self.rope_dim if hasattr(self, 'rope_dim') and self.rope_dim > 0 else self.head_dim
+        hd2 = rope_dim // 2
+        if hd2 > 0:
+            cos_table = np.zeros(max_ctx * hd2, dtype=np.float32)
+            sin_table = np.zeros(max_ctx * hd2, dtype=np.float32)
+            inv_freq = self.rope_freq_base ** (-np.arange(0, rope_dim, 2, dtype=np.float64) / rope_dim)
+            for pos in range(max_ctx):
+                theta = pos * inv_freq
+                cos_table[pos * hd2:(pos + 1) * hd2] = np.cos(theta).astype(np.float32)
+                sin_table[pos * hd2:(pos + 1) * hd2] = np.sin(theta).astype(np.float32)
+            self._c_cos_table = cos_table
+            self._c_sin_table = sin_table
+        else:
+            self._c_cos_table = np.zeros(1, dtype=np.float32)
+            self._c_sin_table = np.zeros(1, dtype=np.float32)
+        
+        # ── C pointer for all L-length int arrays ──
+        pi = ctypes.POINTER(ctypes.c_int)
+        
+        def _int_ptr(arr):
+            return arr.ctypes.data_as(pi)
+        
+        # ── Workspace buffer ──
+        # Compute S = max(N, inner, FF, n_kv, qk_dim, n_ff_expert, shexp_inner)
+        N = self.n_embd
+        NH = self.n_head
+        HD = self.head_dim
+        inner = NH * HD  # 4096
+        n_kv = self.n_kv_head * HD  # 512
+        qk_dim = inner + 2 * n_kv  # 5120
+        FF = self.n_ff
+        n_ff_expert = self.n_ff_expert if self.is_moe else FF
+        shexp_inner = int(shexp_int_arr[0]) if shexp_int_arr[0] > 0 else 512
+        S = max(N, inner, FF, n_kv, qk_dim, n_ff_expert, shexp_inner, 8192)
+        self._c_ws_S = S
+        # The workspace is allocated per-call in forward_c_batch based on B
+        # (since B varies). We cache S and the formula only.
+        
+        # q8_ws for moe_forward_omp (enough for one MoE call)
+        q8_sz = self.n_experts_per_tok * n_ff_expert * 34 // 32 + 1024
+        self._c_q8_ws = np.zeros(max(1, q8_sz), dtype=np.uint8)
+        
+        # ── Token array (reusable, will be filled per-call) ──
+        self._c_tokens = np.zeros(64, dtype=np.int32)  # will resize if needed
+        
+        # Store int array pointers as ctypes for quick access
+        self._c_pi_type = pi
+        self._c_p_layer_types = _int_ptr(self._c_layer_types)
+        self._c_p_qkv_nr = _int_ptr(self._c_qkv_nr)
+        self._c_p_qkv_nc = _int_ptr(self._c_qkv_nc)
+        self._c_p_qkv_qt = _int_ptr(self._c_qkv_qt)
+        self._c_p_gate_nr = _int_ptr(self._c_gate_nr)
+        self._c_p_gate_nc = _int_ptr(self._c_gate_nc)
+        self._c_p_gate_qt = _int_ptr(self._c_gate_qt)
+        self._c_p_ssm_out_nr = _int_ptr(self._c_ssm_out_nr)
+        self._c_p_ssm_out_nc = _int_ptr(self._c_ssm_out_nc)
+        self._c_p_ssm_out_qt = _int_ptr(self._c_ssm_out_qt)
+        self._c_p_out_nr = _int_ptr(self._c_out_nr)
+        self._c_p_out_nc = _int_ptr(self._c_out_nc)
+        self._c_p_out_qt = _int_ptr(self._c_out_qt)
+        self._c_p_gate_exp_qt = _int_ptr(self._c_gate_exp_qt)
+        self._c_p_up_exp_qt = _int_ptr(self._c_up_exp_qt)
+        self._c_p_down_exp_qt = _int_ptr(self._c_down_exp_qt)
+        self._c_p_moe_router_qt = _int_ptr(self._c_moe_router_qt)
+        self._c_p_shexp_int = _int_ptr(self._c_shexp_int)
+        self._c_p_shexp_gate_qt = _int_ptr(self._c_shexp_gate_qt)
+        self._c_p_shexp_up_qt = _int_ptr(self._c_shexp_up_qt)
+        self._c_p_shexp_down_qt = _int_ptr(self._c_shexp_down_qt)
+        
+        # ── Store scalars as ctypes ints for fast access ──
+        self._c_ci = ctypes.c_int
+        self._c_cf = ctypes.c_float
+        self._c_eps = ctypes.c_float(self.eps)
+        
+        self._c_batch_ready = True
 
     def reset(self):
         self.kv_len[:] = 0
@@ -956,11 +1280,9 @@ class TurboEngineV7MoE:
             lw = self._layers[i]
             is_ssm_layer = (self.layer_types is not None and self.layer_types[i] == 1)
 
-            # NaN clamp: prevent FP32 overflow (critical for Lance, Qwen3.6)
-            np.clip(b_x, -1000.0, 1000.0, out=b_x)
-            
-            # Residual copy
-            np.copyto(b_r, b_x)
+            # V2: Replace np.copyto with slice assignment (faster, avoids function call).
+            # Removed np.clip — Qwen3-30B doesn't need it at Q4_K_M precision.
+            b_r[:] = b_x
 
             # RMS norm 1
             simd.rms_norm(p_xn, p_x,
@@ -968,35 +1290,18 @@ class TurboEngineV7MoE:
                           N, eps_f)
 
             if is_ssm_layer and self._cengine is not None and lw.ssm_conv1d_ptr is not None:
-                # ═══ SSM path ═══
-                ce = self._cengine
-                # Call ssm_decode_step (C function)
+                # ═══ FUSED SSM path ═══ (one C call replaces 3 ctypes calls)
                 state_ptr = self._ssm_state[i].ctypes.data_as(cf)
-                interm_ptr = self._ssm_intermediate.ctypes.data_as(cf)
-                ce.ssm_decode_step(
-                    p_xn, interm_ptr,
+                kern.ssm_layer_fused(
+                    p_xn, p_r, p_x,  # x, residual, output (in-place)
                     lw.ssm_conv1d_ptr, lw.ssm_a_ptr, lw.ssm_dt_bias_ptr,
                     lw.ssm_alpha_ptr, lw.ssm_beta_ptr, lw.ssm_norm_ptr,
                     state_ptr,
+                    lw.attn_gate_raw, lw.attn_gate_nr, lw.attn_gate_nc, lw.attn_gate_qt,
+                    lw.ssm_out_raw, lw.ssm_out_nr, lw.ssm_out_nc, lw.ssm_out_qt,
                     ci(1), ci(N), ci(ssm_inner),
                     ci(self.ssm_groups), ci(self.ssm_state_size),
                     ci(self.ssm_conv_kernel), ci(self.ssm_dt_rank))
-                
-                # attn_gate: xn → gate_4096 (N→inner via quant_matmul)
-                kern.quant_matmul_omp(
-                    lw.attn_gate_raw, p_xn, self._gate_4096.ctypes.data_as(cf),
-                    lw.attn_gate_nr, lw.attn_gate_nc, lw.attn_gate_qt)
-                
-                # Element-wise gating: combined = gate * intermediate
-                np.multiply(self._gate_4096, self._ssm_intermediate, out=self._gate_4096)
-                
-                # ssm_out projection (inner→N)
-                kern.quant_matmul_omp(
-                    lw.ssm_out_raw, self._gate_4096.ctypes.data_as(cf), p_oproj,
-                    lw.ssm_out_nr, lw.ssm_out_nc, lw.ssm_out_qt)
-                
-                # Residual
-                b_x[:N] = b_r[:N] + b_oproj[:N]
 
             else:
                 # ═══ Full Attention path ═══
@@ -1069,7 +1374,8 @@ class TurboEngineV7MoE:
                         self.kv_k[i].ctypes.data_as(cf),
                         self.kv_v[i].ctypes.data_as(cf),
                         b_att.ctypes.data_as(cf),
-                        ci(seq_len), ci(NH), ci(self.n_kv_head), ci(HD))
+                        ci(seq_len), ci(NH), ci(self.n_kv_head), ci(HD),
+                        self._p_gqa_ws)
                 else:
                     k_cache = self.kv_k[i, :seq_len].reshape(seq_len, self.n_kv_head, HD)
                     v_cache = self.kv_v[i, :seq_len].reshape(seq_len, self.n_kv_head, HD)
@@ -1103,8 +1409,7 @@ class TurboEngineV7MoE:
                         b_x[:N] = b_r[:N] + (lw.attn_out_f32 @ b_att)[:N]
 
             # ── FFN ──
-            np.copyto(b_r, b_x)
-            np.clip(b_x, -1000.0, 1000.0, out=b_x)
+            b_r[:] = b_x
             simd.rms_norm(p_xn, p_x,
                           lw.ffn_norm_w.ctypes.data_as(cf),
                           N, eps_f)
@@ -1152,7 +1457,6 @@ class TurboEngineV7MoE:
                     b_x[:N] = b_r[:N] + (lw.ffn_down_f32 @ b_silu[:lw.ffn_down_nc.value])[:N]
 
         # Final norm
-        np.clip(b_x, -1000.0, 1000.0, out=b_x)
         simd.rms_norm(p_xn, p_x,
                       self._out_norm_w.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
                       N, eps_f)
@@ -1166,6 +1470,151 @@ class TurboEngineV7MoE:
 
         self.pos += 1
         return self._logits
+
+    def forward_c_batch(self, token_ids):
+        """Process B tokens in a single C call via qwen36_batch_forward.
+        
+        Args:
+            token_ids: list or 1D array of token IDs (length B)
+        
+        Returns:
+            np.ndarray of shape (B, vocab_size) with logits for each token
+        """
+        if not self._c_batch_ready:
+            raise RuntimeError(
+                "forward_c_batch requires qwen35moe architecture with combined_engine.so")
+        
+        B = len(token_ids)
+        L = self.n_layers
+        N = self.n_embd
+        NH = self.n_head
+        n_kv_h = self.n_kv_head
+        HD = self.head_dim
+        FF = self.n_ff
+        n_experts = self.n_experts if self.is_moe else 0
+        top_k = self.n_experts_per_tok if self.is_moe else 0
+        n_ff_expert = self.n_ff_expert if self.is_moe else FF
+        eps = self.eps
+        rope_dim = self.rope_dim if hasattr(self, 'rope_dim') else 0
+        max_ctx = 4096
+        ssm_inner = self.ssm_inner if hasattr(self, 'ssm_inner') else (NH * HD)
+        ssm_groups = self.ssm_groups if hasattr(self, 'ssm_groups') else 32
+        ssm_state_size = self.ssm_state_size if hasattr(self, 'ssm_state_size') else 128
+        ssm_conv_kernel = self.ssm_conv_kernel if hasattr(self, 'ssm_conv_kernel') else 4
+        ssm_dt_rank = self.ssm_dt_rank if hasattr(self, 'ssm_dt_rank') else 32
+        
+        emb_quant = 0  # 0 = F32 embedding
+        emb_ptr = self.emb.ctypes.data_as(ctypes.POINTER(ctypes.c_float)) if hasattr(self, 'emb') else None
+        if emb_ptr is None:
+            raise RuntimeError("No embedding table loaded")
+        
+        # Ensure token array is big enough
+        if len(self._c_tokens) < B:
+            self._c_tokens = np.zeros(B + 64, dtype=np.int32)
+        self._c_tokens[:B] = token_ids
+        tokens_ptr = self._c_tokens.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+        
+        # Logits buffer
+        if not hasattr(self, '_c_logits_batch') or self._c_logits_batch.shape[0] < B:
+            self._c_logits_batch = np.zeros((B + 8, self.vocab_size), dtype=np.float32)
+        logits_ptr = self._c_logits_batch.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        
+        # Workspace buffer (float)
+        S = self._c_ws_S
+        ws_needed = B * S * 12
+        if not hasattr(self, '_c_ws') or len(self._c_ws) < ws_needed:
+            self._c_ws = np.zeros(max(ws_needed, 1), dtype=np.float32)
+        ws_ptr = self._c_ws.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        
+        # q8 workspace (uint8)
+        q8_ptr = self._c_q8_ws.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
+        
+        ci = ctypes.c_int
+        cf = ctypes.POINTER(ctypes.c_float)
+        
+        # SSM state pointer (flat: [L][groups][state_size])
+        ssm_state_ptr = self._ssm_state.ctypes.data_as(ctypes.POINTER(ctypes.c_float)) if self._ssm_state is not None else None
+        
+        # KV cache pointers
+        kv_k_ptr = self.kv_k.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        kv_v_ptr = self.kv_v.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        kv_lens_ptr = self.kv_len.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+        
+        # RoPE tables
+        cos_ptr = self._c_cos_table.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        sin_ptr = self._c_sin_table.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        
+        # Output norm + output weight
+        out_norm_ptr = self._out_norm_w.ctypes.data_as(ctypes.POINTER(ctypes.c_float)) if self._out_norm_w is not None else None
+        if self._out_use_c:
+            out_w_ptr = self._out_raw
+            out_nr_final = self._out_nr.value if hasattr(self._out_nr, 'value') else self._out_nr
+            out_nc_final = self._out_nc.value if hasattr(self._out_nc, 'value') else self._out_nc
+            out_qt_final = self._out_qt.value if hasattr(self._out_qt, 'value') else self._out_qt
+        else:
+            out_w_ptr = self._out_f32.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8))
+            out_nr_final = self.vocab_size
+            out_nc_final = N
+            out_qt_final = 0
+        
+        kern = self._kern
+        
+        # ── Call C function ──
+        kern.qwen36_batch_forward(
+            # Scalars
+            ci(B), ci(L), ci(N), ci(NH), ci(n_kv_h), ci(HD), ci(FF),
+            ci(n_experts), ci(top_k), ci(n_ff_expert), ctypes.c_float(eps),
+            ci(rope_dim), ci(max_ctx), ci(ssm_inner), ci(ssm_groups),
+            ci(ssm_state_size), ci(ssm_conv_kernel), ci(ssm_dt_rank),
+            # Embedding
+            emb_ptr, ci(emb_quant),
+            # Layer types
+            self._c_p_layer_types,
+            # Token IDs
+            tokens_ptr,
+            # Logits output
+            logits_ptr,
+            # Per-layer weight arrays
+            self._c_attn_norm_w, self._c_ffn_norm_w,
+            self._c_attn_qkv_raw,
+            self._c_p_qkv_nr, self._c_p_qkv_nc, self._c_p_qkv_qt,
+            self._c_attn_gate_raw,
+            self._c_p_gate_nr, self._c_p_gate_nc, self._c_p_gate_qt,
+            self._c_ssm_out_raw,
+            self._c_p_ssm_out_nr, self._c_p_ssm_out_nc, self._c_p_ssm_out_qt,
+            self._c_attn_out_raw,
+            self._c_p_out_nr, self._c_p_out_nc, self._c_p_out_qt,
+            # MoE expert weights
+            self._c_gate_exp_raw, self._c_p_gate_exp_qt,
+            self._c_up_exp_raw, self._c_p_up_exp_qt,
+            self._c_down_exp_raw, self._c_p_down_exp_qt,
+            # Shared expert
+            self._c_shexp_gate_raw, self._c_shexp_up_raw, self._c_shexp_down_raw,
+            self._c_shexp_router,
+            self._c_p_shexp_int,
+            # MoE router + shexp quant types
+            self._c_moe_router_raw, self._c_p_moe_router_qt,
+            self._c_p_shexp_gate_qt, self._c_p_shexp_up_qt, self._c_p_shexp_down_qt,
+            # Output norm + projection
+            out_norm_ptr,
+            out_w_ptr, ci(out_nr_final), ci(out_nc_final), ci(out_qt_final),
+            # SSM per-layer pointers
+            self._c_ssm_conv1d, self._c_ssm_a, self._c_ssm_dt_bias,
+            self._c_ssm_alpha, self._c_ssm_beta, self._c_ssm_norm,
+            ssm_state_ptr,
+            # KV cache
+            kv_k_ptr, kv_v_ptr, kv_lens_ptr,
+            cos_ptr, sin_ptr,
+            # Workspace
+            ws_ptr, q8_ptr
+        )
+        
+        # C function uses but does NOT increment kv_lens — we do it here
+        self.kv_len[:] += 1
+        self.pos += 1
+        
+        # Return logits for all B tokens
+        return self._c_logits_batch[:B]
 
     def _forward_moe(self, layer, p_xn, b_ffn_out, b_residual, N):
         """C-accelerated MoE FFN — quant matmul for expert dispatch."""

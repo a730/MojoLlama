@@ -1,0 +1,3 @@
+timestamp,change_label,engine,model,threads,median_ms,mean_ms,min_ms,max_ms,p95_ms,p99_ms,tok_s_median,tok_s_mean,n_tokens,warmup
+2026-05-20T19:57:53.871972,baseline_v77_llama1b,v77,Llama-3.2-1B-Instruct-Q4_0.gguf,32,17.52,16.62,14.90,17.90,17.90,17.90,57.07,60.16,20,5
+2026-05-20T19:59:03.880187,baseline_v7moe_qwen3_30b,v7_moe,Qwen3-30B-A3B-Q4_K_M.gguf,32,47.71,67.66,44.24,192.64,192.64,192.64,20.96,14.78,20,5

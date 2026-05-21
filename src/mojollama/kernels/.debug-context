@@ -1,0 +1,43 @@
+# Debug Log: NaN in qwen3_forward_c at layer 7
+
+## Bug
+C fused forward function qwen3_forward_c produces all-NaN output for Qwen3-30B 7+ layers. Layers 1-6 work correctly (max_logit ~17), layer 7+ produces NaN.
+
+## Model Architecture
+- Qwen3-30B: 48 layers, N=2048, NH=32, n_kv_h=4, HD=128, FF_total=6144
+- 128 experts, top_k=8, n_ff_expert=768
+- Attention weights: Q4_K (type 12), K: Q4_K, V: Q4_K, O: Q4_K
+- Expert gate/up: Q4_K (type 12), Expert down: Q6_K (type 14)
+- Output weight: Q8_0 (type 8), shape [151936, 2048]
+
+## The C Function
+A single #pragma omp parallel region wraps all 48 layers. Inside:
+- RMS norm (omp for reduction)
+- QKV projection (omp for per-row quant_matmul_omp calls)
+- RoPE (omp for)
+- KV cache update (omp single)
+- GQA inline attention (omp for over kv_heads)
+- Output projection (omp single calls quant_matmul_omp)
+- RMS norm again (omp for reduction)  
+- MoE via moe_forward_omp (omp single calls moe_forward_omp)
+
+## What's Been Checked
+1. Individual quant_matmul_omp calls work from Python ✓
+2. L=1..6 work correctly in the C function ✓
+3. NaN detection after norm, QKV, GQA all show NO NaN ✓
+4. NaN detection AFTER the MoE (ffn_out check with abort()) also shows NO NaN
+
+## Critical Unresolved
+The NaN check AFTER `x[i] = res[i] + ffn_out[i]` (after MoE residual) also shows NO NaN with abort().
+But the final logits are ALL NaN (151936 elements).
+This means NaN appears in the OUTPUT PROJECTION section (after the parallel region ends).
+The output projection does:
+   1. Final RMS norm on x
+   2. quantize_q8_0_c(x, xn_q8, N)  
+   3. quant_matmul_omp(w_out, x, logits, 151936, 2048, 8)
+The output weight is Q8_0 type 8 with shape [151936, 2048].
+
+## Task
+Read cengine_batch_instr.c (the qwen3_forward_c function at the end)
+Read quant_kernels_omp.c (quant_matmul_omp and q8_0_matmul_omp)
+Find why the output projection produces NaN when x, xn_q8 are valid.
