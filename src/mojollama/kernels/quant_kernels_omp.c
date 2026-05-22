@@ -33,6 +33,7 @@
 #define Q5_K_BS   176
 #define Q6_K_BS   210
 #define Q8_0_BS   34
+#define Q5_0_BS   22
 #define MXFP4_BS  17
 
 static inline float f16_to_f32(uint16_t h) { return _cvtsh_ss(h); }
@@ -47,6 +48,7 @@ float q4_k_row_dot_avx2(const uint8_t *restrict W, const float *restrict x, int 
 float q5_k_row_dot_avx2(const uint8_t *restrict W, const float *restrict x, int n_cols, int row);
 float q6_k_row_dot_avx2(const uint8_t *restrict W, const float *restrict x, int n_cols, int row);
 float q4_k_row_dot_q8(const uint8_t *restrict W, const uint8_t *restrict x_q8, int n_cols, int row);
+float q6_k_row_dot_q8(const uint8_t *restrict W, const uint8_t *restrict x_q8, int n_cols, int row);
 
 /* =========================================================================
  * Q4_K scale/min unpacking  (from ggml get_scale_min_k4)
@@ -346,6 +348,10 @@ float q5_k_row_dot_avx2(const uint8_t *restrict W, const float *restrict x,
 void q5_0_matmul_omp(const uint8_t *restrict W, const float *restrict x,
                       float *restrict out, int n_rows, int n_cols);
 float q5_0_row_dot(const uint8_t *row, const float *x, int n_cols);
+/* Q5_0 × Q8_0 activation path */
+void q5_0_q8_0_matmul_omp(const uint8_t *restrict W, const uint8_t *restrict x_q8,
+                           float *restrict out, int n_rows, int n_cols, int B);
+float q5_0_row_dot_q8(const uint8_t *restrict row, const uint8_t *restrict x_q8, int n_cols);
 
 void q5_k_matmul_omp(const uint8_t *restrict W, const float *restrict x,
                       float *restrict out, int n_rows, int n_cols) {
@@ -370,9 +376,9 @@ void q5_k_matmul_omp(const uint8_t *restrict W, const float *restrict x,
 void q8_0_matmul_omp(const uint8_t *restrict W, const float *restrict x,
                       float *restrict out, int n_rows, int n_cols) {
     int bpr = n_cols / QK8_0;  /* blocks of 32 per row */
-
     #pragma omp parallel for schedule(static)
     for (int r = 0; r < n_rows; r++) {
+        volatile float no_opt_total = 0.0f;  /* volatile prevents vectorized overrun */
         float total = 0.0f;
         const uint8_t *row = W + (size_t)r * bpr * Q8_0_BS;
         for (int blk = 0; blk < bpr; blk++) {
@@ -386,21 +392,17 @@ void q8_0_matmul_omp(const uint8_t *restrict W, const float *restrict x,
             int off = blk * 32;
             __m256 d_v = _mm256_set1_ps(d);
 
-            /* Process 32 int8 values: 4 groups of 8.
-             * Each group: load 8 int8, sign-extend to 8 int32 via int16,
-             * convert to float, multiply by scale, dot with x */
+            /* Process 32 int8 values: 4 groups of 8. */
             __m256 acc = _mm256_setzero_ps();
             for (int i = 0; i < 32; i += 8) {
-                /* Load 8 int8 values and sign-extend to 8 int32 */
-                __m128i q8 = _mm_loadl_epi64((__m128i*)(qs + i));  /* load 8 bytes */
-                __m128i q16lo = _mm_cvtepi8_epi16(q8);              /* sign-extend to 8 int16 */
-                __m128i q16hi = _mm_cvtepi16_epi32(q16lo);          /* low 4 int16 → int32 */
-                __m128i q16lo2 = _mm_cvtepi16_epi32(_mm_unpackhi_epi64(q16lo, q16lo));  /* high 4 int16 → int32 */
+                __m128i q8 = _mm_loadl_epi64((__m128i*)(qs + i));
+                __m128i q16lo = _mm_cvtepi8_epi16(q8);
+                __m128i q16hi = _mm_cvtepi16_epi32(q16lo);
+                __m128i q16lo2 = _mm_cvtepi16_epi32(_mm_unpackhi_epi64(q16lo, q16lo));
                 __m256 qf = _mm256_cvtepi32_ps(_mm256_set_m128i(q16lo2, q16hi));
                 __m256 xv = _mm256_loadu_ps(x + off + i);
                 acc = _mm256_fmadd_ps(_mm256_mul_ps(qf, d_v), xv, acc);
             }
-            /* Horizontal sum of 8 floats */
             __m128 hi128 = _mm256_extractf128_ps(acc, 1);
             __m128 lo128 = _mm256_castps256_ps128(acc);
             __m128 sum = _mm_add_ps(lo128, hi128);
@@ -408,7 +410,8 @@ void q8_0_matmul_omp(const uint8_t *restrict W, const float *restrict x,
             sum = _mm_hadd_ps(sum, sum);
             total += _mm_cvtss_f32(sum);
         }
-        out[r] = total;
+        no_opt_total = total;
+        out[r] = no_opt_total;
     }
 }
 
@@ -637,7 +640,15 @@ static float mxfp4_row_dot_q8(const uint8_t *restrict W, const uint8_t *restrict
         const uint8_t *xbp = x_q8 + blk * Q8_0_BS;
         float q8_d = f16_to_f32(*(const uint16_t*)xbp);
         union { uint32_t u; float f; } sc = { .u = ((uint32_t)bp[16]) << 23 };
-        __m256 cv = _mm256_set1_ps(sc.f * q8_d);
+        /* Clamp combined scale to prevent FMA overflow → inf → NaN in reduction.
+         * bp[16] (MXFP4 exponent byte) when ebyte=255 produces +inf as float via the
+         * (ebyte<<23) encoding. inf * q8_d = inf, and _mm256_fmadd_ps with inf produces
+         * mixed ±inf lanes → _mm256_add_ps(+inf,-inf) = NaN in final reduction.
+         * Clamp to 1e20 (safely below float32 max 3.4e38) preserves all normal values. */
+        float cs = sc.f * q8_d;
+        if (cs > 1e20f) cs = 1e20f;
+        if (cs < -1e20f) cs = -1e20f;
+        __m256 cv = _mm256_set1_ps(cs);
         __m128i p = _mm_loadu_si128((const __m128i*)bp);
         __m128i lo = _mm_and_si128(p, _mm_set1_epi8(0x0F));
         __m128i hi = _mm_and_si128(_mm_srli_epi16(p, 4), _mm_set1_epi8(0x0F));
@@ -1220,46 +1231,15 @@ void batch_gate_up_omp(const uint8_t *restrict Wg, const uint8_t *restrict Wu,
 
 void q5_0_matmul_omp(const uint8_t *restrict W, const float *restrict x,
                       float *restrict out, int n_rows, int n_cols) {
-    int bpr = n_cols / 32;
-    #pragma omp parallel for schedule(static)
-    for (int r = 0; r < n_rows; r++) {
-        float total = 0.0f;
-        const uint8_t *row = W + (size_t)r * bpr * 22;
-        for (int blk = 0; blk < bpr; blk++) {
-            __builtin_prefetch(row + (blk + 1) * 22, 0, 1);
-            __builtin_prefetch(x + (blk + 1) * 32, 0, 1);
-            const uint8_t *bp = row + blk * 22;
-            float d = f16_to_f32(*(const uint16_t*)bp);
-            const uint8_t *qh = bp + 2, *ql = bp + 6;
-            int off = blk * 32;
-            __m256 d_v = _mm256_set1_ps(d), acc = _mm256_setzero_ps();
-            for (int h = 0; h < 2; h++) {
-                int hh = h * 16;
-                __m128i q8 = _mm_loadl_epi64((const __m128i*)(ql + hh/2));
-                __m128i lo = _mm_and_si128(q8, _mm_set1_epi8(0x0F));
-                __m128i hi = _mm_and_si128(_mm_srli_epi16(q8, 4), _mm_set1_epi8(0x0F));
-                __m256i nb = _mm256_cvtepu8_epi16(_mm_unpacklo_epi8(lo, hi));
-                uint16_t qw; memcpy(&qw, qh + h, 2);
-                __m256i qv = _mm256_set1_epi16((short)qw);
-                __m256i ms = _mm256_set_epi16(0x8000,0x4000,0x2000,0x1000,
-                    0x0800,0x0400,0x0200,0x0100,0x0080,0x0040,0x0020,0x0010,
-                    0x0008,0x0004,0x0002,0x0001);
-                __m256i bt = _mm256_andnot_si256(_mm256_cmpeq_epi16(
-                    _mm256_and_si256(qv, ms), _mm256_setzero_si256()), _mm256_set1_epi16(16));
-                __m256i v16 = _mm256_sub_epi16(_mm256_or_si256(nb, bt), _mm256_set1_epi16(16));
-                for (int i = 0; i < 16; i += 8) {
-                    __m128i c = i==0 ? _mm256_extracti128_si256(v16,0):_mm256_extracti128_si256(v16,1);
-                    __m128i i32l = _mm_cvtepi16_epi32(c), i32h = _mm_cvtepi16_epi32(_mm_unpackhi_epi64(c,c));
-                    __m256 vf = _mm256_cvtepi32_ps(_mm256_set_m128i(i32h,i32l));
-                    acc = _mm256_fmadd_ps(_mm256_mul_ps(vf, d_v), _mm256_loadu_ps(x+off+hh+i), acc);
-                }
-            }
-            __m128 hh128 = _mm256_extractf128_ps(acc,1), ll128 = _mm256_castps256_ps128(acc);
-            __m128 s = _mm_hadd_ps(_mm_hadd_ps(_mm_add_ps(ll128,hh128), _mm_add_ps(ll128,hh128)), _mm_add_ps(ll128,hh128));
-            total += _mm_cvtss_f32(s);
-        }
-        out[r] = total;
-    }
+    /* Quantize input to Q8_0, then use VPMADDUBSW integer path */
+    int nb_blocks = n_cols / 32;
+    uint8_t x_q8_buf[4096 / 32 * Q8_0_BS];
+    int q8_sz = nb_blocks * Q8_0_BS;
+    uint8_t *x_q8 = q8_sz <= (int)sizeof(x_q8_buf) ? x_q8_buf : (uint8_t*)malloc(q8_sz);
+    if (!x_q8) { for (int r = 0; r < n_rows; r++) out[r] = 0.0f; return; }
+    quantize_row_q8_0(x, x_q8, n_cols);
+    q5_0_q8_0_matmul_omp(W, x_q8, out, n_rows, n_cols, 1);
+    if (x_q8 != x_q8_buf) free(x_q8);
 }
 
 float q5_0_row_dot(const uint8_t *row, const float *x, int n_cols) {
@@ -1275,6 +1255,98 @@ float q5_0_row_dot(const uint8_t *row, const float *x, int n_cols) {
     }
     return total;
 }
+
+/* =========================================================================
+ * Q5_0 × Q8_0 quantized activation path
+ *
+ * Q5_0 block (22 bytes per 32 values): [d:fp16][qh:4B][ql:16B]
+ * stored = nibble | (qh_bit << 4)  range 0..31, actual = stored - 16
+ * Q8_0 block: [d:fp16][qs:32 int8]
+ *
+ * dot = d5 * d8 * (VPMADDUBSW(nibbles,q8) + 16*Σ(qh_bit*q8) - 16*Σ(q8))
+ * ========================================================================= */
+static inline float dot_q5_0_q8_0(const uint8_t *restrict q5, const uint8_t *restrict q8) {
+    float d5 = f16_to_f32(*(const uint16_t*)q5);
+    float d8 = f16_to_f32(*(const uint16_t*)q8);
+    const uint8_t *qh = q5 + 2, *ql = q5 + 6;
+    const int8_t *q8v = (const int8_t *)(q8 + 2);
+
+    /* Part 1: nibble × q8 via VPMADDUBSW (same as Q4_0) */
+    __m128i ql_raw = _mm_loadu_si128((const __m128i*)ql);
+    __m128i lo_mask = _mm_set1_epi8(0x0F);
+    __m128i lo = _mm_and_si128(ql_raw, lo_mask);
+    __m128i hi = _mm_and_si128(_mm_srli_epi16(ql_raw, 4), lo_mask);
+    __m128i nib_lo = _mm_unpacklo_epi8(lo, hi);
+    __m128i nib_hi = _mm_unpackhi_epi8(lo, hi);
+    __m128i ql8 = _mm_loadu_si128((const __m128i*)q8v);
+    __m128i qh8 = _mm_loadu_si128((const __m128i*)(q8v + 16));
+    __m128i ml = _mm_maddubs_epi16(nib_lo, ql8);
+    __m128i mh = _mm_maddubs_epi16(nib_hi, qh8);
+    __m128i ones16 = _mm_set1_epi16(1);
+    __m128i s0 = _mm_madd_epi16(ml, ones16);
+    __m128i s1 = _mm_madd_epi16(mh, ones16);
+    __m128i s01 = _mm_hadd_epi32(s0, s1);
+    __m128i s_all = _mm_hadd_epi32(s01, _mm_setzero_si128());
+    int32_t nib_sum = _mm_cvtsi128_si32(s_all) + _mm_extract_epi32(s_all, 1);
+
+    /* Part 2: high-bit dot + Σ(q8) — per half (2 halves of 16 values) */
+    int32_t high_dot = 0, q8_sum = 0;
+    for (int h = 0; h < 2; h++) {
+        uint16_t qw; memcpy(&qw, qh + h * 2, 2);
+        __m256i qw_bc = _mm256_set1_epi16((short)qw);
+        __m256i bitmask = _mm256_set_epi16(
+            0x8000,0x4000,0x2000,0x1000,0x0800,0x0400,0x0200,0x0100,
+            0x0080,0x0040,0x0020,0x0010,0x0008,0x0004,0x0002,0x0001);
+        __m256i bt = _mm256_andnot_si256(
+            _mm256_cmpeq_epi16(_mm256_and_si256(qw_bc, bitmask), _mm256_setzero_si256()),
+            _mm256_set1_epi16(16));
+        __m128i q8h = _mm_loadu_si128((const __m128i*)(q8v + h * 16));
+        __m256i q8_16 = _mm256_cvtepi8_epi16(q8h);
+        __m256i hd = _mm256_madd_epi16(bt, q8_16);
+        __m128i hdl = _mm256_castsi256_si128(hd), hdh = _mm256_extracti128_si256(hd, 1);
+        __m128i hds = _mm_hadd_epi32(hdl, hdh);
+        hds = _mm_hadd_epi32(hds, hds);
+        high_dot += _mm_cvtsi128_si32(hds) + _mm_extract_epi32(hds, 1);
+        /* Σ(q8) */
+        __m256i qs = _mm256_hadd_epi16(q8_16, _mm256_setzero_si256());
+        __m128i qsl = _mm256_castsi256_si128(qs), qsh = _mm256_extracti128_si256(qs, 1);
+        __m128i qss = _mm_add_epi32(_mm_cvtepi16_epi32(qsl), _mm_cvtepi16_epi32(qsh));
+        qss = _mm_hadd_epi32(qss, qss); qss = _mm_hadd_epi32(qss, qss);
+        q8_sum += _mm_cvtsi128_si32(qss);
+    }
+    int32_t acc = nib_sum + high_dot - 16 * q8_sum;
+    return d5 * d8 * (float)acc;
+}
+
+/* Q5_0 × Q8_0 matmul */
+void q5_0_q8_0_matmul_omp(const uint8_t *restrict W, const uint8_t *restrict x_q8,
+                           float *restrict out, int n_rows, int n_cols, int B) {
+    int bpr = n_cols / 32;
+    #pragma omp parallel for schedule(static)
+    for (int r = 0; r < n_rows; r++) {
+        float *acc = (float*)__builtin_alloca(B * sizeof(float));
+        for (int b = 0; b < B; b++) acc[b] = 0.0f;
+        const uint8_t *row = W + (size_t)r * bpr * Q5_0_BS;
+        for (int blk = 0; blk < bpr; blk++) {
+            const uint8_t *bp = row + (size_t)blk * Q5_0_BS;
+            float d5 = f16_to_f32(*(const uint16_t*)bp);
+            for (int b = 0; b < B; b++) {
+                acc[b] += dot_q5_0_q8_0(bp, x_q8 + (size_t)b * bpr * Q8_0_BS + (size_t)blk * Q8_0_BS);
+            }
+        }
+        for (int b = 0; b < B; b++) out[(size_t)b * n_rows + r] = acc[b];
+    }
+}
+
+/* Q5_0 × Q8_0 single row dot */
+float q5_0_row_dot_q8(const uint8_t *restrict row, const uint8_t *restrict x_q8, int n_cols) {
+    int bpr = n_cols / 32;
+    float total = 0.0f;
+    for (int b = 0; b < bpr; b++)
+        total += dot_q5_0_q8_0(row + (size_t)b * Q5_0_BS, x_q8 + (size_t)b * Q8_0_BS);
+    return total;
+}
+
 /* Unified dispatch: quant_matmul_omp
  *
  * quant_type: 0=F32, 2=Q4_0, 3=Q4_1, 7=Q4_K, 8=Q8_0, 9=Q5_K, 14=Q6_K
@@ -1830,6 +1902,57 @@ float q6_k_row_dot_avx2(const uint8_t *restrict W, const float *restrict x,
     return sum;
 }
 
+/* Q6_K row-dot with Q8_0 activation — VPMADDUBSW path */
+float q6_k_row_dot_q8(const uint8_t *restrict W, const uint8_t *restrict x_q8,
+                       int n_cols, int row) {
+    int nb = n_cols / QK_K;
+    const uint8_t *row_ptr = W + (size_t)row * nb * Q6_K_BS;
+    float sum = 0.0f;
+    static const uint8_t kShuf[16] = {0,8,1,9,2,10,3,11,4,12,5,13,6,14,7,15};
+    __m128i shuf_nib = _mm_loadu_si128((const __m128i*)kShuf);
+    __m128i ones8 = _mm_set1_epi8(1);
+    __m128i ones16 = _mm_set1_epi16(1);
+    __m128i mask0f = _mm_set1_epi8(0x0F);
+    for (int b = 0; b < nb; b++) {
+        const uint8_t *blk = row_ptr + (size_t)b * Q6_K_BS;
+        const uint8_t *ql = blk;
+        const uint8_t *qh = blk + 128;
+        const int8_t *sc = (const int8_t*)(blk + 192);
+        float d = f16_to_f32(*(const uint16_t*)(blk + 208));
+        for (int j = 0; j < QK_K; j += 16) {
+            float scale = d * (float)sc[j/16];
+            __m128i ql8 = _mm_loadl_epi64((const __m128i*)(ql + j/2));
+            __m128i lo = _mm_and_si128(ql8, mask0f);
+            __m128i hi = _mm_and_si128(_mm_srli_epi16(ql8, 4), mask0f);
+            __m128i nib = _mm_shuffle_epi8(_mm_unpacklo_epi64(lo, hi), shuf_nib);
+            uint32_t qh4; memcpy(&qh4, qh + j/4, 4);
+            uint8_t qh16[16];
+            for (int k = 0; k < 4; k++) {
+                uint8_t byte = (qh4 >> (k*8)) & 0xFF;
+                qh16[k*4+0]=byte&3; qh16[k*4+1]=(byte>>2)&3;
+                qh16[k*4+2]=(byte>>4)&3; qh16[k*4+3]=(byte>>6)&3;
+            }
+            __m128i up = _mm_loadu_si128((const __m128i*)qh16);
+            __m128i val6 = _mm_or_si128(nib, _mm_slli_epi16(up, 4));
+            int q8_idx = (b * QK_K + j) / 32;
+            int q8_off = (b * QK_K + j) % 32;
+            const uint8_t *q8b = x_q8 + (size_t)q8_idx * Q8_0_BS;
+            float d8 = f16_to_f32(*(const uint16_t*)q8b);
+            __m128i q8v = _mm_loadu_si128((const __m128i*)(q8b + 2 + q8_off));
+            __m128i prod = _mm_maddubs_epi16(val6, q8v);
+            __m128i sum_v = _mm_madd_epi16(prod, ones16);
+            int total_val = _mm_extract_epi32(sum_v,0)+_mm_extract_epi32(sum_v,1)
+                          + _mm_extract_epi32(sum_v,2)+_mm_extract_epi32(sum_v,3);
+            __m128i q8sp = _mm_maddubs_epi16(ones8, q8v);
+            __m128i q8si = _mm_madd_epi16(q8sp, ones16);
+            int total_q8 = _mm_extract_epi32(q8si,0)+_mm_extract_epi32(q8si,1)
+                         + _mm_extract_epi32(q8si,2)+_mm_extract_epi32(q8si,3);
+            sum += d8 * scale * ((float)total_val - 32.0f * (float)total_q8);
+        }
+    }
+    return sum;
+}
+
 /* OMP Q6_K matmul using AVX2 dequant + FMA */
 void q6_k_matmul_avx2_omp(const uint8_t *restrict W, const float *restrict x,
                            float *restrict out, int n_rows, int n_cols) {
@@ -1971,8 +2094,10 @@ void moe_forward_omp(
     /* ── Phase 1: Gate + Up (V8 fused with contiguous rows per chunk) ── */
     if (qt_gate == 39 && qt_up == 39) {
         /* V8: Keep fused OMP region but group iterations by expert for better L3 reuse.
-         * With schedule(static), each thread gets rows from one expert contiguously,
-         * keeping that expert's weights in L3 cache. */
+         * Gate/up uses f32 path (not q8) because Q8 quantization of x_norm loses
+         * precision for the MoE router's gating signal, causing degraded output on
+         * some models (GPT-OSS 2880-dim experts). Down path still uses q8 with
+         * clamped scale for numerical stability. */
         int total = total_gate;
         #pragma omp parallel for schedule(static)
         for (int i = 0; i < total * 2; i++) {
@@ -1983,11 +2108,11 @@ void moe_forward_omp(
             int e = top_indices[ei];
             const uint8_t *W = is_up ? up_raw[e] : gate_raw[e];
             float *buf = is_up ? up_buf : gate_buf;
-            buf[idx] = mxfp4_row_dot_q8(W, x_q8, n_embd, row);
+            buf[idx] = mxfp4_row_dot_f32(W, x_norm, n_embd, row);
         }
     } else {
         /* Per-row dispatch for other quant types */
-        #pragma omp parallel for schedule(dynamic, 64)
+        #pragma omp parallel for schedule(static)
         for (int i = 0; i < total_gate; i++) {
             int ei = i / n_ff_expert;
             int row = i % n_ff_expert;
@@ -2004,7 +2129,7 @@ void moe_forward_omp(
                 int bpr = n_embd / 32;
                 gv = q4_1_row_dot(gate_raw[e], x_norm, bpr, row);
             } else if (qt_gate == 6) {
-                gv = q5_0_row_dot(gate_raw[e] + (size_t)row * ((n_embd+31)/32)*22, x_norm, n_embd);
+                gv = q5_0_row_dot_q8(gate_raw[e] + (size_t)row * ((n_embd+31)/32) * Q5_0_BS, x_q8, n_embd);
             } else {
                 gv = 0.0f;
             }
@@ -2019,7 +2144,7 @@ void moe_forward_omp(
                 int bpr = n_embd / 32;
                 uv = q4_1_row_dot(up_raw[e], x_norm, bpr, row);
             } else if (qt_up == 6) {
-                uv = q5_0_row_dot(up_raw[e] + (size_t)row * ((n_embd+31)/32)*22, x_norm, n_embd);
+                uv = q5_0_row_dot_q8(up_raw[e] + (size_t)row * ((n_embd+31)/32) * Q5_0_BS, x_q8, n_embd);
             } else {
                 uv = 0.0f;
             }
@@ -2032,25 +2157,73 @@ void moe_forward_omp(
     #pragma omp parallel for schedule(static)
     for (int i = 0; i < top_k * n_ff_expert; i++) {
         float gv = gate_buf[i];
+        /* Clamp to prevent expf overflow → inf/inf = NaN */
+        if (gv < -80.0f) gv = -80.0f;
+        if (gv > 80.0f) gv = 80.0f;
         silu_buf[i] = (gv / (1.0f + expf(-gv))) * up_buf[i];
+    }
+
+    /* ── Pre-quantize silu to Q8_0 for Q4_K down path ── */
+    uint8_t *silu_q8_base = NULL;
+    int q8_bpe = 0;  /* Q8_0 blocks per expert */
+    if (qt_down == 12 && prealloc_q8) {
+        q8_bpe = (n_ff_expert + 31) / 32;
+        silu_q8_base = prealloc_q8;
+        for (int ei = 0; ei < top_k; ei++) {
+            uint8_t *sq = silu_q8_base + (size_t)ei * q8_bpe * Q8_0_BS;
+            quantize_row_q8_0(silu_buf + (size_t)ei * n_ff_expert, sq, n_ff_expert);
+        }
     }
 
     /* ── Phase 2: Down matmuls + weighted accumulation ── */
     memset(combined, 0, n_embd * sizeof(float));
-    if (qt_down == 39) {
-        /* MXFP4 down path: fused OMP, one region per layer */
-        #pragma omp parallel for schedule(static)
-        for (int i = 0; i < total_down; i++) {
-            int exp_idx = i / n_embd;
-            int row = i % n_embd;
-            int e = top_indices[exp_idx];
-            const float *s = silu_buf + exp_idx * n_ff_expert;
-            float dot = mxfp4_row_dot_f32(down_raw[e], s, n_ff_expert, row);
-            #pragma omp atomic
-            combined[row] += top_weights[exp_idx] * dot;
+    if (qt_down == 39 || qt_down == 12) {
+        /* Quantize silu to Q8_0 for MXFP4/Q4_K down path */
+        if (!silu_q8_base && prealloc_q8) {
+            q8_bpe = (n_ff_expert + 31) / 32;
+            silu_q8_base = prealloc_q8;
+            for (int ei = 0; ei < top_k; ei++) {
+                uint8_t *sq = silu_q8_base + (size_t)ei * q8_bpe * Q8_0_BS;
+                quantize_row_q8_0(silu_buf + (size_t)ei * n_ff_expert, sq, n_ff_expert);
+            }
+        }
+        if (qt_down == 39) {
+            /* MXFP4 down path with Q8_0 activation */
+            #pragma omp parallel for schedule(static)
+            for (int i = 0; i < total_down; i++) {
+                int exp_idx = i / n_embd;
+                int row = i % n_embd;
+                int e = top_indices[exp_idx];
+                uint8_t *sq = silu_q8_base + (size_t)exp_idx * q8_bpe * Q8_0_BS;
+                float dot = mxfp4_row_dot_q8(down_raw[e], sq, n_ff_expert, row);
+                #pragma omp atomic
+                combined[row] += top_weights[exp_idx] * dot;
+            }
+        } else {
+            #pragma omp parallel for schedule(static)
+            for (int i = 0; i < total_down; i++) {
+                int exp_idx = i / n_embd;
+                int row     = i % n_embd;
+                int e = top_indices[exp_idx];
+                const float *s = silu_buf + exp_idx * n_ff_expert;
+                float dot;
+                if (qt_down == 14) {
+                    dot = q6_k_row_dot_avx2(down_raw[e], s, n_ff_expert, row);
+                } else if (qt_down == 2) {
+                    int bpr = n_ff_expert / 32;
+                    dot = q4_0_row_dot(down_raw[e], s, bpr, row);
+                } else if (qt_down == 6) {
+                    dot = q5_0_row_dot(down_raw[e] + (size_t)row * ((n_embd+31)/32)*22, s, n_ff_expert);
+                } else {
+                    dot = 0.0f;
+                }
+                #pragma omp atomic
+                combined[row] += top_weights[exp_idx] * dot;
+            }
         }
     } else {
-        #pragma omp parallel for schedule(dynamic, 64)
+        /* ── Other quant types (Q6_K, Q4_0, Q5_0): dequant + FMA ── */
+        #pragma omp parallel for schedule(static)
         for (int i = 0; i < total_down; i++) {
             int exp_idx = i / n_embd;
             int row     = i % n_embd;
@@ -2059,8 +2232,6 @@ void moe_forward_omp(
             float dot;
             if (qt_down == 14) {
                 dot = q6_k_row_dot_avx2(down_raw[e], s, n_ff_expert, row);
-            } else if (qt_down == 12) {
-                dot = q4_k_row_dot_avx2(down_raw[e], s, n_ff_expert, row);
             } else if (qt_down == 2) {
                 int bpr = n_ff_expert / 32;
                 dot = q4_0_row_dot(down_raw[e], s, bpr, row);
@@ -2089,7 +2260,13 @@ void gemma4_batch_matmuls(
     int qt_q, int qt_k, int qt_v
 ) {
     int nb = N / 32;
-    uint8_t x_q8[4096 / 32 * Q8_0_BS];
+    /* Stack buffer for up to 4096 dims; malloc for larger (e.g., 8192 for Gemma4 26B).
+     * MOTIVATION: Fixed 4KB stack buffer <q8 overflowed for N=8192, causing stack
+     * corruption. Using the moe_forward_omp pattern: stack for small, malloc for large. */
+    uint8_t q8_stack[4096 / 32 * Q8_0_BS];
+    int q8_sz = (size_t)nb * Q8_0_BS;
+    uint8_t *x_q8 = q8_sz <= sizeof(q8_stack) ? q8_stack : (uint8_t*)malloc(q8_sz);
+    uint8_t *x_q8_alloced = (x_q8 != q8_stack) ? x_q8 : NULL;
     quantize_row_q8_0(x_norm, x_q8, N);
     int total = nq + nk + nv;
     #pragma omp parallel for schedule(static)
@@ -2102,6 +2279,8 @@ void gemma4_batch_matmuls(
             v[i - nq - nk] = q6_k_row_dot_avx2(w_v, x_norm, N, i - nq - nk);
         }
     }
+    /* Free malloc'd Q8 buffer if we allocated one (N > 4096) */
+    if (x_q8_alloced) free(x_q8_alloced);
 }
 
 /* =========================================================================

@@ -6,6 +6,17 @@
 #include <immintrin.h>
 #include <omp.h>
 #include <stdio.h>
+
+/* External Q8_0-activation matmul from quant_kernels_omp.c (compiled together into combined_engine.so) */
+extern void quant_matmul_omp(const uint8_t *restrict W, const float *restrict x,
+                              float *restrict out, int n_rows, int n_cols, int quant_type);
+extern int quantize_row_q8_0(const float *restrict x, uint8_t *restrict q8, int n_cols);
+/* Fused MoE forward (quant_kernels_omp.c) */
+extern void moe_forward_omp(const uint8_t** gate_raw, const uint8_t** up_raw, const uint8_t** down_raw,
+    const float* x_norm, int n_ff_expert, int n_embd,
+    int qt_gate, int qt_up, int qt_down,
+    const int* top_indices, const float* top_weights, int top_k,
+    float* combined, float* prealloc_buf, uint8_t* prealloc_q8);
 #define Q4_0_BS 18
 #define Q8_0_BS 34
 #define BLOCK_SIZE 64
@@ -440,6 +451,9 @@ void mxfp4_batch_matmul(const uint8_t *W, const float *x, float *out,
 
                 /* E8M0 exponent → IEEE754 float32: 2^(e-127) = float with bits (e << 23) */
                 union { uint32_t u; float f; } sc = { .u = ((uint32_t)bp[16]) << 23 };
+                /* Clamp scale to prevent FMA overflow → inf → NaN (see mxfp4_row_dot_q8 clamp) */
+                if (sc.f > 1e20f) sc.f = 1e20f;
+                if (sc.f < -1e20f) sc.f = -1e20f;
                 __m256 sv = _mm256_set1_ps(sc.f);
 
                 __m128i packed = _mm_loadu_si128((const __m128i*)bp);
@@ -483,8 +497,9 @@ void mxfp4_batch_matmul(const uint8_t *W, const float *x, float *out,
                 _mm_prefetch(bp + 2 * (int)sizeof(block_mxfp4), _MM_HINT_NTA);
 
                 union { uint32_t u; float f; } sc = { .u = ((uint32_t)bp[16]) << 23 };
+                if (sc.f > 1e20f) sc.f = 1e20f;
+                if (sc.f < -1e20f) sc.f = -1e20f;
                 __m256 sv = _mm256_set1_ps(sc.f);
-
                 __m128i packed = _mm_loadu_si128((const __m128i*)bp);
                 __m128i lo = _mm_and_si128(packed, _mm_set1_epi8(0x0F));
                 __m128i hi = _mm_and_si128(_mm_srli_epi16(packed, 4), _mm_set1_epi8(0x0F));
@@ -630,36 +645,19 @@ void moe_ffn(const BC *c, int l, float *x, float *gate_buf, float *up_buf, float
             float weight = top_val[k];
             
             const uint8_t *gate_w = c->w_gate_exps[l] + (size_t)e * gate_stride;
-            if (c->gate_exp_quant == 12)
-                q4_k_batch_matmul(gate_w, xb, gate_buf, M, N, 1);
-            else if (c->gate_exp_quant == 2)
-                q4_0_batch_matmul(gate_w, xb, gate_buf, M, N, 1);
-            else if (c->gate_exp_quant == 39)
-                mxfp4_batch_matmul(gate_w, xb, gate_buf, M, N, 1);
-            
+            quant_matmul_omp(gate_w, xb, gate_buf, M, N, c->gate_exp_quant);
+
             const uint8_t *up_w = c->w_up_exps[l] + (size_t)e * up_stride;
-            if (c->up_exp_quant == 12)
-                q4_k_batch_matmul(up_w, xb, up_buf, M, N, 1);
-            else if (c->up_exp_quant == 2)
-                q4_0_batch_matmul(up_w, xb, up_buf, M, N, 1);
-            else if (c->up_exp_quant == 39)
-                mxfp4_batch_matmul(up_w, xb, up_buf, M, N, 1);
-            
+            quant_matmul_omp(up_w, xb, up_buf, M, N, c->up_exp_quant);
+
             for (int i = 0; i < M; i++) {
                 float g = gate_buf[i];
                 float sg = g / (1.0f + expf(-g));
                 gate_buf[i] = sg * up_buf[i];
             }
-            
+
             const uint8_t *down_w = c->w_down_exps[l] + (size_t)e * down_stride;
-            if (c->down_exp_quant == 13)
-                q5_k_batch_matmul(down_w, gate_buf, up_buf, N, M, 1);
-            else if (c->down_exp_quant == 14)
-                q6_k_batch_matmul(down_w, gate_buf, up_buf, N, M, 1);
-            else if (c->down_exp_quant == 2)
-                q4_0_batch_matmul(down_w, gate_buf, up_buf, N, M, 1);
-            else if (c->down_exp_quant == 39)
-                mxfp4_batch_matmul(down_w, gate_buf, up_buf, N, M, 1);
+            quant_matmul_omp(down_w, gate_buf, up_buf, N, M, c->down_exp_quant);
             
             for (int i = 0; i < N; i++) ffn_buf[i] += weight * up_buf[i];
         }
@@ -668,14 +666,9 @@ void moe_ffn(const BC *c, int l, float *x, float *gate_buf, float *up_buf, float
 
 static inline void batch_matmul(int qt, const uint8_t *W, const float *x, float *out,
                                 int n_rows, int nc, int B) {
-    if (qt == 12)      q4_k_batch_matmul(W, x, out, n_rows, nc, B);
-    else if (qt == 13) q5_k_batch_matmul(W, x, out, n_rows, nc, B);
-    else if (qt == 14) q6_k_batch_matmul(W, x, out, n_rows, nc, B);
-    else if (qt == 39) mxfp4_batch_matmul(W, x, out, n_rows, nc, B);
-    else if (qt == 8)  q8_0_batch_matmul(W, x, out, n_rows, nc, B);
-    else if (qt == 10) q4_0_batch_matmul(W, x, out, n_rows, nc, B);  // Q2_K fallback
-    else if (qt == 11) q4_0_batch_matmul(W, x, out, n_rows, nc, B);  // Q3_K fallback
-    else               q4_0_batch_matmul(W, x, out, n_rows, nc, B);
+    for (int b = 0; b < B; b++) {
+        quant_matmul_omp(W, x + b*nc, out + b*n_rows, n_rows, nc, qt);
+    }
 }
 
 void rope_init(float *cos_table, float *sin_table, int max_ctx, int hd, int rope_dim) {
@@ -801,6 +794,440 @@ void ssm_decode_step(
             interm[i] = (g / (1.0f + expf(-g))) * ssm_in[i];
         }
     }
+}
+
+/* ── Fused SSM layer forward for Qwen3.6 hybrid ──
+ * Replaces 3 separate ctypes calls (ssm_decode + gate_matmul + ssm_out_matmul)
+ * with one C call. Fuses: ssm_decode → gate_matmul → element_mul → ssm_out_matmul → residual.
+ */
+void ssm_layer_fused(
+    const float *x,            // input [B, N] — already RMS-normed
+    float *residual,           // [B, N] — pre-norm residual for add
+    float *output,             // [B, N] — output = residual + oproj
+    // SSM weights
+    const float *conv1d_w, const float *a_param, const float *dt_bias,
+    const float *alpha, const float *beta, const float *ssm_norm_w,
+    float *state,              // [groups, state_size] — mutated in place
+    // Gate matmul weights
+    const uint8_t *gate_raw, int gate_nr, int gate_nc, int gate_qt,
+    // SSM out matmul weights
+    const uint8_t *ssm_out_raw, int ssm_out_nr, int ssm_out_nc, int ssm_out_qt,
+    // Dimensions
+    int B, int N, int inner, int groups, int state_size,
+    int conv_kernel, int dt_rank
+) {
+    /* Step 1: ssm_decode_step — produces intermediate in temp buffer */
+    float *ssm_intermediate = output;  /* reuse output as temp (size B*inner) */
+    ssm_decode_step(x, ssm_intermediate,
+                    conv1d_w, a_param, dt_bias, alpha, beta, ssm_norm_w,
+                    state, B, N, inner, groups, state_size, conv_kernel, dt_rank);
+    
+    for (int b = 0; b < B; b++) {
+        const float *xb = x + b * N;
+        float *rb = residual + b * N;
+        float *ob = output + b * N;
+        float *interm = ssm_intermediate + b * inner;
+        
+        /* Step 2: gate_matmul — xn * gate_w → gate_buf */
+        float gate_buf[8192];  /* max inner = 4096 */
+        quant_matmul_omp(gate_raw, xb, gate_buf, gate_nr, gate_nc, gate_qt);
+        
+        /* Step 3: element-wise multiply */
+        for (int i = 0; i < inner; i++) {
+            interm[i] = gate_buf[i] * interm[i];
+        }
+        
+        /* Step 4: ssm_out matmul — gate_buf * ssm_out_w → oproj */
+        float oproj_buf[8192];  /* max N = 2048 */
+        quant_matmul_omp(ssm_out_raw, interm, oproj_buf, ssm_out_nr, ssm_out_nc, ssm_out_qt);
+        
+        /* Step 5: residual add */
+        for (int i = 0; i < N; i++) {
+            ob[i] = rb[i] + oproj_buf[i];
+        }
+    }
+}
+
+/* ── Lightweight Qwen3.6 batch forward (no BC struct needed) ──
+ * Processes ALL L layers in a single C call. Uses quant_matmul_omp for ALL matmuls.
+ * Python passes flat pointer arrays + scalar params. Per-layer data is indexed
+ * by the C code via the arrays of length L.
+ *
+ * EXTENDED signature: added moe_router_raw, moe_router_qt and shexp_*_qt params
+ * that were missing from the original stub but are required for full MoE support.
+ */
+void qwen36_batch_forward(
+    /* Scalars */
+    int B, int L, int N, int NH, int n_kv_h, int HD, int FF,
+    int n_experts, int top_k, int n_ff_expert, float eps,
+    int rope_dim, int max_ctx, int ssm_inner, int ssm_groups,
+    int ssm_state_size, int ssm_conv_kernel, int ssm_dt_rank,
+    /* Embedding */
+    const float *emb, int emb_quant,
+    /* Layer type flags (1=SSM, 0=Attention) */
+    const int *layer_types,
+    /* Token IDs */
+    const int *tokens,
+    /* Output logits */
+    float *logits,
+    /* Per-layer weight pointers */
+    const float **attn_norm_w, const float **ffn_norm_w,
+    const uint8_t **attn_qkv_raw, const int *qkv_nr, const int *qkv_nc, const int *qkv_qt,
+    const uint8_t **attn_gate_raw, const int *gate_nr, const int *gate_nc, const int *gate_qt,
+    const uint8_t **ssm_out_raw, const int *ssm_out_nr, const int *ssm_out_nc, const int *ssm_out_qt,
+    const uint8_t **attn_out_raw, const int *out_nr, const int *out_nc, const int *out_qt,
+    uint8_t **gate_exp_raw, const int *gate_exp_qt,
+    uint8_t **up_exp_raw, const int *up_exp_qt,
+    uint8_t **down_exp_raw, const int *down_exp_qt,
+    const float **shexp_gate_raw, const float **shexp_up_raw, const float **shexp_down_raw,
+    const float **shexp_router,
+    const int *shexp_int,
+    /* ADDED: MoE router and shared expert quant types */
+    const uint8_t **moe_router_raw, const int *moe_router_qt,
+    const int *shexp_gate_qt, const int *shexp_up_qt, const int *shexp_down_qt,
+    const float *out_norm_w,
+    const uint8_t *out_w, int out_nr_final, int out_nc_final, int out_qt_final,
+    /* SSM per-layer pointers */
+    const float **ssm_conv1d, const float **ssm_a, const float **ssm_dt_bias,
+    const float **ssm_alpha, const float **ssm_beta, const float **ssm_norm,
+    float *ssm_state,
+    /* KV cache (pre-allocated flat arrays) */
+    float *kv_k, float *kv_v, int *kv_lens,
+    const float *cos_table, const float *sin_table,
+    /* Workspace buffers (size = B * S * 12 where S is max(N, inner, FF)+...) */
+    float *ws, uint8_t *q8_ws
+) {
+    /* ── Workspace layout (12 slices of B*S floats) ── */
+    int inner = NH * HD;           /* Q dimension = 4096 for Qwen3.6-35B */
+    int n_kv = n_kv_h * HD;       /* K/V dimension per layer = 512 */
+    int qk_dim = inner + 2 * n_kv; /* fused QKV: Q(4096) + K(512) + V(512) = 5120 */
+    int shexp_inner = shexp_int ? shexp_int[0] : 512; /* shared expert intermediate dim */
+
+    /* S = max(N, inner, FF, n_kv, qk_dim, n_ff_expert, shexp_inner) */
+    int S = N;
+    if (inner > S) S = inner;
+    if (FF > S) S = FF;
+    if (n_kv > S) S = n_kv;
+    if (qk_dim > S) S = qk_dim;
+    if (n_ff_expert > S) S = n_ff_expert;
+    if (shexp_inner > S) S = shexp_inner;
+    if (S < 8192) S = 8192;
+
+    float *x      = ws;             /* [B,N] running hidden state */
+    float *xn     = ws + B * S;     /* [B,N] RMS-normed input */
+    float *res    = ws + 2 * B * S; /* [B,N] residual */
+    float *qkv    = ws + 3 * B * S; /* [B,qk_dim] fused QKV buffer */
+    float *k_tmp  = ws + 4 * B * S; /* [B,n_kv] K temp */
+    float *v_tmp  = ws + 5 * B * S; /* [B,n_kv] V temp */
+    float *att    = ws + 6 * B * S; /* [B,inner] attention/SSM intermediate */
+    float *gate   = ws + 7 * B * S; /* [B,max(inner,n_ff_expert,shexp)] gate buf */
+    float *up     = ws + 8 * B * S; /* [B,max(inner,n_ff_expert,shexp)] up buf */
+    float *silu   = ws + 9 * B * S; /* [B,max(inner,n_ff_expert,shexp)] SiLU buf */
+    float *oproj  = ws + 10 * B * S;/* [B,N] output projection */
+    float *ffn    = ws + 11 * B * S;/* [B,N] FFN combined output */
+
+    /* MoE local buffers */
+    int top_idx_buf[16];  /* max top_k */
+    float top_wt_buf[16]; /* max top_k */
+    float router_scores[256]; /* max n_experts */
+    const uint8_t *gate_ptrs[64]; /* per-expert gate pointers */
+    const uint8_t *up_ptrs[64];
+    const uint8_t *down_ptrs[64];
+
+    fprintf(stderr, "DEBUG: qwen36_batch_forward: B=%d L=%d N=%d NH=%d n_kv_h=%d HD=%d FF=%d\n", B, L, N, NH, n_kv_h, HD, FF);
+    fprintf(stderr, "DEBUG: n_experts=%d top_k=%d n_ff_expert=%d eps=%f\n", n_experts, top_k, n_ff_expert, eps);
+    fprintf(stderr, "DEBUG: inner=%d n_kv=%d qk_dim=%d S=%d\n", inner, n_kv, qk_dim, S);
+    fprintf(stderr, "DEBUG: emb=%p tokens=%p logits=%p\n", (void*)emb, (const void*)tokens, (void*)logits);
+    fprintf(stderr, "DEBUG: ws=%p q8_ws=%p ssm_state=%p\n", (void*)ws, (void*)q8_ws, (void*)ssm_state);
+    fprintf(stderr, "DEBUG: layer_types=%p kv_k=%p kv_v=%p kv_lens=%p\n", (const void*)layer_types, (void*)kv_k, (void*)kv_v, (const void*)kv_lens);
+
+    /* ── Embedding lookup ── */
+    for (int b = 0; b < B; b++) {
+        if (emb_quant == 12)
+            emb_lookup((const uint8_t*)emb, tokens[b], x + b * N, N, 12);
+        else
+            memcpy(x + b * N, emb + (size_t)tokens[b] * N, N * sizeof(float));
+    }
+    fprintf(stderr, "DEBUG: embedding done, x[0]=%f\n", x[0]);
+
+    /* Helper: inline RMS norm with SIMD clip + store to xn, save to res */
+#define RMS_NORM_SIMD(out_ptr, in_ptr, w_ptr, n, eps_val) do { \
+    float *__out = (out_ptr); \
+    const float *__in = (in_ptr); \
+    const float *__w = (w_ptr); \
+    int __n = (n); \
+    float __ss = 0.0f; \
+    int __i; \
+    for (__i = 0; __i <= __n - 8; __i += 8) { \
+        __m256 __xv = _mm256_loadu_ps(__in + __i); \
+        __xv = _mm256_min_ps(_mm256_max_ps(__xv, _mm256_set1_ps(-1000.0f)), _mm256_set1_ps(1000.0f)); \
+        _mm256_storeu_ps(__out + __i, __xv); \
+        __ss += hsum_ps(_mm256_mul_ps(__xv, __xv)); \
+    } \
+    for (; __i < __n; __i++) { \
+        float __v = __in[__i]; \
+        if (__v != __v) __v = 0.0f; else if (__v > 1000.0f) __v = 1000.0f; else if (__v < -1000.0f) __v = -1000.0f; \
+        __out[__i] = __v; \
+        __ss += __v * __v; \
+    } \
+    float __rms = sqrtf(__ss / __n + (eps_val)); \
+    for (int __j = 0; __j < __n; __j++) { __out[__j] = (__out[__j] / __rms) * __w[__j]; } \
+} while(0)
+
+    /* Helper: compute per-expert weight stride based on quant type */
+#define EXPERT_STRIDE(n_rows, n_cols, qt) \
+    (((qt) == 12) ? ((size_t)(n_rows) * ((n_cols) / QK_K) * sizeof(block_q4_K)) : \
+     ((qt) == 13) ? ((size_t)(n_rows) * ((n_cols) / QK_K) * sizeof(block_q5_K)) : \
+     ((qt) == 14) ? ((size_t)(n_rows) * ((n_cols) / QK_K) * sizeof(block_q6_K)) : \
+     ((qt) == 39) ? ((size_t)(n_rows) * ((n_cols) / 32) * sizeof(block_mxfp4)) : \
+     ((qt) == 2)  ? ((size_t)(n_rows) * ((n_cols) / 32) * Q4_0_BS) : \
+     ((qt) == 8)  ? ((size_t)(n_rows) * ((n_cols) / 32) * Q8_0_BS) : \
+     0)
+
+    /* ════════════════════════════════════════════════════════════════════
+     * MAIN LAYER LOOP — processes all L layers in a single C call
+     * ════════════════════════════════════════════════════════════════════ */
+    for (int l = 0; l < L; l++) {
+        int is_ssm = (layer_types && layer_types[l] == 1);
+        fprintf(stderr, "DEBUG: layer=%d is_ssm=%d\n", l, is_ssm);
+        fprintf(stderr, "DEBUG:   attn_norm_w[%d]=%p attn_qkv_raw[%d]=%p attn_gate_raw[%d]=%p ssm_out_raw[%d]=%p attn_out_raw[%d]=%p\n",
+                l, (const void*)attn_norm_w[l], l, (const void*)attn_qkv_raw[l],
+                l, (const void*)attn_gate_raw[l], l, (const void*)ssm_out_raw[l], l, (const void*)attn_out_raw[l]);
+
+        /* ── STEP 1: Pre-Attention RMS Norm ──
+         * xn = rms_norm(x, attn_norm_w[l]), res = x (pre-norm save) */
+        for (int b = 0; b < B; b++) {
+            memcpy(res + b * N, x + b * N, N * sizeof(float));
+            RMS_NORM_SIMD(xn + b * N, x + b * N, attn_norm_w[l], N, eps);
+        }
+
+        /* ── STEP 2: SSM or Attention Block ── */
+        if (is_ssm && ssm_conv1d && ssm_conv1d[l] != NULL) {
+            /* ═══ SSM path ═══ */
+
+            /* Step 2a: SSM decode → produces [B, ssm_inner] intermediate in 'att' */
+            ssm_decode_step(xn, att,
+                ssm_conv1d[l], ssm_a[l], ssm_dt_bias[l],
+                ssm_alpha[l], ssm_beta[l], ssm_norm[l],
+                ssm_state + (size_t)l * ssm_groups * ssm_state_size,
+                B, N, ssm_inner, ssm_groups, ssm_state_size,
+                ssm_conv_kernel, ssm_dt_rank);
+
+            /* Step 2b: Gate matmul — xn * attn_gate_raw[l] → gate (N→inner) */
+            for (int b = 0; b < B; b++) {
+                quant_matmul_omp(attn_gate_raw[l], xn + b * N,
+                    gate + b * ssm_inner, gate_nr[l], gate_nc[l], gate_qt[l]);
+            }
+
+            /* Step 2c: Element-wise gating — att = gate * att */
+            for (int b = 0; b < B; b++) {
+                float *gb = gate + b * ssm_inner;
+                float *ab = att + b * ssm_inner;
+                for (int i = 0; i < ssm_inner; i++) ab[i] = gb[i] * ab[i];
+            }
+
+            /* Step 2d: SSM out projection — att * ssm_out_raw[l] → oproj (inner→N) */
+            for (int b = 0; b < B; b++) {
+                quant_matmul_omp(ssm_out_raw[l], att + b * ssm_inner,
+                    oproj + b * N, ssm_out_nr[l], ssm_out_nc[l], ssm_out_qt[l]);
+            }
+
+            /* Step 2e: Residual add — x = res + oproj */
+            for (int b = 0; b < B; b++) {
+                float *rb = res + b * N;
+                float *op = oproj + b * N;
+                float *xb = x + b * N;
+                for (int i = 0; i < N; i++) xb[i] = rb[i] + op[i];
+            }
+
+        } else {
+            /* ═══ Attention path ═══ */
+
+            fprintf(stderr, "DEBUG: attention path layer=%d\n", l);
+            fprintf(stderr, "DEBUG:   qkv_nr=%d qkv_nc=%d qkv_qt=%d\n", qkv_nr[l], qkv_nc[l], qkv_qt[l]);
+            int n_qkv = qkv_nr[l];
+            for (int b = 0; b < B; b++) {
+                fprintf(stderr, "DEBUG:   b=%d qkv matmul\n", b);
+                quant_matmul_omp(attn_qkv_raw[l], xn + b * N,
+                    qkv, n_qkv, qkv_nc[l], qkv_qt[l]);
+                fprintf(stderr, "DEBUG:   b=%d qkv done, inner=%d n_kv=%d\n", b, inner, n_kv);
+
+                /* Split: Q = qkv[0:inner], K = qkv[inner:inner+N], V = qkv[inner+N:inner+2N] */
+                float *q = qkv;
+                float *k_src = qkv + inner;
+                float *v_src = qkv + inner + N;
+
+                /* Copy first NKH*HD elements of K and V to temp buffers */
+                memcpy(k_tmp + b * n_kv, k_src, n_kv * sizeof(float));
+                memcpy(v_tmp + b * n_kv, v_src, n_kv * sizeof(float));
+
+                /* RoPE applied to Q and K */
+                rope_apply(q, NH, HD, kv_lens[l], cos_table, sin_table, rope_dim);
+                rope_apply(k_tmp + b * n_kv, n_kv_h, HD, kv_lens[l], cos_table, sin_table, rope_dim);
+
+                /* KV cache store (flat arrays: [L][max_ctx][n_kv]) */
+                int pos = kv_lens[l];
+                size_t kv_offset = (size_t)l * max_ctx * n_kv + (size_t)pos * n_kv;
+                memcpy(kv_k + kv_offset, k_tmp + b * n_kv, n_kv * sizeof(float));
+                memcpy(kv_v + kv_offset, v_tmp + b * n_kv, n_kv * sizeof(float));
+
+                /* GQA attention — reads from flat KV cache */
+                int seq_len = pos + 1;
+                float *k_cache = kv_k + (size_t)l * max_ctx * n_kv;
+                float *v_cache = kv_v + (size_t)l * max_ctx * n_kv;
+                gqa(att + b * inner, q, k_cache, v_cache, seq_len, NH, n_kv_h, HD);
+            }
+
+            /* Step 2b: Output projection — att * attn_out_raw[l] → oproj (inner→N) */
+            for (int b = 0; b < B; b++) {
+                quant_matmul_omp(attn_out_raw[l], att + b * inner,
+                    oproj + b * N, out_nr[l], out_nc[l], out_qt[l]);
+            }
+
+            /* Step 2c: Residual add — x = res + oproj */
+            for (int b = 0; b < B; b++) {
+                float *rb = res + b * N;
+                float *op = oproj + b * N;
+                float *xb = x + b * N;
+                for (int i = 0; i < N; i++) xb[i] = rb[i] + op[i];
+            }
+        }
+
+        /* ── STEP 3: Post-Attention RMS Norm (FFN norm) ──
+         * xn = rms_norm(x, ffn_norm_w[l]), res = x (pre-norm save) */
+        for (int b = 0; b < B; b++) {
+            memcpy(res + b * N, x + b * N, N * sizeof(float));
+            RMS_NORM_SIMD(xn + b * N, x + b * N, ffn_norm_w[l], N, eps);
+        }
+
+        /* ── STEP 4: MoE FFN + Shared Expert ── */
+        int has_moe = (n_experts > 0 && top_k > 0 && gate_exp_raw &&
+                       gate_exp_raw[l] != NULL && moe_router_raw && moe_router_raw[l] != NULL);
+
+        if (has_moe) {
+            for (int b = 0; b < B; b++) {
+                float *xnb = xn + b * N;
+                float *xb = x + b * N;
+                float *rb = res + b * N;
+
+                /* ── Router: quant_matmul_omp(xn, moe_router[l]) → router_scores ── */
+                quant_matmul_omp(moe_router_raw[l], xnb, router_scores,
+                    n_experts, N, moe_router_qt[l]);
+
+                /* ── Softmax ── */
+                float mx = router_scores[0];
+                for (int e = 1; e < n_experts; e++)
+                    if (router_scores[e] > mx) mx = router_scores[e];
+                float sum = 0.0f;
+                for (int e = 0; e < n_experts; e++) {
+                    router_scores[e] = expf(router_scores[e] - mx);
+                    sum += router_scores[e];
+                }
+                float inv_sum = 1.0f / (sum + 1e-10f);
+                for (int e = 0; e < n_experts; e++) router_scores[e] *= inv_sum;
+
+                /* ── Top-K selection ── */
+                for (int k = 0; k < top_k; k++) {
+                    top_wt_buf[k] = -1e30f;
+                    top_idx_buf[k] = -1;
+                }
+                for (int e = 0; e < n_experts; e++) {
+                    float v = router_scores[e];
+                    for (int k = 0; k < top_k; k++) {
+                        if (v > top_wt_buf[k]) {
+                            for (int k2 = top_k - 1; k2 > k; k2--) {
+                                top_wt_buf[k2] = top_wt_buf[k2-1];
+                                top_idx_buf[k2] = top_idx_buf[k2-1];
+                            }
+                            top_wt_buf[k] = v;
+                            top_idx_buf[k] = e;
+                            break;
+                        }
+                    }
+                }
+                /* Renormalize top weights */
+                float tw_sum = 0.0f;
+                for (int k = 0; k < top_k; k++) tw_sum += top_wt_buf[k];
+                float tw_inv = 1.0f / (tw_sum + 1e-10f);
+                for (int k = 0; k < top_k; k++) top_wt_buf[k] *= tw_inv;
+
+                /* ── Build per-expert pointer arrays ── */
+                int gqt = gate_exp_qt ? gate_exp_qt[l] : 12;
+                int uqt = up_exp_qt ? up_exp_qt[l] : 12;
+                int dqt = down_exp_qt ? down_exp_qt[l] : 14;
+                size_t g_stride = EXPERT_STRIDE(n_ff_expert, N, gqt);
+                size_t u_stride = EXPERT_STRIDE(n_ff_expert, N, uqt);
+                size_t d_stride = EXPERT_STRIDE(N, n_ff_expert, dqt);
+                for (int e = 0; e < n_experts; e++) {
+                    gate_ptrs[e] = gate_exp_raw[l] + (size_t)e * g_stride;
+                    up_ptrs[e]   = up_exp_raw[l]   + (size_t)e * u_stride;
+                    down_ptrs[e] = down_exp_raw[l] + (size_t)e * d_stride;
+                }
+
+                /* ── Call moe_forward_omp ── */
+                memset(ffn + b * N, 0, N * sizeof(float));
+                moe_forward_omp(gate_ptrs, up_ptrs, down_ptrs,
+                    xnb, n_ff_expert, N,
+                    gqt, uqt, dqt,
+                    top_idx_buf, top_wt_buf, top_k,
+                    ffn + b * N,
+                    gate,  /* reuse gate buffer as prealloc */
+                    q8_ws);
+
+                /* ── Shared Expert (Qwen3.6) ── */
+                if (shexp_router && shexp_router[l] != NULL) {
+                    /* Router score = dot(xn, shexp_router[l]) — 1D vector [N] */
+                    float sh_score = 0.0f;
+                    for (int i = 0; i < N; i++) sh_score += xnb[i] * shexp_router[l][i];
+                    if (sh_score > 0.0f) {
+                        int si = shexp_int ? shexp_int[l] : 512;
+                        int sgq = shexp_gate_qt ? shexp_gate_qt[l] : 39;
+                        int suq = shexp_up_qt   ? shexp_up_qt[l]   : 39;
+                        int sdq = shexp_down_qt ? shexp_down_qt[l] : 39;
+                        /* Gate: xn * shexp_gate → gate_buf (N→si) */
+                        quant_matmul_omp((const uint8_t*)shexp_gate_raw[l],
+                            xnb, gate, si, N, sgq);
+                        /* Up: xn * shexp_up → up_buf (N→si) */
+                        quant_matmul_omp((const uint8_t*)shexp_up_raw[l],
+                            xnb, up, si, N, suq);
+                        /* SiLU gate: gate / (1+exp(-gate)) */
+                        for (int i = 0; i < si; i++) {
+                            float gv = gate[i];
+                            if (gv < -80.0f) gv = -80.0f;
+                            if (gv > 80.0f) gv = 80.0f;
+                            gate[i] = (gv / (1.0f + expf(-gv))) * up[i];
+                        }
+                        /* Down: gate_buf * shexp_down → up_buf (si→N) */
+                        quant_matmul_omp((const uint8_t*)shexp_down_raw[l],
+                            gate, up, N, si, sdq);
+                        /* Accumulate: ffn += sh_score * down_output */
+                        for (int i = 0; i < N; i++)
+                            ffn[b * N + i] += sh_score * up[i];
+                    }
+                }
+
+                /* ── Residual add: x = res + ffn ── */
+                for (int i = 0; i < N; i++) xb[i] = rb[i] + ffn[b * N + i];
+            }
+        } else if (0) {
+            /* Fallback: no-op — x stays as was (residual already saved) */
+        }
+
+        /* ── Advance KV length ── */
+        /* (kv_lens[l] was already used for pos above; increment for next token) */
+        /* NOTE: kv_lens is updated by the caller between forward calls */
+    }
+
+    /* ── STEP 5: Final RMS Norm + Output Projection ── */
+    for (int b = 0; b < B; b++) {
+        RMS_NORM_SIMD(xn + b * N, x + b * N, out_norm_w, N, eps);
+        quant_matmul_omp(out_w, xn + b * N,
+            logits + (size_t)b * out_nr_final,
+            out_nr_final, out_nc_final, out_qt_final);
+    }
+
+#undef RMS_NORM_SIMD
+#undef EXPERT_STRIDE
 }
 
 void batch_forward(const BC *c, const int *tokens, int B, float *ws) {

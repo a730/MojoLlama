@@ -1,0 +1,48 @@
+# MojoLlama Debug Context — GQA/Hidden State Bug
+
+## The Bug
+MojoLlama engine produces IDENTICAL output regardless of input token or KV cache state.
+
+Evidence:
+- GPT-OSS-20B: Feeding token 42 twice gives IDENTICAL logits (max diff = 0.0000) even though KV cache has 2 different positions with different values
+- First forward step works correctly (different tokens give different outputs)
+- But subsequent steps ignore ALL state (KV cache, hidden state)
+- Both Python and C batch forward paths exhibit this bug for ALL models (GPT-OSS, Qwen3.6)
+
+KV cache is correctly storing different values at different positions:
+```
+Step 1: kv_len[0]=1, KV[0,0,:3] = [-2.87, -1.02, 10.50]
+Step 2: kv_len[0]=2, KV[0,1,:3] = [5.35, 1.12, 12.66]
+```
+
+Run-to-run is deterministic (same input → same output).
+
+## Key Files
+- /onedev-workspace/work/src/mojollama/kernels/turbo_engine_v7_moe.py — main engine (forward() method around line 932)
+- /onedev-workspace/work/src/mojollama/kernels/cengine_batch_instr.c — C engine
+- /onedev-workspace/work/src/mojollama/kernels/quant_kernels_omp.c — kernels  
+- /onedev-workspace/work/src/mojollama/kernels/gqa_attention.c — GQA C implementation
+
+## Hypothesis
+The hidden state `self._x` might not propagate between layer iterations. Or the GQA attention function reads wrong KV cache positions. Or the `_logits` buffer aliases the `_x` buffer.
+
+## Debugging tasks
+1. Run OMP_NUM_THREADS=1 to rule out threading
+2. Check if `self._x` AND `self._logits` buffers overlap (memory aliasing)
+3. Monkey-patch forward to print hidden state after each layer
+4. Test if GQA with seq_len=1 vs seq_len=2 produces different att output
+5. Check gqa_attention.c for bugs
+
+## Test command
+```bash
+cd /onedev-workspace/work/src/mojollama/kernels
+OMP_NUM_THREADS=1 python3 -c "
+import sys, numpy as np; sys.path.insert(0, '.')
+from turbo_engine_v7_moe import TurboEngineV7MoE
+e = TurboEngineV7MoE('/tmp/models/gpt-oss-20b-Q4_K_M.gguf', n_threads=1)
+e.reset()
+l1 = e.forward([42]).copy()
+l2 = e.forward([42]).copy()
+print(f'Same output: {np.max(np.abs(l1-l2)):.6f}')
+"
+```

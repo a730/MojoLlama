@@ -1,0 +1,48 @@
+#!/bin/bash
+# mojollama-bench-engine — Real model inference benchmark
+# WHAT:  Builds and runs mojollama_engine_bench.mojo with configurable
+#        architecture params for any dense LLaMA-style model.
+#        Reports thread sweep, component breakdown, batch sweep, memory BW.
+# WHY:   Find optimal deployment config for any model on any hardware.
+# WHEN:  May 2026 — v1 engine benchmark.
+set -e
+
+MOJO_ENGINE="/onedev-workspace/work/src/mojollama/mojo_engine"
+MODEL_DIR="${MODEL_DIR:-/tmp/tinyllama}"
+
+# Architecture config (override via env for different models)
+NE="${NE:-2048}"; NH="${NH:-32}"; NK="${NK:-4}"
+HD="${HD:-64}";  NL="${NL:-22}";  FF="${FF:-5632}"
+NV="${NV:-32000}"
+
+echo '[DOC] Building engine bench with:'
+echo "  NE=$NE NH=$NH NK=$NK HD=$HD NL=$NL FF=$FF NV=$NV"
+echo "  Model: $MODEL_DIR"
+
+# Generate Mojo source with overridden comptime constants
+SRC="$MOJO_ENGINE/mojollama_engine_bench.mojo"
+TMP=$(mktemp)
+cp "$SRC" "$TMP"
+
+# Replace comptime constants
+sed -i "s/comptime NE: Int = [0-9]*/comptime NE: Int = $NE/" "$TMP"
+sed -i "s/comptime NH: Int = [0-9]*/comptime NH: Int = $NH/" "$TMP"
+sed -i "s/comptime NK: Int = [0-9]*/comptime NK: Int = $NK/" "$TMP"
+sed -i "s/comptime HD: Int = [0-9]*/comptime HD: Int = $HD/" "$TMP"
+sed -i "s/comptime NL: Int = [0-9]*/comptime NL: Int = $NL/" "$TMP"
+sed -i "s/comptime FF: Int = [0-9]*/comptime FF: Int = $FF/" "$TMP"
+sed -i "s/comptime NV: Int = [0-9]*/comptime NV: Int = $NV/" "$TMP"
+
+# Build
+cp "$TMP" "$MOJO_ENGINE/_bench_custom.mojo"
+cd "$MOJO_ENGINE"
+if mojo build _bench_custom.mojo -o mojollama_engine_bench_custom 2>/dev/null; then
+    echo '[DONE] Build OK. Running benchmark...'
+    timeout 120 ./mojollama_engine_bench_custom 2>/dev/null
+    rm -f _bench_custom.mojo mojollama_engine_bench_custom
+else
+    echo '[ERR] Build failed'
+    rm -f _bench_custom.mojo
+    exit 1
+fi
+rm -f "$TMP"

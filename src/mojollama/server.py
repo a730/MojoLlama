@@ -124,7 +124,7 @@ class MojoLlamaHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         sys.stderr.write(
-            f"[{time.strftime('%H:%M:%S')}] {args[0]} {args[1]} {args[2]}\n"
+            f"[{time.strftime('%H:%M:%S')}] {(fmt % args) if args else fmt}\n"
         )
 
     def _parse_path(self):

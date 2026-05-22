@@ -1,0 +1,49 @@
+# MojoLlama — Qwen3-30B Fused C Forward
+
+## Goal
+Make `qwen3_forward_c` (in cengine_batch_instr.c) produce correct output and beat llama.cpp 27.89 tok/s.
+
+## Current State
+- MojoLlama achieves 25.1 agg tok/s (90%) on Qwen3-30B vs llama.cpp 27.89
+- The fused C forward was created but produces all-NaN output
+- The function uses #pragma omp parallel across all 48 layers
+- QKV projections use quant_matmul_omp (from quant_kernels_omp.c)
+- GQA uses inline non-BLAS AVX2 attention (was BLAS SGEMM but caused thread conflicts)
+- MoE dispatch uses moe_forward_omp (from quant_kernels_omp.c)
+- Output projection uses quant_matmul_omp
+
+## Known Issues
+1. `qwen3_forward_c` produces NaN on ALL outputs, even with OMP_NUM_THREADS=1
+2. Individual quant_matmul_omp calls work correctly from Python (max=183.19, no NaN)
+3. The bug is in the C function's internal logic, not the Python wiring
+4. Non-BLAS GQA was added to avoid OpenBLAS thread conflicts within #pragma omp parallel
+5. The RMS norm uses #pragma omp atomic for rms_ss accumulation
+
+## Model Architecture (Qwen3-30B)
+- 48 layers, N=2048, NH=32, n_kv_h=4, HD=128, FF=6144
+- 128 experts, top_k=8, n_ff_expert=768
+- Attention weights: Q4_K (type 12)
+- Expert gate/up: Q4_K (type 12), Expert down: Q6_K (type 14)
+- Output weight: Q8_0 (type 8), shape [151936, 2048]
+
+## Files
+- cengine_batch_instr.c: Contains qwen3_forward_c at end of file
+- quant_kernels_omp.c: quant_matmul_omp, moe_forward_omp, and all quantized matmul kernels
+- turbo_engine_v7_moe.py: Python engine
+
+## What to Fix
+1. Debug why qwen3_forward_c produces NaN — check buffer overflow, uninitialized memory, or wrong pointer arithmetic in the OMP parallel region
+2. The workspace buffer layout:
+   x=ws[0:S], xn=ws[S:2S], res=ws[2S:3S], q=ws[3S:4S], k=ws[4S:5S], v=ws[5S:6S]
+   att=ws[6S:7S], gate=ws[7S:8S], up=ws[8S:9S], silu=ws[9S:10S]
+   oproj=ws[10S:11S], ffn_out=ws[11S:12S], router=ws[12S:13S]
+3. moe_forward_omp uses stack-allocated moe_prealloc and moe_prealloc_q8 buffers
+4. RMS norm: for loop over N elements with omp atomic for rms_ss
+5. GQA: inline AVX2 dot product, softmax, weighted V sum (per kv_head, per qi)
+6. Output projection: quantize to Q8_0 then quant_matmul_omp
+
+## Tasks (in order)
+1. DEBUG: Add intermediate checks to find where NaN first appears
+2. FIX: Correct the NaN source
+3. BENCHMARK: Verify output matches Python reference (max_logit ~16.88)
+4. OPTIMIZE: Ensure single OMP parallel region works at 32 threads

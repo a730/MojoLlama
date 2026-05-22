@@ -1,0 +1,27 @@
+{
+  "timestamp": "2026-05-20 20:04:21",
+  "system": {
+    "cpu": "AMD Ryzen Threadripper 3970X 32-Core Processor",
+    "cores": 64,
+    "physical_cores": 32,
+    "ram_gb": 251.6
+  },
+  "results": [
+    {
+      "threads": 32,
+      "engine_type": "moe",
+      "pp_len": 512,
+      "pp_ms": 59.36,
+      "pp_tok_s": 16.85,
+      "tg_len": 30,
+      "tg_mean_ms": 63.6,
+      "tg_median_ms": 63.27,
+      "tg_p95_ms": 64.35,
+      "tg_p99_ms": 74.61,
+      "tg_std_ms": 2.11,
+      "tg_min_ms": 62.01,
+      "tg_max_ms": 74.61,
+      "tg_tok_s": 15.72
+    }
+  ]
+}
