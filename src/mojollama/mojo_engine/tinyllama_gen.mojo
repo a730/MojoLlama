@@ -5,20 +5,7 @@
 # WHEN:  2026-05-22
 
 from std import time
-@extern("sinf")
-def _sinf(x: Float32) abi("C") -> Float32: ...
-
-@extern("cosf")
-def _cosf(x: Float32) abi("C") -> Float32: ...
-
-@extern("powf")
-def _powf(x: Float32, y: Float32) abi("C") -> Float32: ...
-
-@extern("expf")
-def _expf(x: Float32) abi("C") -> Float32: ...
-
-@extern("sqrtf")
-def _sqrtf(x: Float32) abi("C") -> Float32: ...
+from std.math import sqrt, exp, cos, sin, pow
 from std.algorithm.backend.cpu.parallelize import parallelize
 from std.builtin.simd import FastMathFlag
 
@@ -74,6 +61,36 @@ def _mm_f16(wa: Int, x: UnsafePointer[Float32, MutExternalOrigin],
             o.store(r, acc.reduce_add())
     parallelize[func=wk](num_work_items=nb, num_workers=nw)
 
+@always_inline("nodebug")
+def _mm_f16_2out(wa: Int, wb: Int,
+                  x: UnsafePointer[Float32, MutExternalOrigin],
+                  oa: UnsafePointer[Float32, MutExternalOrigin],
+                  ob: UnsafePointer[Float32, MutExternalOrigin],
+                  nr: Int, nc: Int):
+    var wa_ptr = UnsafePointer[Float16, MutExternalOrigin](unsafe_from_address=Int(wa))
+    var wb_ptr = UnsafePointer[Float16, MutExternalOrigin](unsafe_from_address=Int(wb))
+    var nb = (nr + RPW - 1) // RPW
+    var nw = 32
+    def wk(b: Int) capturing:
+        var rs = b * RPW
+        var re = rs + RPW
+        if re > nr:
+            re = nr
+        for r in range(rs, re):
+            var ro = r * nc
+            var acc_a = SIMD[DType.float32, W](0.0)
+            var acc_b = SIMD[DType.float32, W](0.0)
+            for blk in range(0, nc, 32):
+                comptime for grp in range(4):
+                    var xv = x.load[width=W](blk + grp * 8)
+                    var wva = wa_ptr.load[width=W](ro + blk + grp * 8)
+                    var wvb = wb_ptr.load[width=W](ro + blk + grp * 8)
+                    acc_a = wva.cast[DType.float32]().fma[FastMathFlag.FAST](xv, acc_a)
+                    acc_b = wvb.cast[DType.float32]().fma[FastMathFlag.FAST](xv, acc_b)
+            oa.store(r, acc_a.reduce_add())
+            ob.store(r, acc_b.reduce_add())
+    parallelize[func=wk](num_work_items=nb, num_workers=nw)
+
 # ── f16 to f32 ──
 def h2f(h: UInt16) -> Float32:
     var s = Int((h >> 15) & 1)
@@ -88,8 +105,6 @@ def h2f(h: UInt16) -> Float32:
         return 0.0
     var bits = UInt32((s << 31) | ((e + 112) << 23) | (m << 13))
     # Reinterpret bits as Float32
-    var ptr = UnsafePointer[UInt32, MutExternalOrigin](unsafe_from_address=Int(0))
-    # Use a static buffer approach
     var tmp = alloc[UInt8](4)
     var uptr = UnsafePointer[UInt32, MutExternalOrigin](unsafe_from_address=Int(tmp))
     uptr.store(0, bits)
@@ -293,14 +308,28 @@ def main():
         for l in range(NL):
             var lw = l * 9
 
-            # RMS Norm pre-attention
-            var ss = Float64(0.0)
-            for i in range(NE):
-                ss += Float64(hp.load(i)) * Float64(hp.load(i))
-            var inv = Float32(1.0 / Float64(_sqrtf(Float32(Float64(ss) / Float64(NE) + 1e-6))))
+            # RMS Norm pre-attention (stride-8 SIMD)
+            var ss = Float32(0.0)
+            var i = 0
+            while i + 8 <= NE:
+                var v = hp.load[width=8](i)
+                ss += (v * v).reduce_add()
+                i += 8
+            while i < NE:
+                ss += hp.load(i) * hp.load(i)
+                i += 1
+            var inv = 1.0 / sqrt(ss / Float32(NE) + 1e-6)
+            var inv_v = SIMD[DType.float32, 8](inv)
             var anp = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(wl.load(lw)))
-            for i in range(NE):
+            i = 0
+            while i + 8 <= NE:
+                var v = hp.load[width=8](i)
+                var w = anp.load[width=8](i)
+                bp.store[width=8](i, v * inv_v * w)
+                i += 8
+            while i < NE:
                 bp.store(i, hp.load(i) * anp.load(i) * inv)
+                i += 1
 
             # QKV
             _mm_f16(Int(wl.load(lw + 2)), bp, qp, NH * HD, NE)
@@ -310,18 +339,18 @@ def main():
             # RoPE
             for h in range(NH):
                 for d2 in range(0, HD, 2):
-                    var freq = Float32(pos) / Float32(Float64(_powf(10000.0, Float32(Float64(d2) / Float64(HD)))))
-                    var cv = _cosf(freq)
-                    var sv = _sinf(freq)
+                    var freq = Float32(Float64(pos) / pow(10000.0, Float64(d2) / Float64(HD)))
+                    var cv = cos(freq)
+                    var sv = sin(freq)
                     var x0 = qp.load(h * HD + d2)
                     var x1 = qp.load(h * HD + d2 + 1)
                     qp.store(h * HD + d2, x0 * cv - x1 * sv)
                     qp.store(h * HD + d2 + 1, x0 * sv + x1 * cv)
             for h in range(NK):
                 for d2 in range(0, HD, 2):
-                    var freq = Float32(pos) / Float32(Float64(_powf(10000.0, Float32(Float64(d2) / Float64(HD)))))
-                    var cv = _cosf(freq)
-                    var sv = _sinf(freq)
+                    var freq = Float32(Float64(pos) / pow(10000.0, Float64(d2) / Float64(HD)))
+                    var cv = cos(freq)
+                    var sv = sin(freq)
                     var x0 = kp.load(h * HD + d2)
                     var x1 = kp.load(h * HD + d2 + 1)
                     kp.store(h * HD + d2, x0 * cv - x1 * sv)
@@ -344,13 +373,13 @@ def main():
                     var s = Float32(0.0)
                     for d in range(HD):
                         s += qp.load(hq * HD + d) * kc.load(lo + hk * MAX_SEQ * HD + p * HD + d)
-                    s = s / _sqrtf(Float32(HD))
+                    s = s / sqrt(Float32(HD))
                     sc.store(p, s)
                     if s > smax:
                         smax = s
                 var ssum = Float32(0.0)
                 for p in range(pos + 1):
-                    var es = _expf(sc.load(p) - smax)
+                    var es = exp(sc.load(p) - smax)
                     sc.store(p, es)
                     ssum += es
                 for d in range(HD):
@@ -364,18 +393,31 @@ def main():
             for i in range(NE):
                 hp.store(i, hp.load(i) + bp.load(i))
 
-            # RMS Norm pre-FFN
-            ss = 0.0
-            for i in range(NE):
-                ss += Float64(hp.load(i)) * Float64(hp.load(i))
-            inv = Float32(1.0 / Float64(_sqrtf(Float32(Float64(ss) / Float64(NE) + 1e-6))))
+            # RMS Norm pre-FFN (stride-8 SIMD)
+            ss = Float32(0.0)
+            i = 0
+            while i + 8 <= NE:
+                var v = hp.load[width=8](i)
+                ss += (v * v).reduce_add()
+                i += 8
+            while i < NE:
+                ss += hp.load(i) * hp.load(i)
+                i += 1
+            inv = 1.0 / sqrt(ss / Float32(NE) + 1e-6)
+            inv_v = SIMD[DType.float32, 8](inv)
             var fnp = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(wl.load(lw + 1)))
-            for i in range(NE):
+            i = 0
+            while i + 8 <= NE:
+                var v = hp.load[width=8](i)
+                var w = fnp.load[width=8](i)
+                bp.store[width=8](i, v * inv_v * w)
+                i += 8
+            while i < NE:
                 bp.store(i, hp.load(i) * fnp.load(i) * inv)
+                i += 1
 
-            # FFN gate + up
-            _mm_f16(Int(wl.load(lw + 6)), bp, gp, NF, NE)
-            _mm_f16(Int(wl.load(lw + 7)), bp, up, NF, NE)
+            # FFN gate + up (fused 2-output matmul)
+            _mm_f16_2out(Int(wl.load(lw + 6)), Int(wl.load(lw + 7)), bp, gp, up, NF, NE)
 
             # SiLU
             for i in range(NF):
@@ -384,21 +426,35 @@ def main():
                     gv = -80.0
                 if gv > 80.0:
                     gv = 80.0
-                gp.store(i, (gv / (1.0 + _expf(-gv))) * up.load(i))
+                gp.store(i, (gv / (1.0 + exp(-gv))) * up.load(i))
 
             # Down projection
             _mm_f16(Int(wl.load(lw + 8)), gp, dp, NE, NF)
             for i in range(NE):
                 hp.store(i, hp.load(i) + dp.load(i))
 
-        # Final norm + LM head
-        ss = 0.0
-        for i in range(NE):
-            ss += Float64(hp.load(i)) * Float64(hp.load(i))
-        inv = Float32(1.0 / Float64(_sqrtf(Float32(Float64(ss) / Float64(NE) + 1e-6))))
+        # Final norm (stride-8 SIMD) + LM head
+        ss = Float32(0.0)
+        i = 0
+        while i + 8 <= NE:
+            var v = hp.load[width=8](i)
+            ss += (v * v).reduce_add()
+            i += 8
+        while i < NE:
+            ss += hp.load(i) * hp.load(i)
+            i += 1
+        inv = 1.0 / Float32(sqrt(Float64(ss / Float32(NE) + 1e-6)))
+        inv_v = SIMD[DType.float32, 8](inv)
         var onp = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(w_on))
-        for i in range(NE):
+        i = 0
+        while i + 8 <= NE:
+            var v = hp.load[width=8](i)
+            var w = onp.load[width=8](i)
+            bp.store[width=8](i, v * inv_v * w)
+            i += 8
+        while i < NE:
             bp.store(i, hp.load(i) * onp.load(i) * inv)
+            i += 1
         _mm_f16(Int(w_lm), bp, lp, NV, NE)
 
         # Argmax
