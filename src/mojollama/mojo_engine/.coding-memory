@@ -1,0 +1,48 @@
+# Mojo Full Engine — Coding Task
+#
+## Current State
+- Mojo 0.26.2 installed at /usr/local/bin/mojo
+- read_helpers.c: C bridge with read_u8, read_f32, read_i32, load_file_size, load_file_data, free_buf
+- mojo_engine_v7.mojo: WORKING binary that loads weights from /tmp/mojo_weights/gpt-oss/ and runs Q5_0/Q8_0 matmul on layer 0
+  - Compiles: `mojo build --emit object -o engine.o file.mojo`
+  - Links: `gcc -o engine engine.o read_helpers.o -lKGENCompilerRTShared -lAsyncRTRuntimeGlobals -lMSupportGlobals -lAsyncRTMojoBindings -lm -lpthread -ldl -lstdc++`
+  - Mojo lib path: ~/.local/share/uv/tools/mojo/lib/python3.11/site-packages/modular/lib/
+- Weight files at /tmp/mojo_weights/gpt-oss/: emb.bin (2.3GB), out_norm.bin, layer_{0..23}/*.bin
+
+## Mojo 0.26.2 CRITICAL Constraints
+1. `@extern` and `fn`/`def` must be on SEPARATE lines — no `@extern("X") fn foo():`
+2. `for` and `if` must be on OWN lines — no `if x > 0: do_something()` on same line after colon
+3. Two statements on one line separated by `;` DO work for non-var statements: `a+=1; b+=2`
+4. `var decl; var decl2` separated by `;` does NOT work — each var needs its own line
+5. Functions returning `List[Float32]` with complex bodies trigger compiler SEGFAULT during codegen
+6. Simple functions returning `List[Float32]` (like list_add, rms_norm) DO compile
+7. NO tuple return types `-> (List[Float32], List[Float32])` — not supported
+8. NO struct initializer at runtime `MyBuf{ptr: X, size: Y}` — not supported
+9. String concat + C bridge (`d + "emb.bin"` passed to C) causes runtime crash
+10. Always use LITERAL paths for load_file_data: `_ld("/path/to/file.bin")`
+
+## Task: Port turbo_engine_v7_moe.py to Mojo
+The Python engine at /onedev-workspace/work/src/mojollama/kernels/turbo_engine_v7_moe.py (2128L) is the full inference engine.
+
+Key quant types found in GPT-OSS weights:
+- Q5_0 (qt=6): blocks of 22 bytes: [d:2B][qh:4B][ql:16B], decode: stored = nibble|(qh_bit<<4), signed = stored-16
+- Q8_0 (qt=8): blocks of 34 bytes: [d:2B][qs:32B i8]
+- MXFP4 (qt=39): blocks of 17 bytes: [nibbles:16B][e8m0:1B]
+- Q4_K (qt=12): K-quant 144B/256vals
+
+## Weight File Layout at /tmp/mojo_weights/gpt-oss/
+- out_norm.bin: N*f32
+- layer_{l}/: attn_norm.bin, ffn_norm.bin, q_weight.bin, k_weight.bin, v_weight.bin, o_weight.bin, router.bin, gate_exps.bin, up_exps.bin, down_exps.bin
+- {q,k,v,o}_info.bin: 3 int32 = [nr, nc, qt]
+- moe_info.bin: 6 int32 = [n_experts, top_k, n_ff_exp, gate_qt, up_qt, down_qt]
+- gate_exps.bin, up_exps.bin, down_exps.bin: [all_experts_concatenated, uint8]
+
+## Model Dimensions
+- GPT-OSS: L=24, N=2880, NH=64, NKH=8, HD=96 (2880/32=90 but padded to 96), FF=2880
+- MoE: 32 experts, top_k=4, experts are MXFP4 (qt=39) at 2880x2880
+
+## Success Criteria
+1. Compile: `mojo build --emit object -o engine.o mojollama_engine.mojo` succeeds
+2. Link: `gcc -o engine engine.o read_helpers.o ...` succeeds
+3. Run: `LD_LIBRARY_PATH=... ./engine` executes without crash
+4. Produces reasonable non-zero output (compare first 5 logits to Python engine)

@@ -451,6 +451,9 @@ void mxfp4_batch_matmul(const uint8_t *W, const float *x, float *out,
 
                 /* E8M0 exponent → IEEE754 float32: 2^(e-127) = float with bits (e << 23) */
                 union { uint32_t u; float f; } sc = { .u = ((uint32_t)bp[16]) << 23 };
+                /* Clamp scale to prevent FMA overflow → inf → NaN (see mxfp4_row_dot_q8 clamp) */
+                if (sc.f > 1e20f) sc.f = 1e20f;
+                if (sc.f < -1e20f) sc.f = -1e20f;
                 __m256 sv = _mm256_set1_ps(sc.f);
 
                 __m128i packed = _mm_loadu_si128((const __m128i*)bp);
@@ -494,8 +497,9 @@ void mxfp4_batch_matmul(const uint8_t *W, const float *x, float *out,
                 _mm_prefetch(bp + 2 * (int)sizeof(block_mxfp4), _MM_HINT_NTA);
 
                 union { uint32_t u; float f; } sc = { .u = ((uint32_t)bp[16]) << 23 };
+                if (sc.f > 1e20f) sc.f = 1e20f;
+                if (sc.f < -1e20f) sc.f = -1e20f;
                 __m256 sv = _mm256_set1_ps(sc.f);
-
                 __m128i packed = _mm_loadu_si128((const __m128i*)bp);
                 __m128i lo = _mm_and_si128(packed, _mm_set1_epi8(0x0F));
                 __m128i hi = _mm_and_si128(_mm_srli_epi16(packed, 4), _mm_set1_epi8(0x0F));

@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Benchmark helper: measure vLLM/SGLang/llama.cpp throughput for a model.
+Outputs JSON: {"framework": "vllm", "model": "...", "pp": tok/s, "tg": tok/s, ...}
+Usage: python3 bench_backend.py vllm --model meta-llama/Llama-3.2-1B
+       python3 bench_backend.py sglang --model meta-llama/Llama-3.2-1B
+       python3 bench_backend.py llamacpp --model /path/to/model.gguf
+"""
+import sys, json, os, subprocess, time
+
+def bench_vllm(model: str) -> dict:
+    """Benchmark vLLM via its benchmark_latency.py script."""
+    result = {"framework": "vllm", "model": model, "error": None}
+    try:
+        import vllm  # noqa: F401
+        # Try using vllm's benchmark script
+        script = os.path.join(os.path.dirname(vllm.__file__), "..", "benchmarks", "benchmark_latency.py")
+        if os.path.exists(script):
+            out = subprocess.run(
+                [sys.executable, script, "--model", model, "--num-iters", "10",
+                 "--num-prompts", "5", "--input-len", "512", "--output-len", "128"],
+                capture_output=True, text=True, timeout=120
+            )
+            result["raw_output"] = out.stdout
+            # Parse: look for "avg latency" or throughput numbers
+            for line in out.stdout.split("\n"):
+                if "tok/s" in line.lower() or "throughput" in line.lower():
+                    result["throughput_line"] = line.strip()
+        else:
+            # Fallback: simple API benchmark
+            result["note"] = "benchmark_latency.py not found, using API"
+    except ImportError:
+        result["error"] = "vllm not installed"
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+def bench_sglang(model: str) -> dict:
+    """Benchmark SGLang via its benchmark scripts."""
+    result = {"framework": "sglang", "model": model, "error": None}
+    try:
+        import sglang  # noqa: F401
+        script = os.path.expanduser("~/sglang/benchmark/benchmark_serving.py")
+        if os.path.exists(script):
+            out = subprocess.run(
+                [sys.executable, script, "--model", model, "--num-prompts", "5",
+                 "--request-rate", "1", "--backend", "sglang"],
+                capture_output=True, text=True, timeout=120
+            )
+            result["raw_output"] = out.stdout
+        else:
+            result["note"] = "benchmark script not found"
+    except ImportError:
+        result["error"] = "sglang not installed"
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+def bench_llamacpp(model: str) -> dict:
+    """Benchmark llama.cpp via llama-bench."""
+    result = {"framework": "llamacpp", "model": model, "error": None}
+    bench_bin = os.environ.get("LLAMA_BENCH", "/tmp/llama.cpp/build/bin/llama-bench")
+    if not os.path.exists(bench_bin):
+        result["error"] = f"llama-bench not found at {bench_bin}"
+        return result
+    try:
+        out = subprocess.run(
+            [bench_bin, "-m", model, "-n", "128", "-p", "512", "-t", os.environ.get("MOJO_BENCH_THREADS", "32")],
+            capture_output=True, text=True, timeout=120
+        )
+        # Parse output: model|size|threads|pp|tg|...
+        for line in out.stdout.strip().split("\n"):
+            if "|" in line and model.split("/")[-1].split(".")[0] in line:
+                parts = line.split("|")
+                if len(parts) >= 5:
+                    result["pp_tok_s"] = float(parts[3]) if parts[3] else 0
+                    result["tg_tok_s"] = float(parts[4]) if parts[4] else 0
+                    result["threads"] = int(parts[2]) if parts[2] else 32
+                    break
+        result["raw_output"] = out.stdout.strip()
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+def get_gguf_dims(path: str) -> dict:
+    """Read GGUF header to extract model dimensions."""
+    result = {"n_embd": 0, "n_layers": 0, "n_heads": 0, "n_kv_heads": 0, "vocab_size": 0}
+    try:
+        import gguf, numpy as np
+        _to_int = lambda x: int(x.item() if hasattr(x, 'item') else x)
+        reader = gguf.GGUFReader(path)
+        for key in ["llama.embedding_length", "bert.embedding_length", "gpt2.embedding_length",
+                     "SSM.embedding_length", "t5.embedding_length", "mpt.embedding_length"]:
+            f = reader.fields.get(key)
+            if f: result["n_embd"] = _to_int(f.parts[-1]); break
+        for fname in ["llama.block_count", "gpt2.block_count", "bert.block_count", "SSM.block_count", "mpt.block_count"]:
+            f = reader.fields.get(fname)
+            if f: result["n_layers"] = _to_int(f.parts[-1]); break
+        for fname in ["llama.attention.head_count", "gpt2.attention.head_count", "mpt.attention.head_count"]:
+            f = reader.fields.get(fname)
+            if f: result["n_heads"] = _to_int(f.parts[-1]); break
+        for fname in ["llama.attention.head_count_kv", "gpt2.attention.head_count_kv"]:
+            f = reader.fields.get(fname)
+            if f: result["n_kv_heads"] = _to_int(f.parts[-1]); break
+        for fname in ["llama.vocab_size", "gpt2.vocab_size", "bert.vocab_size"]:
+            f = reader.fields.get(fname)
+            if f: result["vocab_size"] = _to_int(f.parts[-1]); break
+        arch_f = reader.fields.get("general.architecture")
+        if arch_f: result["arch"] = str(bytes(arch_f.parts[-1]).decode('utf-8'))
+        for k in result:
+            if isinstance(result[k], (np.integer, np.floating)): result[k] = _to_int(result[k])
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+if __name__ == "__main__":
+    if len(sys.argv) < 3:
+        print(json.dumps({"error": "Usage: bench_backend.py <backend> --model <model>"}))
+        sys.exit(1)
+    backend = sys.argv[1]
+    model = sys.argv[sys.argv.index("--model") + 1] if "--model" in sys.argv else ""
+    if backend == "vllm":
+        print(json.dumps(bench_vllm(model)))
+    elif backend == "sglang":
+        print(json.dumps(bench_sglang(model)))
+    elif backend == "llamacpp":
+        print(json.dumps(bench_llamacpp(model)))
+    elif backend == "ggufinfo":
+        print(json.dumps(get_gguf_dims(model)))
+    else:
+        print(json.dumps({"error": f"Unknown backend: {backend}"}))

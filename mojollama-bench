@@ -1,0 +1,141 @@
+#!/bin/bash
+# mojollama-bench — Full benchmark: MojoLlama x GGUF x vLLM x SGLang comparison
+# Usage:
+#   ./mojollama-bench                                                  # Mojo synthetic only
+#   ./mojollama-bench --model model.gguf                                # + llama.cpp comparison
+#   ./mojollama-bench --model meta-llama/Llama-3.2-1B --vllm            # + vLLM comparison
+#   ./mojollama-bench --model meta-llama/Llama-3.2-1B --sglang          # + SGLang comparison
+#   ./mojollama-bench --model model.gguf --llama --vllm --sglang        # All backends
+set -e
+
+MOJO_ENGINE="/onedev-workspace/work/src/mojollama/mojo_engine"
+HELPER="/onedev-workspace/work/mojollama-bench-helper"
+LLAMA_BENCH="/tmp/llama.cpp/build/bin/llama-bench"
+MODEL=""
+RUN_LLAMA=false; RUN_VLLM=false; RUN_SGLANG=false; RUN_MOJO=true
+THREADS="32"
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --model) MODEL="$2"; shift 2 ;;
+        --threads) THREADS="$2"; shift 2 ;;
+        --llama|cpp) RUN_LLAMA=true; shift ;;
+        --vllm) RUN_VLLM=true; shift ;;
+        --sglang) RUN_SGLANG=true; shift ;;
+        --no-mojo) RUN_MOJO=false; shift ;;
+        --help|-h)
+            echo "Usage: mojollama-bench [--model path|hf_id] [--llama] [--vllm] [--sglang] [--threads N]"
+            echo "  --model   GGUF path or HF model ID"
+            echo "  --llama   Include llama.cpp benchmark"
+            echo "  --vllm    Include vLLM benchmark (HF models)"
+            echo "  --sglang  Include SGLang benchmark (HF models)"
+            echo "  --threads Thread count(s) for sweep (default: 32)"
+            exit 0 ;;
+        *) MODEL="$1"; shift ;;
+    esac
+done
+
+# Build Mojo bench if needed
+if $RUN_MOJO && [ ! -f "$MOJO_ENGINE/mojollama_bench" ]; then
+    echo "[bench] Building mojollama_bench.mojo..." >&2
+    cd "$MOJO_ENGINE" && mojo build mojollama_bench.mojo 2>&1 || true
+fi
+
+# Extract model dimensions from GGUF (if local file)
+N_EMBD=4096; N_HEADS=32; N_LAYERS=32; MODEL_NAME="synthetic"
+if [ -n "$MODEL" ] && [ -f "$MODEL" ]; then
+    INFO=$(python3 "$HELPER" ggufinfo --model "$MODEL" 2>/dev/null || echo '{}')
+    N_EMBD=$(echo "$INFO" | python3 -c "import sys,json; print(json.load(sys.stdin).get('n_embd',4096))" 2>/dev/null || echo "4096")
+    N_HEADS=$(echo "$INFO" | python3 -c "import sys,json; print(json.load(sys.stdin).get('n_heads',32))" 2>/dev/null || echo "32")
+    N_LAYERS=$(echo "$INFO" | python3 -c "import sys,json; print(json.load(sys.stdin).get('n_layers',32))" 2>/dev/null || echo "32")
+    MODEL_NAME=$(basename "$MODEL" .gguf)
+elif [ -n "$MODEL" ]; then
+    MODEL_NAME=$(echo "$MODEL" | tr '/' '_')
+fi
+
+echo "╔══════════════════════════════════════════════════════════════╗"
+echo "║     MojoLlama Bench — Multi-backend comparison             ║"
+echo "╚══════════════════════════════════════════════════════════════╝"
+echo "  Model: $MODEL_NAME"
+echo "  Dims:  ${N_EMBD}embd × ${N_HEADS}heads × ${N_LAYERS}layers"
+echo ""
+
+# ── 1. Run Mojo benchmark ──
+if $RUN_MOJO && [ -f "$MOJO_ENGINE/mojollama_bench" ]; then
+    echo "▶ MojoLlama (pure Mojo f16 matmul ${N_EMBD}×${N_EMBD}, 32 threads)..."
+    MOJO_OUT=$(mktemp)
+    MOJO_BENCH_NR=$N_EMBD MOJO_BENCH_NC=$N_EMBD timeout 60 "$MOJO_ENGINE/mojollama_bench" > "$MOJO_OUT" 2>/dev/null || true
+    MOJO_TS=$(python3 -c "import json; d=json.load(open('$MOJO_OUT')); print(max(r['tok_s'] for r in d.get('thread_sweep',[{'tok_s':0}])))" 2>/dev/null || echo "0")
+    echo "  → ${MOJO_TS} tok/s"
+fi
+
+# ── 2. Run llama.cpp benchmark ──
+if $RUN_LLAMA && [ -n "$MODEL" ] && [ -f "$LLAMA_BENCH" ] && [ -f "$MODEL" ]; then
+    echo "▶ llama.cpp (llama-bench)..."
+    LLAMA_OUT=$(mktemp)
+    IFS=',' read -ra TA <<< "$THREADS"
+    for t in "${TA[@]}"; do
+        "$LLAMA_BENCH" -m "$MODEL" -t "$t" -n 128 -p 512 2>/dev/null | tail -1 >> "$LLAMA_OUT" || true
+    done
+    LLAMA_TG=$(python3 -c "
+import json
+with open('$LLAMA_OUT') as f:
+    for line in f:
+        if '|' in line:
+            parts = line.split('|')
+            if len(parts) >= 5 and parts[4]:
+                print(parts[4]); break
+" 2>/dev/null || echo "0")
+    echo "  → TG: ${LLAMA_TG} tok/s"
+fi
+
+# ── 3. Run vLLM benchmark ──
+VLLM_TS="0"
+if $RUN_VLLM && [ -n "$MODEL" ]; then
+    echo "▶ vLLM..."
+    VLLM_OUT=$(mktemp)
+    python3 "$HELPER" vllm --model "$MODEL" > "$VLLM_OUT" 2>/dev/null || true
+    VLLM_TS=$(python3 -c "import json; d=json.load(open('$VLLM_OUT')); print(d.get('tg_tok_s',0))" 2>/dev/null || echo "0")
+    echo "  → ${VLLM_TS} tok/s"
+fi
+
+# ── 4. Run SGLang benchmark ──
+SGL_TS="0"
+if $RUN_SGLANG && [ -n "$MODEL" ]; then
+    echo "▶ SGLang..."
+    SGL_OUT=$(mktemp)
+    python3 "$HELPER" sglang --model "$MODEL" > "$SGL_OUT" 2>/dev/null || true
+    SGL_TS=$(python3 -c "import json; d=json.load(open('$SGL_OUT')); print(d.get('tg_tok_s',0))" 2>/dev/null || echo "0")
+    echo "  → ${SGL_TS} tok/s"
+fi
+
+# ── Display comparison table ──
+echo ""
+echo "══════════════════════════════════════════════════════════════"
+echo "  COMPARISON: ${MODEL_NAME}"
+echo "══════════════════════════════════════════════════════════════"
+echo ""
+printf "  %-20s │ %-12s │ %s\n" "Backend" "TG tok/s" "Notes"
+printf "  %-20s─┼─%-12s─┼─%s\n" "────────────────────" "────────────" "─────"
+if $RUN_MOJO && [ -n "$MOJO_TS" ]; then
+    printf "  %-20s │ %-12s │ %s\n" "MojoLlama" "${MOJO_TS}" "pure Mojo, CPU"
+fi
+if $RUN_LLAMA && [ -n "$LLAMA_TG" ]; then
+    MOJO_VS_LLAMA=$(python3 -c "print(f'${MOJO_TS}/${LLAMA_TG}:.2f×')" 2>/dev/null || echo "-")
+    printf "  %-20s │ %-12s │ %s\n" "llama.cpp" "${LLAMA_TG}" "CPU, OMP"
+fi
+if $RUN_VLLM; then
+    printf "  %-20s │ %-12s │ %s\n" "vLLM" "${VLLM_TS}" "GPU"
+fi
+if $RUN_SGLANG; then
+    printf "  %-20s │ %-12s │ %s\n" "SGLang" "${SGL_TS}" "GPU"
+fi
+echo ""
+echo "  Key: TG = token generation throughput (tok/s)"
+echo "  MojoLlama: pure Mojo f16 matmul (${N_EMBD}×${N_EMBD}, 32-thread)"
+echo "  llama.cpp: requires local GGUF file"
+echo "  vLLM/SGLang: requires GPU + HF model"
+echo ""
+echo "  For detailed results:"
+echo "    mojollama-bench --threads 1,2,4,8,16,24,32  # thread sweep"
+echo "    mojollama-bench --model m.gguf --llama --threads 1,2,4,8,16,32  # full comparison"

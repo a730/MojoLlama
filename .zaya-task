@@ -1,0 +1,39 @@
+# ZAYA1-8B C Batch Forward — Task
+
+## Goal
+Implement a C batch forward function for ZAYA1-8B in `cengine_batch_instr.c` that processes all 80 layers in a single C call, eliminating Python loop overhead.
+
+## Architecture
+- 80 layers (interleaved: even=attention, odd=MXFP4 MoE)
+- N=2048, NH=8, n_kv_h=2, head_dim=128, rope_dim=64
+- Even layers: attention (QKV + output proj) + FFN
+- Odd layers: MXFP4 MoE (router + gate/up/down experts)
+- vocab=262272, n_experts=16, top_k=1, n_ff_expert=2048
+
+## Reference: Existing qwen36_batch_forward in cengine_batch_instr.c
+The qwen36_batch_forward function handles 40 layers with SSM/attention hybrid. ZAYA is simpler — it's just attention + MoE with no SSM.
+
+## Key considerations
+1. ZAYA uses MXFP4 (type 39) for ALL expert weights (gate/up/down)
+2. ZAYA uses Q4_K (type 12) for Q/K/V/O projections
+3. MXFP4 matmul needs the F32 workaround (mxfp4_row_dot_f32, not q8 variant)
+4. KV cache management: same as qwen36_batch_forward (kv_lens passed as pointer)
+
+## Pattern to follow
+Copy `qwen36_batch_forward` signature and modify for ZAYA:
+- Remove SSM state (no SSM layers)
+- Use `moe_forward_omp` for MoE (odd layers)
+- Use `quant_matmul_omp` for attention Q/K/V/O (even layers)
+- Use RMS_NORM_SIMD for all norms
+- Use `mxfp4_matmul_omp_q8` -> actually use mxfp4_row_dot_f32 for MXFP4 (see workaround below)
+
+## MXFP4 Workaround (2026-05-22)
+mxfp4_row_dot_q8 produces NaN for large input distributions. Use mxfp4_row_dot_f32 instead.
+In moe_forward_omp, gate/up path already changed to use f32 variant.
+For ZAYA, ensure the moe_forward_omp call uses the fixed version.
+
+## Files
+- /onedev-workspace/work/src/mojollama/kernels/cengine_batch_instr.c (add zaya_batch_forward)
+- /onedev-workspace/work/src/mojollama/kernels/quant_kernels_omp.c (already patched)
+- /onedev-workspace/work/src/mojollama/kernels/forward/zaya.py (Python forward reference)
+- /onedev-workspace/work/src/mojollama/kernels/forward/zaya_bc.py (backward compat reference)

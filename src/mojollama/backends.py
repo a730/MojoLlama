@@ -754,6 +754,13 @@ class TurboEngineBackend(BackendBase):
                     if key in arch.lower():
                         paths.append(hf_id)
                         break
+            # Also try matching model filename against hints
+            model_base = os.path.splitext(os.path.basename(self.model_path))[0].lower()
+            for key, hf_id in self._MODEL_TOKENIZER_HINTS.items():
+                if key in model_base:
+                    if hf_id not in paths:
+                        paths.append(hf_id)
+                    break
         except: pass
 
         # 4. Try each path — download from HF if needed

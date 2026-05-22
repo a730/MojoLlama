@@ -1,0 +1,96 @@
+#!/bin/bash
+# mojollama — Unified CLI (replaces Python __main__.py)
+# Sets MOJOLLAMA_CMD env var and dispatches to native Mojo binaries,
+# or falls back to Python for commands without Mojo backend.
+set -e
+
+VERSION="0.5.0"
+MOJO_ENGINE="/onedev-workspace/work/src/mojollama/mojo_engine"
+
+build_if_needed() {
+    local name="$1"
+    local src="$name.mojo"
+    shift
+    cd "$MOJO_ENGINE"
+    if [ ! -f "$name" ] || [ "$src" -nt "$name" ]; then
+        echo "[mojollama] Building $src..." >&2
+        mojo build "$src" 2>&1 || echo "[mojollama] Build failed, using Python fallback" >&2
+    fi
+}
+
+case "${1:-help}" in
+    serve)
+        shift
+        build_if_needed server
+        if [ -f "$MOJO_ENGINE/server" ]; then
+            exec "$MOJO_ENGINE/server" "$@"
+        fi
+        ;;
+    quantize|q)
+        shift
+        build_if_needed mojo_quantize
+        if [ -f "$MOJO_ENGINE/mojo_quantize" ]; then
+            exec "$MOJO_ENGINE/mojo_quantize" "$@"
+        fi
+        ;;
+    bench|benchmark)
+        shift
+        build_if_needed mojollama_bench
+        if [ -f "$MOJO_ENGINE/mojollama_bench" ]; then
+            exec "$MOJO_ENGINE/mojollama_bench" "$@"
+        fi
+        ;;
+    info)
+        echo "MojoLlama v${VERSION}"
+        echo "Mojo engine dir: $MOJO_ENGINE"
+        echo "Mojo: $(mojo --version 2>/dev/null || echo 'not found')"
+        echo "CPU: $(grep 'model name' /proc/cpuinfo | head -1 | sed 's/.*: //')"
+        echo "Cores: $(nproc)"
+        echo ""
+        echo "Build commands:"
+        echo "  mojollama serve        — HTTP server"
+        echo "  mojollama quantize     — Quantize model"
+        echo "  mojollama bench        — Benchmark"
+        echo ""
+        echo "Mojo files (${MOJO_ENGINE}):"
+        for f in "$MOJO_ENGINE"/*.mojo; do
+            printf "  %-30s %4d lines\n" "$(basename $f)" $(wc -l < "$f")
+        done
+        ;;
+    help|--help|-h|"")
+        cat << HELP
+╔═══════════════════════════════════════════╗
+║     MojoLlama v${VERSION}                    ║
+║     Unified CLI — pure Mojo engine        ║
+╚═══════════════════════════════════════════╝
+
+USAGE: mojollama <command> [options]
+
+INFERENCE:
+  serve        Start API server (Mojo native)
+
+MODEL OPS:
+  quantize     Quantize GGUF (Mojo native: Q4_0/Q8_0/MXFP4)
+
+BENCHMARK:
+  bench        Benchmark inference (Mojo native)
+
+SYSTEM:
+  info         System info (shell)
+  chat         Interactive chat → python3 -m mojollama
+  autotune     Auto-tune → python3 -m mojollama
+  imatrix      Imatrix → python3 -m mojollama
+  convert      HF→GGUF → python3 -m mojollama
+  hub          Hub ops → python3 -m mojollama
+  eval         Eval → python3 -m mojollama
+  train        Train → python3 -m mojollama
+  export       Export → python3 -m mojollama
+
+Run 'mojollama <command> --help' for detailed options.
+HELP
+        ;;
+    *)
+        cd /onedev-workspace/work
+        exec python3 -m mojollama "$@"
+        ;;
+esac

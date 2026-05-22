@@ -1,0 +1,21 @@
+Gemma4 26B forward — shared gate/up + per-expert MXFP4 down MoE.
+
+Architecture:
+- 30L, N=2816, NH=16, NKH=2, head_dim=256 (per_layer_dim), rope_dim=256
+- Attention: Q(4096×2816 Q8_0), K(2048×2816 Q8_0), V(2048×2816 Q8_0), O(2816×4096 Q8_0)
+- Has Q/K norms (256-dim vectors), residual scaling
+- MoE: shared gate(2112×2816 Q8_0) + shared up(2112×2816 Q8_0), 128 per-expert down(MXFP4, 2816×704)
+- Router: F32 [128, N], softmax, top_k=8
+- Output: RMS norm + token_embd weight (untied, no output projection weight)
+- MoE expert weights: only down_ptrs_arr (128 LP_c_ubyte pointers), gate/up_ptrs_arr are None
+- The base engine's _forward_moe expects gate/up/down per-expert — won't work
+
+What the Python forward needs to do:
+1. Attention (every layer): QKV projections, Q/K norms, RoPE, GQA, output proj, residual with res_scale
+2. MoE (every layer): RMS norm → router (F32) → softmax → top-8 → shared gate+up → SiLU → per-expert down → weighted sum → residual with res_scale
+3. Final: RMS norm → output (use token_embd as output projection)
+
+Key files:
+f = /onedev-workspace/work/src/mojollama/kernels/turbo_engine_v7_moe.py (base engine)
+f = /onedev-workspace/work/src/mojollama/kernels/quant_kernels_omp.c (quant_matmul_omp)
+f = /onedev-workspace/work/src/mojollama/kernels/forward/gemma4.py (existing E4B forward — DON'T copy the C call pattern)

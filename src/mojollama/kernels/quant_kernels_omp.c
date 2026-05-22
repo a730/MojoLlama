@@ -376,9 +376,9 @@ void q5_k_matmul_omp(const uint8_t *restrict W, const float *restrict x,
 void q8_0_matmul_omp(const uint8_t *restrict W, const float *restrict x,
                       float *restrict out, int n_rows, int n_cols) {
     int bpr = n_cols / QK8_0;  /* blocks of 32 per row */
-
     #pragma omp parallel for schedule(static)
     for (int r = 0; r < n_rows; r++) {
+        volatile float no_opt_total = 0.0f;  /* volatile prevents vectorized overrun */
         float total = 0.0f;
         const uint8_t *row = W + (size_t)r * bpr * Q8_0_BS;
         for (int blk = 0; blk < bpr; blk++) {
@@ -392,21 +392,17 @@ void q8_0_matmul_omp(const uint8_t *restrict W, const float *restrict x,
             int off = blk * 32;
             __m256 d_v = _mm256_set1_ps(d);
 
-            /* Process 32 int8 values: 4 groups of 8.
-             * Each group: load 8 int8, sign-extend to 8 int32 via int16,
-             * convert to float, multiply by scale, dot with x */
+            /* Process 32 int8 values: 4 groups of 8. */
             __m256 acc = _mm256_setzero_ps();
             for (int i = 0; i < 32; i += 8) {
-                /* Load 8 int8 values and sign-extend to 8 int32 */
-                __m128i q8 = _mm_loadl_epi64((__m128i*)(qs + i));  /* load 8 bytes */
-                __m128i q16lo = _mm_cvtepi8_epi16(q8);              /* sign-extend to 8 int16 */
-                __m128i q16hi = _mm_cvtepi16_epi32(q16lo);          /* low 4 int16 → int32 */
-                __m128i q16lo2 = _mm_cvtepi16_epi32(_mm_unpackhi_epi64(q16lo, q16lo));  /* high 4 int16 → int32 */
+                __m128i q8 = _mm_loadl_epi64((__m128i*)(qs + i));
+                __m128i q16lo = _mm_cvtepi8_epi16(q8);
+                __m128i q16hi = _mm_cvtepi16_epi32(q16lo);
+                __m128i q16lo2 = _mm_cvtepi16_epi32(_mm_unpackhi_epi64(q16lo, q16lo));
                 __m256 qf = _mm256_cvtepi32_ps(_mm256_set_m128i(q16lo2, q16hi));
                 __m256 xv = _mm256_loadu_ps(x + off + i);
                 acc = _mm256_fmadd_ps(_mm256_mul_ps(qf, d_v), xv, acc);
             }
-            /* Horizontal sum of 8 floats */
             __m128 hi128 = _mm256_extractf128_ps(acc, 1);
             __m128 lo128 = _mm256_castps256_ps128(acc);
             __m128 sum = _mm_add_ps(lo128, hi128);
@@ -414,7 +410,8 @@ void q8_0_matmul_omp(const uint8_t *restrict W, const float *restrict x,
             sum = _mm_hadd_ps(sum, sum);
             total += _mm_cvtss_f32(sum);
         }
-        out[r] = total;
+        no_opt_total = total;
+        out[r] = no_opt_total;
     }
 }
 
@@ -643,7 +640,15 @@ static float mxfp4_row_dot_q8(const uint8_t *restrict W, const uint8_t *restrict
         const uint8_t *xbp = x_q8 + blk * Q8_0_BS;
         float q8_d = f16_to_f32(*(const uint16_t*)xbp);
         union { uint32_t u; float f; } sc = { .u = ((uint32_t)bp[16]) << 23 };
-        __m256 cv = _mm256_set1_ps(sc.f * q8_d);
+        /* Clamp combined scale to prevent FMA overflow → inf → NaN in reduction.
+         * bp[16] (MXFP4 exponent byte) when ebyte=255 produces +inf as float via the
+         * (ebyte<<23) encoding. inf * q8_d = inf, and _mm256_fmadd_ps with inf produces
+         * mixed ±inf lanes → _mm256_add_ps(+inf,-inf) = NaN in final reduction.
+         * Clamp to 1e20 (safely below float32 max 3.4e38) preserves all normal values. */
+        float cs = sc.f * q8_d;
+        if (cs > 1e20f) cs = 1e20f;
+        if (cs < -1e20f) cs = -1e20f;
+        __m256 cv = _mm256_set1_ps(cs);
         __m128i p = _mm_loadu_si128((const __m128i*)bp);
         __m128i lo = _mm_and_si128(p, _mm_set1_epi8(0x0F));
         __m128i hi = _mm_and_si128(_mm_srli_epi16(p, 4), _mm_set1_epi8(0x0F));
@@ -2089,8 +2094,10 @@ void moe_forward_omp(
     /* ── Phase 1: Gate + Up (V8 fused with contiguous rows per chunk) ── */
     if (qt_gate == 39 && qt_up == 39) {
         /* V8: Keep fused OMP region but group iterations by expert for better L3 reuse.
-         * With schedule(static), each thread gets rows from one expert contiguously,
-         * keeping that expert's weights in L3 cache. */
+         * Gate/up uses f32 path (not q8) because Q8 quantization of x_norm loses
+         * precision for the MoE router's gating signal, causing degraded output on
+         * some models (GPT-OSS 2880-dim experts). Down path still uses q8 with
+         * clamped scale for numerical stability. */
         int total = total_gate;
         #pragma omp parallel for schedule(static)
         for (int i = 0; i < total * 2; i++) {
@@ -2101,7 +2108,7 @@ void moe_forward_omp(
             int e = top_indices[ei];
             const uint8_t *W = is_up ? up_raw[e] : gate_raw[e];
             float *buf = is_up ? up_buf : gate_buf;
-            buf[idx] = mxfp4_row_dot_q8(W, x_q8, n_embd, row);
+            buf[idx] = mxfp4_row_dot_f32(W, x_norm, n_embd, row);
         }
     } else {
         /* Per-row dispatch for other quant types */
@@ -2253,7 +2260,13 @@ void gemma4_batch_matmuls(
     int qt_q, int qt_k, int qt_v
 ) {
     int nb = N / 32;
-    uint8_t x_q8[4096 / 32 * Q8_0_BS];
+    /* Stack buffer for up to 4096 dims; malloc for larger (e.g., 8192 for Gemma4 26B).
+     * MOTIVATION: Fixed 4KB stack buffer <q8 overflowed for N=8192, causing stack
+     * corruption. Using the moe_forward_omp pattern: stack for small, malloc for large. */
+    uint8_t q8_stack[4096 / 32 * Q8_0_BS];
+    int q8_sz = (size_t)nb * Q8_0_BS;
+    uint8_t *x_q8 = q8_sz <= sizeof(q8_stack) ? q8_stack : (uint8_t*)malloc(q8_sz);
+    uint8_t *x_q8_alloced = (x_q8 != q8_stack) ? x_q8 : NULL;
     quantize_row_q8_0(x_norm, x_q8, N);
     int total = nq + nk + nv;
     #pragma omp parallel for schedule(static)
@@ -2266,6 +2279,8 @@ void gemma4_batch_matmuls(
             v[i - nq - nk] = q6_k_row_dot_avx2(w_v, x_norm, N, i - nq - nk);
         }
     }
+    /* Free malloc'd Q8 buffer if we allocated one (N > 4096) */
+    if (x_q8_alloced) free(x_q8_alloced);
 }
 
 /* =========================================================================

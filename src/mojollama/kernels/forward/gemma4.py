@@ -107,7 +107,10 @@ class ForwardGemma4(ArchitectureForwardPass):
         L=e.n_layers; N=e.n_embd; V=e.vocab_size; NH=e.n_head; NKH=e.n_kv_head
         S = int(max(int(e.n_embd), int(e.n_head)*512, int(e.n_ff)//2, int(self.per_layer_dim), 8192))
         ws = np.zeros(14*S, dtype=np.float32)
-        tid = np.array([[int(token_id.flat[0])]], dtype=np.int32)
+        if isinstance(token_id, (list, np.ndarray)):
+            tid = np.array([[int(token_id[0])]], dtype=np.int32)
+        else:
+            tid = np.array([[int(token_id)]], dtype=np.int32)
         ci = ctypes.c_int; cf = ctypes.POINTER(ctypes.c_float); cu = ctypes.POINTER(ctypes.c_uint8)
         cpi = ctypes.POINTER(ci); cpf = ctypes.POINTER(cf); cpu = ctypes.POINTER(cu)
         ce = e._cengine
@@ -131,16 +134,14 @@ class ForwardGemma4(ArchitectureForwardPass):
             at += [cf]
             # 10 F32 pointer arrays (norm, proj, etc.)
             at += [cpf]*10
-            # 7 uint8 pointer arrays (wq, wk, wv, wo, wg, wu, wd)
-            at += [cpu]*7
-            # 7 nr arrays (q_nr, k_nr, v_nr, o_nr, g_nr, u_nr, d_nr)
-            at += [cpi]*7
-            # 7 qt arrays (q_qt, k_qt, v_qt, o_qt, g_qt, u_qt, d_qt)
-            at += [cpi]*7
+            # 7 uint8 pointer arrays + 7 nr int arrays + 7 qt int arrays (interleaved per weight)
+            # wq, q_nr, q_qt, wk, k_nr, k_qt, wv, v_nr, v_qt, wo, o_nr, o_qt,
+            # wg, g_nr, g_qt, wu, u_nr, u_qt, wd, d_nr, d_qt
+            at += [cpu, cpi, cpi] * 7
             # head_dims, is_swa, kv_idx, rope_dim (4 int arrays)
             at += [cpi]*4
-            # freq_base (float array)
-            at += [cpf]
+            # freq_base (float array) — single float*, not float**
+            at += [cf]
             # kv_k, kv_v, kv_lens, max_ctx
             at += [cf, cf, cpi, ci]
             # cos_rope, sin_rope
@@ -161,12 +162,24 @@ class ForwardGemma4(ArchitectureForwardPass):
                 t = float(p) / (rope_base ** (2.0*hp/512.0))
                 cos_t[p*512+hp] = np.cos(t); sin_t[p*512+hp] = np.sin(t)
 
+        # Handle both quantized (C path) and F32 output weights
+        if hasattr(e, '_out_raw') and e._out_raw is not None:
+            out_w_arg = e._out_raw         # uint8_t* for quantized weights
+        elif hasattr(e, '_out_f32'):
+            # Cast F32 float* to uint8_t* for C function compatibility
+            out_w_arg = e._out_f32.ctypes.data_as(cu)
+        else:
+            out_w_arg = cu()
+        out_qt_arg = e._out_qt if hasattr(e, '_out_qt') else ci(0)
+        out_nr_arg = e._out_nr if hasattr(e, '_out_nr') else ci(N)
+        out_nc_arg = e._out_nc if hasattr(e, '_out_nc') else ci(V)
+        
         fn(tid.ctypes.data_as(ctypes.POINTER(ci)), ci(1),
            ci(L), ci(N), ci(NH), ci(NKH), ci(V), ci(self.per_layer_dim),
            ci(self.sliding_window), ci(e.n_ff//2),
-           ctypes.c_float(e._eps_f), ctypes.c_float(self.logit_cap),
+           e._eps_f, ctypes.c_float(self.logit_cap),
            e.emb.ctypes.data_as(cf),
-           e._out_raw, ci(e._out_qt), ci(e._out_nr), ci(e._out_nc),
+           out_w_arg, out_qt_arg, out_nr_arg, out_nc_arg,
            e._out_norm_w.ctypes.data_as(cf),
            self._ca_attn, self._ca_ffn, self._ca_pan, self._ca_pfw,
            self._ca_pn, self._ca_ls, self._ca_qn, self._ca_kn,
