@@ -27,8 +27,8 @@ comptime N_RH: Int = 256      # router hidden dim
 comptime FF: Int = 4096       # expert intermediate (gate+up combined)
 comptime F2: Int = 2048       # gate or up after split (=NE)
 comptime NV: Int = 262147     # vocab_size
-comptime MAX_SEQ: Int = 128   # max generated tokens
-comptime MAX_CTX: Int = 4096  # max context length for RoPE freq calc
+comptime MAX_SEQ: Int = 128   # max sequence length
+comptime MAX_CTX: Int = 4096
 comptime ROPE_DIM: Int = 64   # partial RoPE
 comptime ROPE_THETA: Float64 = 5000000.0
 comptime W: Int = 8           # SIMD width
@@ -433,7 +433,7 @@ def main() raises:
     var batch_toks = alloc[Int32](B * MAX_SEQ)
     # Simple "2+2=" prompt: ZAYA uses a different tokenizer, so use BOS + ASCII
     # This is approximate — for real testing use pre-tokenized prompts
-    # Prompt: use <bos> token 2 to start generation
+    # Prompt: use <bos> token 2 then 511 BOS tokens for long prefill test
     var prompt = [2]
     var np = len(prompt)
     for bi in range(B):
@@ -442,11 +442,11 @@ def main() raises:
     var nt = alloc[Int32](B)
     for bi in range(B): nt.store(bi, Int32(np))
     var max_gen = 128
-    print("ZAYA1-8B Q8_0 B=1 max_gen=", max_gen, " nw=", nw)
+    print("ZAYA1-8B Q8_0 B=1 max_gen=", max_gen, " prefill=", np, " nw=", nw)
 
-    # ─── Generation loop ───
+    # ─── Generation loop: single pass — prefill skips LM head to save time ───
     var t_gen = time.perf_counter()
-    var emb_rb = q8_row_bytes(NE)  # bytes per embedding row (2176)
+    var emb_rb = q8_row_bytes(NE)
 
     for pos in range(max_gen):
         # Dequantize token embedding: Q8_0 → f32
@@ -465,241 +465,158 @@ def main() raises:
                     hp.store(bi * NE + blk * QK + i, Float32(qv) * scale)
                     off += 1
 
-        # ─── Layer loop ───
+        # Full 80-layer forward (builds KV cache)
         for l in range(NL):
             var lw = l * WPL
-
-            # Load layer weight pointers
             var anp = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(wl.load(lw + 0)))
             var hs_wp = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(wl.load(lw + 1)))
             var hs_bp = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(wl.load(lw + 2)))
             var rr_wp_addr = wl.load(lw + 3)
             var rr_bp_addr = wl.load(lw + 4)
 
-            # RMS Norm (B=1)
             apply_rms_norm(hp, bp, anp, NE)
 
             if l % 2 == 0:
-                # ── Attention layer ──
-                var w_q = wl.load(lw + 5)    # Q8_0 [1024, 2048]
-                var w_k = wl.load(lw + 6)    # Q8_0 [256, 2048]
-                var w_o = wl.load(lw + 7)    # Q8_0 [2048, 1024]
-
-                # Q/K projection
+                var w_q = wl.load(lw + 5); var w_k = wl.load(lw + 6); var w_o = wl.load(lw + 7)
                 _mm_q8_batch(Int(w_q), bp, qp, NH*HD, NE, nw)
                 _mm_q8_batch(Int(w_k), bp, kp, NK*HD, NE, nw)
-
-                # RoPE (partial, ROPE_DIM=64 of HD=128)
                 for bi in range(B):
-                    var qp_bi = qp + bi * NH * HD
-                    var kp_bi = kp + bi * NK * HD
+                    var qp_bi = qp + bi * NH * HD; var kp_bi = kp + bi * NK * HD
                     for d2 in range(0, ROPE_DIM, 2):
                         var freq = Float32(Float64(pos) / pow(ROPE_THETA, Float64(d2) / Float64(ROPE_DIM)))
                         var cv = cos(freq); var sv = sin(freq)
                         for h in range(NH):
-                            var x0 = qp_bi.load(h * HD + d2)
-                            var x1 = qp_bi.load(h * HD + d2 + 1)
-                            qp_bi.store(h*HD+d2, x0*cv - x1*sv)
-                            qp_bi.store(h*HD+d2+1, x0*sv + x1*cv)
+                            var x0 = qp_bi.load(h * HD + d2); var x1 = qp_bi.load(h * HD + d2 + 1)
+                            qp_bi.store(h*HD+d2, x0*cv - x1*sv); qp_bi.store(h*HD+d2+1, x0*sv + x1*cv)
                         for h in range(NK):
-                            var x0 = kp_bi.load(h * HD + d2)
-                            var x1 = kp_bi.load(h * HD + d2 + 1)
-                            kp_bi.store(h*HD+d2, x0*cv - x1*sv)
-                            kp_bi.store(h*HD+d2+1, x0*sv + x1*cv)
-
-                    # KV cache store
+                            var x0 = kp_bi.load(h * HD + d2); var x1 = kp_bi.load(h * HD + d2 + 1)
+                            kp_bi.store(h*HD+d2, x0*cv - x1*sv); kp_bi.store(h*HD+d2+1, x0*sv + x1*cv)
                     var cache_base = (bi * NL + l) * NK * MAX_SEQ * HD
                     for h in range(NK):
                         for d in range(HD):
                             kc.store(cache_base + h*MAX_SEQ*HD + pos*HD + d, kp_bi.load(h*HD + d))
-                            vc.store(cache_base + h*MAX_SEQ*HD + pos*HD + d, kp_bi.load(h*HD + d))  # V=K for GQA
-
-                    # GQA attention
+                            vc.store(cache_base + h*MAX_SEQ*HD + pos*HD + d, kp_bi.load(h*HD + d))
                     var kr = NH // NK
                     for hq in range(NH):
-                        var hk = hq // kr
-                        var cache_hk_base = cache_base + hk * MAX_SEQ * HD
-                        var qbase = hq * HD
-                        var smax = Float32(-1e9)
-                        var sc = sc_buf
+                        var hk = hq // kr; var cache_hk_base = cache_base + hk * MAX_SEQ * HD
+                        var qbase = hq * HD; var smax = Float32(-1e9); var sc = sc_buf
                         for p in range(pos + 1):
-                            var sv = SIMD[DType.float32, W](0.0)
-                            var dd = 0
+                            var sv = SIMD[DType.float32, W](0.0); var dd = 0
                             while dd + W <= HD:
                                 var qv = qp_bi.load[width=W](qbase + dd)
                                 var kv = kc.load[width=W](cache_hk_base + p * HD + dd)
                                 sv = sv + qv * kv; dd += W
-                            var s = sv.reduce_add() / sqrt(Float32(HD))
-                            sc.store(p, s)
+                            var s = sv.reduce_add() / sqrt(Float32(HD)); sc.store(p, s)
                             if s > smax: smax = s
                         var ssum = Float32(0.0)
                         for p in range(pos + 1):
-                            var es = exp(sc.load(p) - smax)
-                            sc.store(p, es); ssum += es
+                            var es = exp(sc.load(p) - smax); sc.store(p, es); ssum += es
                         var dd = 0
                         while dd + W <= HD:
                             var ov = SIMD[DType.float32, W](0.0)
                             for p in range(pos + 1):
                                 var vv = vc.load[width=W](cache_hk_base + p * HD + dd)
                                 ov = ov + vv * (sc.load(p) / ssum)
-                            att_buf.store[width=W](bi * NH * HD + qbase + dd, ov)
-                            dd += W
+                            att_buf.store[width=W](bi * NH * HD + qbase + dd, ov); dd += W
                         while dd < HD:
                             var o = Float32(0.0)
-                            for p in range(pos + 1):
-                                o += vc.load(cache_hk_base + p*HD + dd) * (sc.load(p) / ssum)
-                            att_buf.store(bi * NH * HD + qbase + dd, o)
-                            dd += 1
-
-                    # O projection
+                            for p in range(pos + 1): o += vc.load(cache_hk_base + p*HD + dd) * (sc.load(p) / ssum)
+                            att_buf.store(bi * NH * HD + qbase + dd, o); dd += 1
                     _mm_q8_batch(Int(w_o), att_buf, bp, NE, NH*HD, nw)
-
-                    # Residual with learned scales
-                    var rr_w_addr_a = wl.load(lw + 3)
-                    var rr_b_addr_a = wl.load(lw + 4)
+                    var rr_w_addr_a = wl.load(lw + 3); var rr_b_addr_a = wl.load(lw + 4)
                     var has_res_scale_a = (rr_w_addr_a != 0) and (rr_b_addr_a != 0)
-                    for bi in range(B):
-                        var hp_bi = hp + bi * NE
-                        var bp_bi = bp + bi * NE
-                        if has_res_scale_a:
-                            var rr_wp_a = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(rr_w_addr_a))
-                            var rr_bp_a = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(rr_b_addr_a))
-                            for i in range(NE):
-                                var x_val = hp_bi.load(i)
-                                var p_val = bp_bi.load(i)
-                                hp_bi.store(i, x_val * rr_wp_a.load(i) + rr_bp_a.load(i) + p_val * hs_wp.load(i) + hs_bp.load(i))
-                        else:
-                            for i in range(NE):
-                                var x_val = hp_bi.load(i)
-                                var p_val = bp_bi.load(i)
-                                hp_bi.store(i, x_val + p_val * hs_wp.load(i) + hs_bp.load(i))
+                    var hp_bi = hp + bi * NE; var bp_bi = bp + bi * NE
+                    if has_res_scale_a:
+                        var rr_wp_a = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(rr_w_addr_a))
+                        var rr_bp_a = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(rr_b_addr_a))
+                        for i in range(NE): hp_bi.store(i, hp_bi.load(i) * rr_wp_a.load(i) + rr_bp_a.load(i) + bp_bi.load(i) * hs_wp.load(i) + hs_bp.load(i))
+                    else:
+                        for i in range(NE): hp_bi.store(i, hp_bi.load(i) + bp_bi.load(i) * hs_wp.load(i) + hs_bp.load(i))
             else:
-                # ── MoE layer ──
-                var w_gi = wl.load(lw + 5)   # F32 [256, 2048]
-                var gi_bias_addr = wl.load(lw + 6)  # F32 [256]
-                var w_fg = wl.load(lw + 7)   # Q8_0 [256, 256]
-                var fg_bias_addr = wl.load(lw + 8)  # F32 [256]
-                var w_rm2 = wl.load(lw + 9)  # Q8_0 [256, 256]
-                var rm2_bias_addr = wl.load(lw + 10)  # F32 [256]
-                var w_rm4 = wl.load(lw + 11)  # Q8_0 [17, 256]
-                var rb_addr = wl.load(lw + 12)  # F32 [17]
-                var w_gu = wl.load(lw + 13)  # Q8_0 3D [16, 4096, 2048]
-                var w_de = wl.load(lw + 14)  # Q8_0 3D [16, 2048, 2048]
-
+                var w_gi = wl.load(lw + 5); var gi_bias_addr = wl.load(lw + 6)
+                var w_fg = wl.load(lw + 7); var fg_bias_addr = wl.load(lw + 8)
+                var w_rm2 = wl.load(lw + 9); var rm2_bias_addr = wl.load(lw + 10)
+                var w_rm4 = wl.load(lw + 11); var rb_addr = wl.load(lw + 12)
+                var w_gu = wl.load(lw + 13); var w_de = wl.load(lw + 14)
                 var gi_bias_p = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(gi_bias_addr))
                 var fg_bias_p = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(fg_bias_addr))
                 var rm2_bias_p = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(rm2_bias_addr))
                 var rb_p = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(rb_addr))
-
                 for bi in range(B):
-                    var xb = bp + bi * NE  # RMS-normed input (2048)
-
-                    # Router MLP: gate_inp (F32 matmul: 2048→256)
+                    var xb = bp + bi * NE
                     _mm_f32_batch(Int(w_gi), xb, router_h, N_RH, NE, nw)
                     for i in range(N_RH): router_h.store(i, router_h.load(i) + gi_bias_p.load(i))
-
-                    # gate: Q8_0 matmul 256→256
                     _mm_q8_batch(Int(w_fg), router_h, router_h2, N_RH, N_RH, nw)
                     for i in range(N_RH): router_h2.store(i, router_h2.load(i) + fg_bias_p.load(i))
                     silu_inplace(router_h2, N_RH)
-
-                    # mlp2: Q8_0 matmul 256→256
                     _mm_q8_batch(Int(w_rm2), router_h2, router_h, N_RH, N_RH, nw)
                     for i in range(N_RH): router_h.store(i, router_h.load(i) + rm2_bias_p.load(i))
-
-                    # mlp4: Q8_0 matmul 256→17
                     _mm_q8_batch(Int(w_rm4), router_h, scores, N_EXP+1, N_RH, nw)
                     for i in range(N_EXP+1): scores.store(i, scores.load(i) + rb_p.load(i))
-
-                    # Softmax over 17
-                    var smax = Float32(-1e9)
+                    var smaxf = Float32(-1e9)
                     for i in range(N_EXP+1):
-                        var v = scores.load(i)
-                        if v > smax: smax = v
-                    var ssum = Float32(0.0)
+                        var vf = scores.load(i)
+                        if vf > smaxf: smaxf = vf
+                    var ssumf = Float32(0.0)
                     for i in range(N_EXP+1):
-                        var e = exp(scores.load(i) - smax)
-                        scores.store(i, e); ssum += e
-                    for i in range(N_EXP+1): scores.store(i, scores.load(i) / ssum)
-
-                    # Top-1 expert (exclude "none" index 16)
+                        var ef = exp(scores.load(i) - smaxf)
+                        scores.store(i, ef)
+                        ssumf += ef
+                    for i in range(N_EXP+1): scores.store(i, scores.load(i) / ssumf)
                     var ec = 0
                     for i in range(1, N_EXP):
                         if scores.load(i) > scores.load(ec): ec = i
-                    # Renormalized weight
                     var exp_sum = Float32(0.0)
                     for i in range(N_EXP): exp_sum += scores.load(i)
                     var ew = scores.load(ec) / exp_sum
-
-                    # Expert gate_up projection: 2048→4096
-                    var per_exp_bytes_gate = FF * emb_rb  # 4096 * 2176
+                    var per_exp_bytes_gate = FF * emb_rb
                     var exp_gate_up = Int(w_gu) + ec * per_exp_bytes_gate
                     _mm_q8_batch(exp_gate_up, xb, gate_up_buf, FF, NE, nw)
-
-                    # SiLU: gate * up (split at F2=2048)
                     for i in range(F2):
-                        var gv = gate_up_buf.load(i)
-                        var uv = gate_up_buf.load(F2 + i)
+                        var gv = gate_up_buf.load(i); var uv = gate_up_buf.load(F2 + i)
                         if gv < -80.0: gv = -80.0
                         if gv > 80.0: gv = 80.0
                         gate_up_buf.store(i, (gv / (1.0 + exp(-gv))) * uv)
-
-                    # Expert down projection: 2048→2048
-                    var per_exp_bytes_down = F2 * emb_rb  # 2048 * 2176
+                    var per_exp_bytes_down = F2 * emb_rb
                     var exp_down = Int(w_de) + ec * per_exp_bytes_down
                     _mm_q8_batch(exp_down, gate_up_buf, bp, F2, F2, nw)
-
-                    # Reweight + residual
-                    var rr_w_addr = wl.load(lw + 3)
-                    var rr_b_addr = wl.load(lw + 4)
+                    var rr_w_addr = wl.load(lw + 3); var rr_b_addr = wl.load(lw + 4)
                     var has_res_scale = (rr_w_addr != 0) and (rr_b_addr != 0)
-                    var hp_bi = hp + bi * NE
-                    var bp_bi = bp + bi * NE
+                    var hp_bi = hp + bi * NE; var bp_bi = bp + bi * NE
                     for i in range(NE):
-                        var out = bp_bi.load(i) * ew
-                        var x_val = hp_bi.load(i)
+                        var out = bp_bi.load(i) * ew; var x_val = hp_bi.load(i)
                         if has_res_scale:
                             var rr_wp_real = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(rr_w_addr))
                             var rr_bp_real = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(rr_b_addr))
                             hp_bi.store(i, x_val * rr_wp_real.load(i) + rr_bp_real.load(i) + out * hs_wp.load(i) + hs_bp.load(i))
-                        else:
-                            hp_bi.store(i, x_val + out * hs_wp.load(i) + hs_bp.load(i))
+                        else: hp_bi.store(i, x_val + out * hs_wp.load(i) + hs_bp.load(i))
 
-        # ─── Final RMS norm + LM head ───
-        for bi in range(B):
-            var hp_bi = hp + bi * NE
-            var bp_bi = bp + bi * NE
-            var onp = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(w_on))
-            apply_rms_norm(hp_bi, bp_bi, onp, NE)
-
-        # LM head: Q8_0 matmul 262147×2048 (tied embedding weight)
-        _mm_q8_batch(Int(w_emb), bp, lp, NV, NE, nw)
-
-        # Argmax + print
-        for bi in range(B):
-            var lp_bi = lp + bi * NV
-            var best = 0
-            var bv = lp_bi.load(0)
-            for i in range(1, NV):
-                var v = lp_bi.load(i)
-                if v > bv: bv = v; best = i
-            var nti = Int(nt.load(bi))
-            if nti < MAX_SEQ:
-                batch_toks.store(bi * MAX_SEQ + nti, Int32(best))
-                nt.store(bi, Int32(nti + 1))
-            # Try to decode and print
-            if best != 2 and best != 0:
-                var out_text = decode_token(voc_data, voc_meta, nv, best)
-                print(out_text, end="")
-            elif best == 2:
-                print("[EOS]", end="")
-            else:
-                print("[PAD]", end="")
+        # ─── LM head (only during generation phase, not prefill) ───
+        if pos >= np:
+            for bi in range(B):
+                var hp_i = hp + bi * NE; var bp_i = bp + bi * NE
+                var onp_i = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(w_on))
+                apply_rms_norm(hp_i, bp_i, onp_i, NE)
+            _mm_q8_batch(Int(w_emb), bp, lp, NV, NE, nw)
+            for bi in range(B):
+                var lp_i = lp + bi * NV; var best = 0; var bv = lp_i.load(0)
+                for i in range(1, NV):
+                    var v = lp_i.load(i)
+                    if v > bv: bv = v; best = i
+                var nti = Int(nt.load(bi))
+                if nti < MAX_SEQ:
+                    batch_toks.store(bi * MAX_SEQ + nti, Int32(best))
+                    nt.store(bi, Int32(nti + 1))
+                if best != 2 and best != 0:
+                    var out_text = decode_token(voc_data, voc_meta, nv, best)
+                    print(out_text, end="")
+                elif best == 2: print("[EOS]", end="")
+                else: print("[PAD]", end="")
 
     print()
     var t_end = time.perf_counter()
     var gen_ms = (t_end - t_gen) * 1000.0
     var total_gen = 0
     for bi in range(B): total_gen += Int(nt.load(bi)) - np
-    print("B=", B, " nw=", nw, " Q8_0 toks=", total_gen,
-          " time=", Int(gen_ms), " ms (", Float64(total_gen) / (gen_ms / 1000.0), " tok/s)")
+    print("B=", B, " nw=", nw, " Q8_0 prefill=", np, " gen=", total_gen,
+          " total_time=", Int(gen_ms), " ms ( gen=", Float64(total_gen) / (gen_ms / 1000.0), " tok/s )")
