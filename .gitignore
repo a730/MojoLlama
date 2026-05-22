@@ -18,3 +18,5 @@ desktop/node_modules/
 desktop/build/
 desktop/out/
 desktop/dist/
+*.o
+zaya_gen_q8

@@ -53,6 +53,7 @@
 | GPT-OSS-20B | ❌ | GPT-OSS (MoE) | Needs extraction |
 | Qwen3.5-2B | ❌ | Qwen (SSM+attention) | Needs extraction |
 | ZAYA1-8B | ❌ | Custom | Needs extraction |
+| **ZAYA1-8B** (May 22) | ✅ | ZAYA (MoE+Attn, CCA, top-1 expert) | **Benchmarked: 28.6 tok/s Q8_0** |
 | Qwen3.6-35B | ❌ | Qwen (SSM) | Needs extraction |
 | Qwen3-30B-A3B | ❌ | Qwen (MoE) | Needs extraction |
 | ERNIE-4.5-21B | ❌ | ERNIE | Needs extraction |
@@ -106,7 +107,7 @@ To benchmark other models with real numbers:
 |------|---------|
 | `tinyllama_benchmark.mojo` | Multi-prompt benchmark harness |
 | `tinyllama_gen.mojo` | Single-prompt generation |
+| `zaya_gen_q8.mojo` | **ZAYA1-8B Q8_0 benchmark (NEW!)** |
 | `tl_gen.c` | C reference (verification) |
 | `/tmp/vocab.bin` | 32000-entry decode vocab |
-| `/tmp/prompt_tokens.bin` | Pre-computed prompt token IDs |
-| `/tmp/weights_tl/*.bin` | 201 f16 weight files |
+| `/tmp/vocab_zaya.bin` | 262147-entry ZAYA decode vocab |
