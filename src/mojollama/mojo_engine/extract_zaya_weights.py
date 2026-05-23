@@ -69,19 +69,21 @@ def extract_f32_raw(tensor_map, tensor_name: str) -> bytes:
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
     reader = gguf.GGUFReader(GGUF_PATH)
+    tensor_map = make_tensor_map(reader)
     
     print(f"=== Extracting ZAYA1-8B weights from GGUF ===")
+    print(f"Total tensors: {len(tensor_map)}")
     
     # ─── Global weights ───
     print("\n--- Global ---")
     
     # token_embd.weight: [2048, 262147] Q8_0 → token_embd_weight.bin (raw Q8_0)
-    raw = extract_tensor_raw(reader, 'token_embd.weight')
+    raw = extract_tensor_raw(tensor_map, 'token_embd.weight')
     if raw:
         dump_raw_bin(raw, f'{OUT_DIR}/token_embd_weight.bin')
     
     # output_norm.weight: [2048] F32 → output_norm_weight.bin
-    raw = extract_f32_raw(reader, 'output_norm.weight')
+    raw = extract_f32_raw(tensor_map, 'output_norm.weight')
     if raw:
         dump_raw_bin(raw, f'{OUT_DIR}/output_norm_weight.bin')
     
@@ -133,11 +135,11 @@ def main():
             fn = f'{OUT_DIR}/blk_{l}_{out_name}'
             
             if dtype == 'q8':
-                raw = extract_tensor_raw(reader, tensor_name)
+                raw = extract_tensor_raw(tensor_map, tensor_name)
             elif dtype == 'f32':
-                raw = extract_f32_raw(reader, tensor_name)
+                raw = extract_f32_raw(tensor_map, tensor_name)
             else:
-                raw = extract_tensor_raw(reader, tensor_name)
+                raw = extract_tensor_raw(tensor_map, tensor_name)
             
             if raw:
                 dump_raw_bin(raw, fn)

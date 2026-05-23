@@ -1,19 +1,16 @@
 #!/bin/bash
+# Build ZAYA1-8B Q8_0 Mojo engine
 set -e
+DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$DIR"
 MOJO_LIB="$HOME/.local/share/uv/tools/mojo/lib/python3.11/site-packages/modular/lib"
-SRC="zaya_gen_q8.mojo"
-OBJ="${SRC%.mojo}.o"
-BIN="${SRC%.mojo}"
-
-echo "=== Building $BIN ==="
-mojo build "$SRC" --emit object -o "$OBJ" 2>&1
-gcc -o "$BIN" "$OBJ" \
+mojo build zaya_gen_q8.mojo --emit object -o zaya_gen_q8.o
+gcc -o zaya_gen_q8 zaya_gen_q8.o \
     -L"$MOJO_LIB" \
     -lKGENCompilerRTShared \
     -lAsyncRTRuntimeGlobals \
     -lMSupportGlobals \
     -lAsyncRTMojoBindings \
-    -lm -lpthread -ldl -lstdc++ 2>&1
-echo "=== Done: $BIN ==="
-echo "Run: LD_LIBRARY_PATH=\"$MOJO_LIB\" ./$BIN [nw]"
-ls -lh "$BIN"
+    -lm -lpthread -ldl -lstdc++
+echo "=== Done: zaya_gen_q8 ==="
+echo "Run: LD_LIBRARY_PATH=\"$MOJO_LIB\" ./zaya_gen_q8"

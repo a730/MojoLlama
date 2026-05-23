@@ -15,6 +15,15 @@ from std.sys import argv
 from std.math import sqrt, exp, cos, sin, pow
 from std.algorithm.backend.cpu.parallelize import parallelize
 from std.builtin.simd import FastMathFlag
+from std.os import stat as os_stat
+
+# ═══ SIMD polynomial exp (fallback) ═══
+@always_inline("nodebug")
+def _exp_simd(x: SIMD[DType.float32, W]) -> SIMD[DType.float32, W]:
+    """Vectorized exp — calls scalar exp per element (no SIMD bitcast in Mojo 1.0.0b1)."""
+    var r = SIMD[DType.float32, W]()
+    for i in range(W): r[i] = exp(x[i])
+    return r
 
 # ═══ Architecture constants ═══
 comptime NE: Int = 2048       # hidden_size
@@ -33,7 +42,7 @@ comptime ROPE_DIM: Int = 64   # partial RoPE
 comptime ROPE_THETA: Float64 = 5000000.0
 comptime W: Int = 8           # SIMD width
 comptime RPW: Int = 8         # rows per worker in matmul
-comptime B: Int = 1           # batch size (start with 1)
+comptime B: Int = 4           # batch size
 comptime QK: Int = 32         # Q8_0 block size
 comptime QB: Int = 34         # Q8_0 bytes per block
 
@@ -55,6 +64,12 @@ def _lseek(fd: Int, o: Int64, w: Int) abi("C") -> Int64: ...
 
 @extern("close")
 def _close(fd: Int) abi("C") -> Int: ...
+
+@extern("mmap")
+def _mmap(addr: Int, length: Int64, prot: Int, flags: Int, fd: Int, offset: Int64) abi("C") -> Int64: ...
+
+@extern("munmap")
+def _munmap(addr: Int, length: Int64) abi("C") -> Int: ...
 
 # ═══ Q8_0 kernel helpers ═══
 
@@ -420,10 +435,11 @@ def main() raises:
     var kp = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(B * NK * HD * 4))))
     var att_buf = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(B * NH * HD * 4))))
     var lp = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(B * NV * 4))))
-    var router_h = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(N_RH * 4))))
-    var router_h2 = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(N_RH * 4))))
-    var scores = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64((N_EXP + 1) * 4))))
-    var gate_up_buf = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(FF * 4))))
+    var router_h = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(B * N_RH * 4))))
+    var router_h2 = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(B * N_RH * 4))))
+    var scores = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(B * (N_EXP + 1) * 4))))
+    var gate_up_buf = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(B * FF * 4))))
+    var expert_out = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(B * NE * 4))))
 
     var kc = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(B * NL * NK * MAX_SEQ * HD * 4))))
     var vc = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(B * NL * NK * MAX_SEQ * HD * 4))))
@@ -442,7 +458,7 @@ def main() raises:
     var nt = alloc[Int32](B)
     for bi in range(B): nt.store(bi, Int32(np))
     var max_gen = 128
-    print("ZAYA1-8B Q8_0 B=1 max_gen=", max_gen, " prefill=", np, " nw=", nw)
+    print('ZAYA1-8B Q8_0 B=4 max_gen=', max_gen, ' prefill=', np, ' nw=', nw)
 
     # ─── Generation loop: single pass — prefill skips LM head to save time ───
     var t_gen = time.perf_counter()
@@ -511,17 +527,22 @@ def main() raises:
                         var ssum = Float32(0.0)
                         for p in range(pos + 1):
                             var es = exp(sc.load(p) - smax); sc.store(p, es); ssum += es
-                        var dd = 0
-                        while dd + W <= HD:
-                            var ov = SIMD[DType.float32, W](0.0)
-                            for p in range(pos + 1):
+                        # SIMD transposed V aggregation: per-position weighted sum
+                        var inv_ssum = 1.0 / ssum
+                        for d in range(HD): att_buf.store(bi * NH * HD + qbase + d, 0.0)
+                        for p in range(pos + 1):
+                            var wt = sc.load(p) * inv_ssum
+                            var wt_v = SIMD[DType.float32, W](wt)
+                            var dd = 0
+                            while dd + W <= HD:
                                 var vv = vc.load[width=W](cache_hk_base + p * HD + dd)
-                                ov = ov + vv * (sc.load(p) / ssum)
-                            att_buf.store[width=W](bi * NH * HD + qbase + dd, ov); dd += W
-                        while dd < HD:
-                            var o = Float32(0.0)
-                            for p in range(pos + 1): o += vc.load(cache_hk_base + p*HD + dd) * (sc.load(p) / ssum)
-                            att_buf.store(bi * NH * HD + qbase + dd, o); dd += 1
+                                var cur = att_buf.load[width=W](bi * NH * HD + qbase + dd)
+                                att_buf.store[width=W](bi * NH * HD + qbase + dd, cur + vv * wt_v)
+                                dd += W
+                            while dd < HD:
+                                var cur = att_buf.load(bi * NH * HD + qbase + dd)
+                                att_buf.store(bi * NH * HD + qbase + dd, cur + vc.load(cache_hk_base + p * HD + dd) * wt)
+                                dd += 1
                     _mm_q8_batch(Int(w_o), att_buf, bp, NE, NH*HD, nw)
                     var rr_w_addr_a = wl.load(lw + 3); var rr_b_addr_a = wl.load(lw + 4)
                     var has_res_scale_a = (rr_w_addr_a != 0) and (rr_b_addr_a != 0)
