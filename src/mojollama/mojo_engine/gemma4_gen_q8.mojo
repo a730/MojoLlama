@@ -93,20 +93,38 @@ def _mm_q8(qa: Int, x: UnsafePointer[Float32, MutExternalOrigin],
                     var f32 = i8.cast[DType.float32]()
                     acc = (f32 * sv).fma[FastMathFlag.FAST](x.load[width=W](col + grp*8), acc)
                 col += QK
-            o.store(r, acc.reduce_add())
+            # Guard against NaN
+            var s = acc.reduce_add()
+            if s != s: s = 0.0
+            o.store(r, s)
     parallelize[func=wk](num_work_items=nb, num_workers=nw)
 
-# ─── RMS norm ───
+# ─── RMS norm (handles both full-size and grouped weights) ───
 def rms_norm(x: UnsafePointer[Float32, MutExternalOrigin],
               o: UnsafePointer[Float32, MutExternalOrigin],
-              w: UnsafePointer[Float32, MutExternalOrigin], n: Int):
+              w: UnsafePointer[Float32, MutExternalOrigin], n: Int, wn: Int = 0):
     var ss = Float32(0.0); var i = 0
     while i + 8 <= n: var v = x.load[width=8](i); ss += (v * v).reduce_add(); i += 8
     while i < n: ss += x.load(i) * x.load(i); i += 1
     var inv = 1.0 / sqrt(ss / Float32(n) + EP)
-    var inv_v = SIMD[DType.float32, 8](inv); i = 0
-    while i + 8 <= n: var v = x.load[width=8](i); o.store[width=8](i, v * inv_v * w.load[width=8](i)); i += 8
-    while i < n: o.store(i, x.load(i) * w.load(i) * inv); i += 1
+    if inv != inv:
+        print("RMS_NORM NaN inv: ss=", ss, " n=", n, " wn=", wn)
+    
+    var w_n = wn if wn > 0 else n
+    var gs = n / w_n  # elements per weight group
+    if gs <= 1:
+        # Standard per-element norm
+        var inv_v = SIMD[DType.float32, 8](inv); i = 0
+        while i + 8 <= n: o.store[width=8](i, x.load[width=8](i) * inv_v * w.load[width=8](i)); i += 8
+        while i < n: o.store(i, x.load(i) * w.load(i) * inv); i += 1
+    else:
+        # Grouped norm (Gemma 4 QK-norm style)
+        for gi in range(w_n):
+            var wi = w.load(gi)
+            var inv_v = SIMD[DType.float32, 8](inv * wi)
+            var go = gi * gs
+            for j in range(0, gs, 8):
+                o.store[width=8](go + j, x.load[width=8](go + j) * inv_v)
 
 # ─── SiLU ───
 def silu(p: UnsafePointer[Float32, MutExternalOrigin], n: Int):
@@ -128,6 +146,27 @@ def softmax(p: UnsafePointer[Float32, MutExternalOrigin], n: Int):
         p.store(i, e); sm += e
     var inv = 1.0 / (sm + 1e-10)
     for i in range(n): p.store(i, p.load(i) * inv)
+
+# ─── Dequantize Q8_0 → Float32 (for norm weights) ───
+def deq8(qaddr: Int, o: UnsafePointer[Float32, MutExternalOrigin],
+         n: Int):
+    var q = UnsafePointer[UInt8, MutExternalOrigin](unsafe_from_address=Int(qaddr))
+    for blk in range(n // QK):
+        var bo = blk * QB
+        var lo = Int(q.load(bo)); var hi = Int(q.load(bo + 1))
+        var sv = h2f(UInt16(lo | (hi << 8)))
+        for i in range(QK):
+            var qv = q.load(bo + 2 + i).cast[DType.int8]()
+            o.store(blk * QK + i, Float32(qv) * sv)
+    # Handle partial last block
+    var rem = n % QK
+    if rem > 0:
+        var blk = n // QK; var bo = blk * QB
+        var lo = Int(q.load(bo)); var hi = Int(q.load(bo + 1))
+        var sv = h2f(UInt16(lo | (hi << 8)))
+        for i in range(rem):
+            var qv = q.load(bo + 2 + i).cast[DType.int8]()
+            o.store(blk * QK + i, Float32(qv) * sv)
 
 # ─── Load file ───
 def lw(dcp: UnsafePointer[UInt8, MutExternalOrigin],
@@ -163,7 +202,7 @@ def main() raises:
     var args = argv(); var nw = 32
     if len(args) > 1: nw = Int(String(args[1]))
     
-    var wdir = String("/tmp/weights_e4b_q8_v2/")
+    var wdir = String("/tmp/weights_e4b_final_transposed/")
     var dcp = str_to_c(wdir)
     
     # ─── Load weights ───
@@ -218,30 +257,32 @@ def main() raises:
     var kc_buf = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(B * NL * NK * 2 * MAX_SEQ * HD * 4))))
     var vc_buf = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(B * NL * NK * 2 * MAX_SEQ * HD * 4))))
     var sc_buf = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(MAX_CTX * 4))))
+    # Norm dequant buffer (max NE)
+    var norm_buf = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(NE * 4))))
     
-    # ─── Embed BOS token 2 ───
+    # ─── Generate tokens ───
+    var max_gen = 10
     var emb = UnsafePointer[UInt8, MutExternalOrigin](unsafe_from_address=Int(w_emb))
     var emb_rb = q8_rb(NE)
-    var bos_tok = 2  # Gemma 4 BOS token
-    var emb_off = bos_tok * emb_rb
-    for blk in range(NE // QK):
-        var lo = Int(emb.load(emb_off + blk * QB)); var hi = Int(emb.load(emb_off + blk * QB + 1))
-        var scale = h2f(UInt16(lo | (hi << 8)))
-        for i in range(QK):
-            var qv = Int(emb.load(emb_off + blk * QB + 2 + i).cast[DType.int8]())
-            hp.store(blk * QK + i, Float32(qv) * scale)
-    
-    # Copy to all batch items
-    for bi in range(1, B):
-        for i in range(NE): hp.store(bi * NE + i, hp.load(i))
-    
+    var cur_tok = 2  # BOS token for position 0
     var cur_pos = 0  # current KV cache position
     var t_gen = time.perf_counter()
     print("Generating...")
     
-    # ─── Generate tokens ───
-    var max_gen = 4
     for pos in range(max_gen):
+        # ─── Embed current token ───
+        var emb_off = cur_tok * emb_rb
+        for blk in range(NE // QK):
+            var lo = Int(emb.load(emb_off + blk * QB)); var hi = Int(emb.load(emb_off + blk * QB + 1))
+            var scale = h2f(UInt16(lo | (hi << 8)))
+            for i in range(QK):
+                var qv = emb.load(emb_off + blk * QB + 2 + i).cast[DType.int8]()
+                hp.store(blk * QK + i, Float32(Int(qv)) * scale)
+        
+        # Copy to all batch items
+        for bi in range(1, B):
+            for i in range(NE): hp.store(bi * NE + i, hp.load(i))
+        
         # Process each batch item through all layers
         for bi in range(B):
             var hp_bi = hp + bi * NE
@@ -265,30 +306,43 @@ def main() raises:
                 # Save residual
                 for i in range(NE): rp_bi.store(i, hp_bi.load(i))
                 
-                if l == 0 and pos == 0 and bi == 0:
-                    print("hp[0]=", hp_bi.load(0), " hp[10]=", hp_bi.load(10))
+                if l == 0:
+                    # Verify all layer 0 weights are loaded
+                    for wi in range(17):
+                        var wp = wl.load(base + wi)
+                        if Int(wp) == 0:
+                            print("  MISSING WEIGHT slot", base + wi)
                 
-                # 1. Pre-attention RMS norm
-                var attn_norm_p = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(wl.load(base + 0)))
-                if Int(attn_norm_p) != 0: rms_norm(hp_bi, bp_bi, attn_norm_p, NE)
+                # 1. Pre-attention RMS norm (wn=NE for full-size weight)
+                var attn_norm_p = wl.load(base + 0)
+                if Int(attn_norm_p) != 0:
+                    deq8(Int(attn_norm_p), norm_buf, NE)
+                    rms_norm(hp_bi, bp_bi, norm_buf, NE, NE)
                 
-                # 2. Q projection + QK-norm
+                # 2. Q projection + QK-norm (wn = qi/8)
                 var wq = wl.load(base + 1)
                 if Int(wq) != 0:
-                    _mm_q8(Int(wq), bp_bi, qb_bi, l_qi, NE, nw)
-                    var qn_p = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(wl.load(base + 4)))
-                    if Int(qn_p) != 0: rms_norm(qb_bi, qn_bi, qn_p, l_qi)
+                    if bp_bi.load(0) != bp_bi.load(0):
+                        print("  bp_bi is NaN before Q_proj!")
+                    else:
+                        _mm_q8(Int(wq), bp_bi, qb_bi, l_qi, NE, nw)
+                    var qn_q = wl.load(base + 4)
+                    if Int(qn_q) != 0:
+                        deq8(Int(qn_q), norm_buf, l_qi / 8)
+                        rms_norm(qb_bi, qn_bi, norm_buf, l_qi, l_qi / 8)
                     else:
                         for i in range(l_qi): qn_bi.store(i, qb_bi.load(i))
                 else:
                     for i in range(l_qi): qn_bi.store(i, 0.0)
                 
-                # 3. K projection + QK-norm
+                # 3. K projection + QK-norm (wn = nk_hd/2)
                 var wk = wl.load(base + 2)
                 if Int(wk) != 0:
                     _mm_q8(Int(wk), bp_bi, kb_bi, l_nk, NE, nw)
-                    var kn_p = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(wl.load(base + 5)))
-                    if Int(kn_p) != 0: rms_norm(kb_bi, kn_bi, kn_p, l_nk)
+                    var kn_q = wl.load(base + 5)
+                    if Int(kn_q) != 0:
+                        deq8(Int(kn_q), norm_buf, l_nk / 2)
+                        rms_norm(kb_bi, kn_bi, norm_buf, l_nk, l_nk / 2)
                     else:
                         for i in range(l_nk): kn_bi.store(i, kb_bi.load(i))
                 else:
@@ -300,11 +354,18 @@ def main() raises:
                 else:
                     for i in range(l_nk): vb_bi.store(i, 0.0)
                 
-                # 5. GQA Attention (simplified: per-head dot product)
+                # 6. GQA Attention
                 var nh_l = NH if l_qi == QI_NARROW else NH * 2
                 var nk_l = NK if l_nk == NK * HD else NK * 2
                 var hd_l = HD
                 var kr = nh_l // nk_l
+                
+                # Store KV cache (before attention reads it)
+                for h in range(nk_l):
+                    for d in range(hd_l):
+                        var cpos = bi * NL * NK * 2 * MAX_SEQ * HD + l * NK * 2 * MAX_SEQ * HD + h * MAX_SEQ * HD + cur_pos * HD + d
+                        kc_buf.store(cpos, kn_bi.load(h * hd_l + d))
+                        vc_buf.store(cpos, vb_bi.load(h * hd_l + d))
                 
                 for hq in range(nh_l):
                     var hk = hq // kr
@@ -345,13 +406,6 @@ def main() raises:
                         for p in range(cur_pos + 1): o2 += vc_buf.load(cbase + p * HD + d) * (sc.load(p) * inv)
                         att_bi.store(qbase + d, o2); d += 1
                 
-                # 6. Store KV cache
-                for h in range(nk_l):
-                    for d in range(hd_l):
-                        var cpos = bi * NL * NK * 2 * MAX_SEQ * HD + l * NK * 2 * MAX_SEQ * HD + h * MAX_SEQ * HD + cur_pos * HD + d
-                        kc_buf.store(cpos, kn_bi.load(h * hd_l + d))
-                        vc_buf.store(cpos, vb_bi.load(h * hd_l + d))
-                
                 # 7. O projection
                 var wo = wl.load(base + 6)
                 if Int(wo) != 0: _mm_q8(Int(wo), att_bi, bp_bi, NE, l_qi, nw)
@@ -359,8 +413,10 @@ def main() raises:
                     for i in range(NE): bp_bi.store(i, 0.0)
                 
                 # 8. Post-attention norm
-                var pan_p = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(wl.load(base + 7)))
-                if Int(pan_p) != 0: rms_norm(bp_bi, bp_bi, pan_p, NE)
+                var pan_q = wl.load(base + 7)
+                if Int(pan_q) != 0:
+                    deq8(Int(pan_q), norm_buf, NE)
+                    rms_norm(bp_bi, bp_bi, norm_buf, NE)
                 
                 # 9. inp_gate + proj (gating before residual)
                 var w_ig = wl.load(base + 10)  # inp_gate: NE → 256
@@ -377,9 +433,18 @@ def main() raises:
                 if Int(los_p) != 0: los = los_p.load(0)
                 for i in range(NE): hp_bi.store(i, rp_bi.load(i) + bp_bi.load(i) * los)
                 
+                # NaN check
+                if bi == 0 and l < 3:
+                    var has_nan = False
+                    for i in range(10):
+                        if hp_bi.load(i) != hp_bi.load(i): has_nan = True
+                    if has_nan: print("  NaN at layer", l)
+                
                 # 11. Post-FFW norm
-                var pfn_p = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(wl.load(base + 8)))
-                if Int(pfn_p) != 0: rms_norm(hp_bi, bp_bi, pfn_p, NE)
+                var pfn_q = wl.load(base + 8)
+                if Int(pfn_q) != 0:
+                    deq8(Int(pfn_q), norm_buf, NE)
+                    rms_norm(hp_bi, bp_bi, norm_buf, NE)
                 
                 # 12. FFN: gate(SiLU) * up → down
                 var w_gt = wl.load(base + 13)
@@ -397,14 +462,18 @@ def main() raises:
                     for i in range(NE): hp_bi.store(i, rp_bi.load(i) + bp_bi.load(i) * los)
                 
                 # 13. Post-norm
-                var pn_p = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(wl.load(base + 9)))
-                if Int(pn_p) != 0: rms_norm(hp_bi, bp_bi, pn_p, NE)
+                var pn_q = wl.load(base + 9)
+                if Int(pn_q) != 0:
+                    deq8(Int(pn_q), norm_buf, NE)
+                    rms_norm(hp_bi, bp_bi, norm_buf, NE)
             
             # End of layers
             
             # LM head: output norm + matmul
-            var onp = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(w_on))
-            if Int(onp) != 0: rms_norm(hp_bi, bp_bi, onp, NE)
+            var on_q = wl.load(10001)
+            if Int(on_q) != 0:
+                deq8(Int(on_q), norm_buf, NE)
+                rms_norm(hp_bi, bp_bi, norm_buf, NE)
             
             # Output projection (LM head): NV × NE
             var w_lm = wl.load(10000)  # token_embd.weight (tied embeddings)
@@ -417,12 +486,10 @@ def main() raises:
                 var v = (lp + bi * NV).load(i)
                 if v > bv: bv = v; best = i
             
-            if bi == 0 and pos == 0:
-                print("logits[0]=", (lp + bi * NV).load(0), " logits[10]=", (lp + bi * NV).load(10), " logits[100]=", (lp + bi * NV).load(100))
-            
             if bi == 0:
                 print("tok=", best, " ", end="")
-        
+                cur_tok = best  # use predicted token for next position
+        print()
         cur_pos += 1
         if cur_pos >= MAX_SEQ: break
     

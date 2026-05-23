@@ -25,49 +25,72 @@ static uint16_t f32_to_f16(float f) {
 }
 
 /* Dequant Q4_K block (144 bytes → 256 floats) */
+/* Correct layout (from gguf-py Q4_K.dequantize_blocks):
+   bytes [0:2] = d (f16 scale)
+   bytes [2:4] = dmin (f16 min)
+   bytes [4:16] = scales (12 bytes, 6-bit packed scale+min for 8 groups)
+   bytes [16:144] = qs (128 bytes, nibble-packed quants)
+   Each group: 32 elements, formula = (quant-8) * d * scale_i + dmin * min_i
+*/
 static void deq_q4k(const uint8_t *blk, float *out) {
-    uint16_t d_hi_u, d_lo_u, m_hi_u, m_lo_u;
-    memcpy(&d_hi_u, blk, 2); memcpy(&d_lo_u, blk+2, 2);
-    memcpy(&m_hi_u, blk+4, 2); memcpy(&m_lo_u, blk+6, 2);
-    float d_hi, d_lo, m_hi, m_lo;
-    /* f16→f32 */
-    { int s=(d_hi_u>>15)&1,e=(d_hi_u>>10)&0x1F,m=d_hi_u&0x3FF;
-      if(e==0) d_hi=(float)m*5.96e-8f; else if(e==31) d_hi=0; else { uint32_t b=(s<<31)|((e+112)<<23)|(m<<13); memcpy(&d_hi,&b,4); } }
-    { int s=(d_lo_u>>15)&1,e=(d_lo_u>>10)&0x1F,m=d_lo_u&0x3FF;
-      if(e==0) d_lo=(float)m*5.96e-8f; else if(e==31) d_lo=0; else { uint32_t b=(s<<31)|((e+112)<<23)|(m<<13); memcpy(&d_lo,&b,4); } }
-    { int s=(m_hi_u>>15)&1,e=(m_hi_u>>10)&0x1F,m=m_hi_u&0x3FF;
-      if(e==0) m_hi=(float)m*5.96e-8f; else if(e==31) m_hi=0; else { uint32_t b=(s<<31)|((e+112)<<23)|(m<<13); memcpy(&m_hi,&b,4); } }
-    { int s=(m_lo_u>>15)&1,e=(m_lo_u>>10)&0x1F,m=m_lo_u&0x3FF;
-      if(e==0) m_lo=(float)m*5.96e-8f; else if(e==31) m_lo=0; else { uint32_t b=(s<<31)|((e+112)<<23)|(m<<13); memcpy(&m_lo,&b,4); } }
-    for (int i = 0; i < 128; i++) {
-        uint8_t q = blk[8 + i];
-        out[i] = (float)((q & 0xF) - 8) * d_lo + m_lo;
-        out[i+128] = (float)(((q >> 4) & 0xF) - 8) * d_hi + m_hi;
+    /* Read d and dmin from bytes 0-3 */
+    uint16_t d_u, dm_u;
+    memcpy(&d_u, blk, 2); memcpy(&dm_u, blk+2, 2);
+    float d_val, dm_val;
+    { int s=(d_u>>15)&1,e=(d_u>>10)&0x1F,m=d_u&0x3FF;
+      if(e==0) d_val=(float)m*5.96e-8f; else if(e==31) d_val=0; else { uint32_t b=(s<<31)|((e+112)<<23)|(m<<13); memcpy(&d_val,&b,4); } }
+    { int s=(dm_u>>15)&1,e=(dm_u>>10)&0x1F,m=dm_u&0x3FF;
+      if(e==0) dm_val=(float)m*5.96e-8f; else if(e==31) dm_val=0; else { uint32_t b=(s<<31)|((e+112)<<23)|(m<<13); memcpy(&dm_val,&b,4); } }
+    
+    /* Read 12 scale bytes */
+    uint8_t sc[12];
+    memcpy(sc, blk+4, 12);
+    
+    /* Unpack 6-bit scales and mins (matching gguf-py exactly) */
+    float scale_arr[8], min_arr[8];
+    for (int i = 0; i < 4; i++) {
+        uint8_t d_byte = sc[i];      /* scales low part */
+        uint8_t m_byte = sc[i+4];    /* mins low part */
+        uint8_t md_byte = sc[i+8];   /* mixed high bits */
+        scale_arr[i]   = (float)(d_byte & 0x3F);
+        min_arr[i]     = (float)(m_byte & 0x3F);
+        scale_arr[i+4] = (float)((md_byte & 0x0F) | ((d_byte >> 2) & 0x30));
+        min_arr[i+4]   = (float)((md_byte >> 4) | ((m_byte >> 2) & 0x30));
+    }
+    
+    /* Read 128 nibble-packed quants from bytes 16-143 */
+    for (int i = 0; i < 256; i++) {
+        int g = i / 32;
+        int byte_idx = 16 + (i / 2);  /* 2 nibbles per byte */
+        int nibble = (i & 1) ? (blk[byte_idx] >> 4) : (blk[byte_idx] & 0xF);
+        float q = (float)((int)nibble - 8);
+        out[i] = q * d_val * scale_arr[g] + dm_val * min_arr[g];
     }
 }
 
 /* Dequant Q6_K block (210 bytes → 256 floats) */
-// Q6_K format(latest): d(2) + ql(128) + qh(64) + scales(16) + dmin(2) = 212 unused? Actually 210
-// From gguf-py: type_size=210, block_size=256
-// Layout: d[0:2] + ql[2:130] + qh[130:194] + scales[194:208](?) + dmin[208:210]
+// Layout: ql[128] + qh[64] + scales[16 as int8] + d[2 as f16] = 210
+// Dequant: val = (lo + hi<<4) - 32; result = val * d * scales[group]
 static void deq_q6k(const uint8_t *blk, float *out) {
-    uint16_t d_u, dmin_u;
-    memcpy(&d_u, blk, 2); memcpy(&dmin_u, blk+208, 2);
-    float d_val, dmin_val;
+    const uint8_t *ql = blk;       // 128 bytes low nibbles
+    const uint8_t *qh = blk + 128; // 64 bytes high bits
+    const int8_t *sc = (const int8_t*)(blk + 192); // 16 x int8 scales
+    uint16_t d_u; memcpy(&d_u, blk + 208, 2);
+    float d_val;
     { int s=(d_u>>15)&1,e=(d_u>>10)&0x1F,m=d_u&0x3FF;
       if(e==0) d_val=(float)m*5.96e-8f; else if(e==31) d_val=0; else { uint32_t b=(s<<31)|((e+112)<<23)|(m<<13); memcpy(&d_val,&b,4); } }
-    { int s=(dmin_u>>15)&1,e=(dmin_u>>10)&0x1F,m=dmin_u&0x3FF;
-      if(e==0) dmin_val=(float)m*5.96e-8f; else if(e==31) dmin_val=0; else { uint32_t b=(s<<31)|((e+112)<<23)|(m<<13); memcpy(&dmin_val,&b,4); } }
-    const uint8_t *ql = blk + 2;    // 128 bytes of low 4-bit values
-    const uint8_t *qh = blk + 130;  // 64 bytes of high 2-bit values
-    const int8_t *sc = (const int8_t*)(blk + 194); // 14 bytes of 8-bit scales (or 16?)
     for (int i = 0; i < 256; i++) {
-        int sc_idx = i / 16;
-        int low = (ql[i/2] >> (4 * (i%2))) & 0xF;
-        int high = (qh[i/4] >> (2 * (i%4))) & 0x3;
-        int val = (low | (high << 4)) - 32;  // 6-bit signed
-        float s = (float)(sc_idx < 16 ? sc[sc_idx] : 0);
-        out[i] = val * d_val + (s < 0 ? -s * dmin_val : 0.0f);
+        int sg = i / 16;
+        int lo = (ql[i/2] >> (4*(i%2))) & 0xF;
+        int hi = (qh[i/4] >> (2*(i%4))) & 0x3;
+        int val = (lo | (hi << 4)) - 32;
+        out[i] = (float)val * d_val * (float)sc[sg];
+    }
+    // Clamp all values to prevent Inf/NaN in Q8_0 conversion
+    for (int i = 0; i < 256; i++) {
+        if (!isfinite(out[i])) out[i] = 0.0f;
+        if (out[i] > 1e10f) out[i] = 1e10f;
+        if (out[i] < -1e10f) out[i] = -1e10f;
     }
 }
 
@@ -84,18 +107,18 @@ static int convert_file(const char *in_path, const char *out_path) {
     float *f32 = NULL;
     long n_vals = 0;
     
-    if (sz % 144 == 0) {  // Q4_K
+    if (sz % 210 == 0) {  // Q6_K first (prevents false Q4_K match)
+        long n_blk = sz / 210;
+        n_vals = n_blk * 256;
+        f32 = (float*)calloc(n_vals, 4);
+        for (long b = 0; b < n_blk; b++)
+            deq_q6k(in + b * 210, f32 + b * 256);
+    } else if (sz % 144 == 0) {  // Q4_K
         long n_blk = sz / 144;
         n_vals = n_blk * 256;
         f32 = (float*)calloc(n_vals, 4);
         for (long b = 0; b < n_blk; b++)
             deq_q4k(in + b * 144, f32 + b * 256);
-    } else if (sz % 240 == 0) {  // Q6_K
-        long n_blk = sz / 240;
-        n_vals = n_blk * 256;
-        f32 = (float*)calloc(n_vals, 4);
-        for (long b = 0; b < n_blk; b++)
-            deq_q6k(in + b * 240, f32 + b * 256);
     } else if (sz % 4 == 0) {  // F32
         n_vals = sz / 4;
         f32 = (float*)malloc(sz);
