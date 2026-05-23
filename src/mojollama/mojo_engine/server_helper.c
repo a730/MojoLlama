@@ -1,42 +1,45 @@
-/* server_helper.c — HTTP server with poll-based request queue for Mojo FFI
-   Design: C handles networking in a background thread. Mojo polls for requests.
-   Flow: C receives HTTP POST → parses JSON → queues request 
-         → Mojo calls poll_request() → processes → C sends response */
+/* server_helper.c — Multi-model HTTP server with subprocess routing
+   Routes /v1/chat/completions to the appropriate model binary.
+   Model binaries are spawned on-demand per request type.
+   
+   Design: Single HTTP listener. Each request identifies the model.
+   Server spawns the matching model binary and pipes token IDs through STDIN/STDOUT.
+*/
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <poll.h>
 #include <errno.h>
 #include <time.h>
+#include <signal.h>
 
 #define MAX_BODY 65536
-#define MAX_QUEUE 64
 #define MAX_PATH 1024
+#define MAX_MODELS 8
+#define MAX_LINE 4096
 
-/* ─── Request Queue ─── */
+/* ─── Model Registry ─── */
 typedef struct {
-    int id;
-    char method[64];
-    char path[MAX_PATH];
-    char body[MAX_BODY];
-    int client_fd;
-    int active;
-} Request;
+    char name[64];
+    char binary_path[512];
+    char weights_path[512];
+    int port;  /* internal port for this model instance */
+    pid_t pid; /* running process PID, 0 if not started */
+} ModelEntry;
 
-static Request request_queue[MAX_QUEUE];
-static int queue_head = 0, queue_tail = 0, next_id = 1;
-static pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;
+static ModelEntry models[MAX_MODELS];
+static int num_models = 0;
 static int server_fd = -1;
 static volatile int server_running = 0;
 static pthread_t server_thread;
 
-/* ─── JSON helpers ─── */
+/* ─── JSON Helpers ─── */
 static char* skip_ws(char *p) {
     while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
     return p;
@@ -53,16 +56,8 @@ static char* parse_json_string(char **pp) {
     if (!result) return NULL;
     int i = 0;
     while (*p && *p != '"') {
-        if (*p == '\\') {
-            p++;
-            switch (*p) {
-                case 'n': result[i++] = '\n'; break;
-                case 't': result[i++] = '\t'; break;
-                case 'r': result[i++] = '\r'; break;
-                case '\\': result[i++] = '\\'; break;
-                case '"': result[i++] = '"'; break;
-                default: result[i++] = *p; break;
-            }
+        if (*p == '\\') { p++;
+            switch (*p) { case 'n': result[i++] = '\n'; break; case 't': result[i++] = '\t'; break; case 'r': result[i++] = '\r'; break; default: result[i++] = *p; break; }
             if (*p) p++;
         } else result[i++] = *p++;
     }
@@ -72,173 +67,248 @@ static char* parse_json_string(char **pp) {
     return result;
 }
 
-/* Extract the "content" from the last message in a messages array */
-char* extract_prompt(const char *body) {
-    /* Find "messages" array */
-    const char *p = strstr(body, "\"messages\"");
-    if (!p) return NULL;
-    p = strchr(p, '[');
-    if (!p) return NULL;
-    p++;
-    
-    /* Find the last object in the array */
-    const char *last_obj = NULL;
-    int depth = 0;
+static char* json_get_string(const char *json, const char *key) {
+    const char *p = json;
     while (*p) {
-        p = skip_ws((char*)p);
-        if (*p == '{') { if (!last_obj) last_obj = p; depth++; p++; }
-        else if (*p == '}') { depth--; if (depth <= 0) { p++; break; } p++; }
-        else if (*p == '[') { depth++; p++; }
-        else if (*p == ']') break;
-        else if (*p == '"') { char *s = parse_json_string((char**)&p); free(s); }
-        else p++;
+        p = (char*)skip_ws((char*)p);
+        if (*p != '"') { p++; continue; }
+        char *k = parse_json_string((char**)&p);
+        p = (char*)skip_ws((char*)p);
+        if (*p != ':') { free(k); continue; }
+        p++; p = (char*)skip_ws((char*)p);
+        if (k && strcmp(k, key) == 0) {
+            if (*p == '"') { char *val = parse_json_string((char**)&p); free(k); return val; }
+            /* Handle non-string values by reading until comma/brace */
+            const char *start = p;
+            while (*p && *p != ',' && *p != '}' && *p != ']') p++;
+            int len = p - start;
+            char *val = malloc(len + 1);
+            memcpy(val, start, len); val[len] = 0;
+            free(k); return val;
+        }
+        free(k);
+        /* Skip value */
+        if (*p == '{' || *p == '[') {
+            int depth = 1; p++;
+            while (*p && depth > 0) {
+                if (*p == '{' || *p == '[') depth++;
+                else if (*p == '}' || *p == ']') depth--;
+                else if (*p == '"') { char *s = parse_json_string((char**)&p); free(s); continue; }
+                p++;
+            }
+        } else {
+            while (*p && *p != ',' && *p != '}' && *p != ']' && *p != ' ' && *p != '\t') p++;
+        }
+        if (*p == ',') p++;
     }
-    
-    if (!last_obj) return NULL;
-    int obj_len = p - last_obj;
-    if (obj_len > 65535) obj_len = 65535;
-    char obj[65536];
-    memcpy(obj, last_obj, obj_len);
-    obj[obj_len] = 0;
-    
-    /* Find "content" field */
-    p = strstr(obj, "\"content\"");
-    if (!p) return NULL;
-    p = strchr(p, ':');
-    if (!p) return NULL;
-    p = skip_ws((char*)p + 1);
-    
-    char *content = parse_json_string((char**)&p);
-    return content;  /* Caller must free */
+    return NULL;
 }
 
-/* Extract integer field from JSON */
-int extract_int(const char *body, const char *key, int default_val) {
-    char *kp = strstr(body, key);
-    if (!kp) return default_val;
-    kp = strchr(kp, ':');
-    if (!kp) return default_val;
-    kp = skip_ws(kp + 1);
-    return atoi(kp);
-}
-
-/* ─── HTTP Response ─── */
-static void send_http_response(int fd, int status, const char *status_text,
-                                const char *content_type, const char *body) {
+/* ─── Send HTTP Response ─── */
+static void send_http(int fd, int status, const char *status_text, const char *body) {
     char header[4096];
     int n = snprintf(header, sizeof(header),
         "HTTP/1.1 %d %s\r\n"
-        "Content-Type: %s\r\n"
+        "Content-Type: application/json\r\n"
         "Content-Length: %zu\r\n"
         "Access-Control-Allow-Origin: *\r\n"
         "Connection: close\r\n"
-        "\r\n", status, status_text, content_type, strlen(body));
+        "\r\n", status, status_text, strlen(body));
     write(fd, header, n);
     write(fd, body, strlen(body));
     close(fd);
 }
 
-/* Build OpenAI chat completion response JSON. Caller must free. */
-char* build_openai_response(const char *content, int prompt_toks, int gen_toks, const char *model) {
-    char *escaped = malloc(strlen(content) * 2 + 1);
-    if (!escaped) return NULL;
-    int j = 0;
-    for (int i = 0; content[i]; i++) {
-        char c = content[i];
-        if (c == '"' || c == '\\') { escaped[j++] = '\\'; escaped[j++] = c; }
-        else if (c == '\n') { escaped[j++] = '\\'; escaped[j++] = 'n'; }
-        else if (c == '\t') { escaped[j++] = '\\'; escaped[j++] = 't'; }
-        else escaped[j++] = c;
+/* ─── Model Process Management ─── */
+static int start_model_instance(ModelEntry *model) {
+    if (model->pid > 0) {
+        /* Check if still alive */
+        if (kill(model->pid, 0) == 0) return 0; /* Still running */
+        model->pid = 0;
     }
-    escaped[j] = 0;
     
-    char *result;
-    asprintf(&result,
-        "{\"id\":\"chatcmpl-%d\",\"object\":\"chat.completion\","
-        "\"created\":%ld,\"model\":\"%s\","
-        "\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"%s\"},"
-        "\"finish_reason\":\"stop\"}],"
-        "\"usage\":{\"prompt_tokens\":%d,\"completion_tokens\":%d,\"total_tokens\":%d}}",
-        rand(), (long)time(NULL), model ? model : "gemma-4",
-        escaped, prompt_toks, gen_toks, prompt_toks + gen_toks);
-    free(escaped);
-    return result;
+    /* Start the model binary with the weights path */
+    pid_t pid = fork();
+    if (pid == 0) {
+        /* Child: exec the model binary */
+        char port_str[16];
+        snprintf(port_str, sizeof(port_str), "%d", model->port);
+        
+        /* Set up environment */
+        setenv("OMP_PLACES", "cores", 1);
+        setenv("OMP_PROC_BIND", "close", 1);
+        
+        execl(model->binary_path, model->binary_path, port_str, "32", model->weights_path, NULL);
+        /* If exec fails */
+        _exit(1);
+    } else if (pid > 0) {
+        model->pid = pid;
+        /* Give it a moment to start */
+        usleep(2000000);
+        return 0;
+    }
+    return -1;
 }
 
-/* ─── HTTP Handler Thread ─── */
+/* ─── Route a chat request to the appropriate model ─── */
+static void handle_chat_request(int client_fd, const char *body) {
+    /* Extract "model" field from the request */
+    char *model_name = json_get_string(body, "model");
+    if (!model_name) {
+        /* Default to first model */
+        if (num_models == 0) {
+            send_http(client_fd, 400, "Bad Request", "{\"error\":\"no_models_configured\"}");
+            return;
+        }
+        model_name = strdup(models[0].name);
+    }
+    
+    /* Find matching model */
+    ModelEntry *model = NULL;
+    for (int i = 0; i < num_models; i++) {
+        if (strcmp(model_name, models[i].name) == 0) {
+            model = &models[i];
+            break;
+        }
+    }
+    
+    if (!model) {
+        char err[256];
+        snprintf(err, sizeof(err), "{\"error\":\"unknown_model\",\"available\":[");
+        for (int i = 0; i < num_models; i++) {
+            if (i > 0) strcat(err, ",");
+            strcat(err, "\""); strcat(err, models[i].name); strcat(err, "\"");
+        }
+        strcat(err, "]}");
+        send_http(client_fd, 404, "Not Found", err);
+        free(model_name);
+        return;
+    }
+    
+    /* Ensure model instance is running */
+    if (start_model_instance(model) != 0) {
+        send_http(client_fd, 500, "Error", "{\"error\":\"failed_to_start_model\"}");
+        free(model_name);
+        return;
+    }
+    
+    /* Forward request to model's internal HTTP port */
+    /* Build proxy request to the internal model server */
+    char proxy_req[32768];
+    int n = snprintf(proxy_req, sizeof(proxy_req),
+        "POST /v1/chat/completions HTTP/1.1\r\n"
+        "Host: localhost:%d\r\n"
+        "Content-Type: application/json\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n"
+        "\r\n%s",
+        model->port, strlen(body), body);
+    
+    /* Connect to internal model server */
+    int proxy_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (proxy_fd < 0) {
+        send_http(client_fd, 502, "Bad Gateway", "{\"error\":\"cannot_connect\"}");
+        free(model_name);
+        return;
+    }
+    
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(0x7F000001); /* 127.0.0.1 */
+    addr.sin_port = htons(model->port);
+    
+    if (connect(proxy_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        close(proxy_fd);
+        send_http(client_fd, 502, "Bad Gateway", "{\"error\":\"connection_refused\"}");
+        free(model_name);
+        return;
+    }
+    
+    /* Send request and get response */
+    write(proxy_fd, proxy_req, n);
+    char resp_buf[65536];
+    int resp_n = read(proxy_fd, resp_buf, sizeof(resp_buf) - 1);
+    close(proxy_fd);
+    
+    if (resp_n <= 0) {
+        send_http(client_fd, 502, "Bad Gateway", "{\"error\":\"no_response\"}");
+        free(model_name);
+        return;
+    }
+    resp_buf[resp_n] = 0;
+    
+    /* Extract body from HTTP response */
+    char *body_start = strstr(resp_buf, "\r\n\r\n");
+    if (body_start) {
+        body_start += 4;
+        send_http(client_fd, 200, "OK", body_start);
+    } else {
+        send_http(client_fd, 502, "Bad Gateway", "{\"error\":\"bad_response\"}");
+    }
+    
+    free(model_name);
+}
+
+/* ─── HTTP Handler ─── */
 static void handle_client(int client_fd) {
     char buf[MAX_BODY];
     int n = read(client_fd, buf, sizeof(buf) - 1);
     if (n <= 0) { close(client_fd); return; }
     buf[n] = 0;
     
-    /* Parse method and path */
     char method[64] = {0}, path[MAX_PATH] = {0};
     sscanf(buf, "%63s %1023s", method, path);
     
-    /* CORS preflight */
     if (strcmp(method, "OPTIONS") == 0) {
-        send_http_response(client_fd, 204, "No Content", "text/plain", "");
+        send_http(client_fd, 204, "No Content", "");
         return;
     }
     
-    /* Health check */
     if (strcmp(path, "/health") == 0 || strcmp(path, "/") == 0) {
-        send_http_response(client_fd, 200, "OK", "application/json",
-            "{\"status\":\"ok\",\"model\":\"gemma-4-mojo\"}");
-        return;
-    }
-    
-    /* Models list */
-    if (strcmp(path, "/v1/models") == 0) {
-        send_http_response(client_fd, 200, "OK", "application/json",
-            "{\"object\":\"list\",\"data\":[{\"id\":\"gemma-4-mojo\",\"object\":\"model\",\"created\":0,\"owned_by\":\"mojo\"}]}");
-        return;
-    }
-    
-    /* Chat completions */
-    if (strcmp(path, "/v1/chat/completions") == 0 && strcmp(method, "POST") == 0) {
-        /* Find body */
-        char *body = strstr(buf, "\r\n\r\n");
-        if (!body) { send_http_response(client_fd, 400, "Bad Request", "application/json", "{\"error\":\"no body\"}"); return; }
-        body += 4;
-        
-        /* Extract prompt and max_tokens */
-        char *prompt = extract_prompt(body);
-        int max_tokens = extract_int(body, "max_tokens", 128);
-        
-        if (!prompt) {
-            send_http_response(client_fd, 400, "Bad Request", "application/json",
-                "{\"error\":\"no messages\"}");
-            return;
+        char resp[1024];
+        snprintf(resp, sizeof(resp), 
+            "{\"status\":\"ok\",\"models\":[");
+        for (int i = 0; i < num_models; i++) {
+            if (i > 0) strcat(resp, ",");
+            strcat(resp, "\""); strcat(resp, models[i].name); strcat(resp, "\"");
         }
-        
-        /* Queue the request for Mojo to process */
-        pthread_mutex_lock(&queue_mutex);
-        int idx = queue_tail % MAX_QUEUE;
-        request_queue[idx].id = next_id++;
-        request_queue[idx].client_fd = client_fd;
-        strncpy(request_queue[idx].body, prompt, MAX_BODY - 1);
-        request_queue[idx].body[MAX_BODY - 1] = 0;
-        request_queue[idx].active = 1;
-        queue_tail++;
-        pthread_cond_signal(&queue_cond);
-        pthread_mutex_unlock(&queue_mutex);
-        
-        free(prompt);
-        /* Note: response is sent by Mojo via send_response() */
+        strcat(resp, "]}");
+        send_http(client_fd, 200, "OK", resp);
         return;
     }
     
-    /* 404 */
-    send_http_response(client_fd, 404, "Not Found", "application/json",
-        "{\"error\":\"not_found\"}");
+    if (strcmp(path, "/v1/models") == 0) {
+        char resp[4096];
+        snprintf(resp, sizeof(resp), "{\"object\":\"list\",\"data\":[");
+        for (int i = 0; i < num_models; i++) {
+            if (i > 0) strcat(resp, ",");
+            char entry[256];
+            snprintf(entry, sizeof(entry),
+                "{\"id\":\"%s\",\"object\":\"model\",\"created\":%ld,\"owned_by\":\"mojo\"}",
+                models[i].name, (long)time(NULL));
+            strcat(resp, entry);
+        }
+        strcat(resp, "]}");
+        send_http(client_fd, 200, "OK", resp);
+        return;
+    }
+    
+    if (strcmp(path, "/v1/chat/completions") == 0 && strcmp(method, "POST") == 0) {
+        char *body = strstr(buf, "\r\n\r\n");
+        if (!body) { send_http(client_fd, 400, "Bad Request", "{\"error\":\"no_body\"}"); return; }
+        body += 4;
+        handle_chat_request(client_fd, body);
+        return;
+    }
+    
+    send_http(client_fd, 404, "Not Found", "{\"error\":\"not_found\"}");
 }
 
 static void *server_loop(void *arg) {
+    (void)arg;
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
-    (void)arg;
     
     while (server_running) {
         struct pollfd pfd = {server_fd, POLLIN, 0};
@@ -252,9 +322,21 @@ static void *server_loop(void *arg) {
     return NULL;
 }
 
-/* ─── Public API for Mojo ─── */
+/* ─── Public API ─── */
 
-/* Start the HTTP server on the given port. Returns 0 on success. */
+/* Register a model. Call before start_server(). */
+int register_model(const char *name, const char *binary, const char *weights, int port) {
+    if (num_models >= MAX_MODELS) return -1;
+    int i = num_models++;
+    strncpy(models[i].name, name, sizeof(models[i].name) - 1);
+    strncpy(models[i].binary_path, binary, sizeof(models[i].binary_path) - 1);
+    strncpy(models[i].weights_path, weights, sizeof(models[i].weights_path) - 1);
+    models[i].port = port;
+    models[i].pid = 0;
+    return 0;
+}
+
+/* Start the HTTP server */
 int start_server(int port) {
     if (server_running) return -1;
     
@@ -278,36 +360,14 @@ int start_server(int port) {
     return 0;
 }
 
-/* Poll for the next request. Returns the prompt text (caller must free), or NULL if none. */
-char* poll_request(void) {
-    pthread_mutex_lock(&queue_mutex);
-    if (queue_head >= queue_tail || !request_queue[queue_head % MAX_QUEUE].active) {
-        pthread_mutex_unlock(&queue_mutex);
-        return NULL;
-    }
-    int idx = queue_head % MAX_QUEUE;
-    char *prompt = strdup(request_queue[idx].body);
-    pthread_mutex_unlock(&queue_mutex);
-    return prompt;
-}
-
-/* Send the response for the current request. */
-void send_response(const char *response) {
-    pthread_mutex_lock(&queue_mutex);
-    if (queue_head < queue_tail) {
-        int idx = queue_head % MAX_QUEUE;
-        if (request_queue[idx].active) {
-            int fd = request_queue[idx].client_fd;
-            send_http_response(fd, 200, "OK", "application/json", response);
-            request_queue[idx].active = 0;
-        }
-        queue_head++;
-    }
-    pthread_mutex_unlock(&queue_mutex);
-}
-
-/* Stop the server */
 void stop_server(void) {
     server_running = 0;
     if (server_fd >= 0) { close(server_fd); server_fd = -1; }
+    /* Kill model processes */
+    for (int i = 0; i < num_models; i++) {
+        if (models[i].pid > 0) {
+            kill(models[i].pid, SIGTERM);
+            waitpid(models[i].pid, NULL, WNOHANG);
+        }
+    }
 }
