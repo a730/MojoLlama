@@ -46,18 +46,28 @@ static void deq_q4k(const uint8_t *blk, float *out) {
     }
 }
 
-/* Dequant Q6_K block (240 bytes → 256 floats) */
+/* Dequant Q6_K block (210 bytes → 256 floats) */
+// Q6_K format(latest): d(2) + ql(128) + qh(64) + scales(16) + dmin(2) = 212 unused? Actually 210
+// From gguf-py: type_size=210, block_size=256
+// Layout: d[0:2] + ql[2:130] + qh[130:194] + scales[194:208](?) + dmin[208:210]
 static void deq_q6k(const uint8_t *blk, float *out) {
-    uint16_t d_hi_u, d_lo_u;
-    memcpy(&d_hi_u, blk, 2); memcpy(&d_lo_u, blk+2, 2);
-    float d_hi, d_lo;
-    { int s=(d_hi_u>>15)&1,e=(d_hi_u>>10)&0x1F,m=d_hi_u&0x3FF;
-      if(e==0) d_hi=(float)m*5.96e-8f; else if(e==31) d_hi=0; else { uint32_t b=(s<<31)|((e+112)<<23)|(m<<13); memcpy(&d_hi,&b,4); } }
-    { int s=(d_lo_u>>15)&1,e=(d_lo_u>>10)&0x1F,m=d_lo_u&0x3FF;
-      if(e==0) d_lo=(float)m*5.96e-8f; else if(e==31) d_lo=0; else { uint32_t b=(s<<31)|((e+112)<<23)|(m<<13); memcpy(&d_lo,&b,4); } }
-    // Q6_K: 6-bit packed values. Simplified: scale only (no min)
-    for (int i = 0; i < 128; i++) {
-        out[i] = 0.0f; out[i+128] = 0.0f;
+    uint16_t d_u, dmin_u;
+    memcpy(&d_u, blk, 2); memcpy(&dmin_u, blk+208, 2);
+    float d_val, dmin_val;
+    { int s=(d_u>>15)&1,e=(d_u>>10)&0x1F,m=d_u&0x3FF;
+      if(e==0) d_val=(float)m*5.96e-8f; else if(e==31) d_val=0; else { uint32_t b=(s<<31)|((e+112)<<23)|(m<<13); memcpy(&d_val,&b,4); } }
+    { int s=(dmin_u>>15)&1,e=(dmin_u>>10)&0x1F,m=dmin_u&0x3FF;
+      if(e==0) dmin_val=(float)m*5.96e-8f; else if(e==31) dmin_val=0; else { uint32_t b=(s<<31)|((e+112)<<23)|(m<<13); memcpy(&dmin_val,&b,4); } }
+    const uint8_t *ql = blk + 2;    // 128 bytes of low 4-bit values
+    const uint8_t *qh = blk + 130;  // 64 bytes of high 2-bit values
+    const int8_t *sc = (const int8_t*)(blk + 194); // 14 bytes of 8-bit scales (or 16?)
+    for (int i = 0; i < 256; i++) {
+        int sc_idx = i / 16;
+        int low = (ql[i/2] >> (4 * (i%2))) & 0xF;
+        int high = (qh[i/4] >> (2 * (i%4))) & 0x3;
+        int val = (low | (high << 4)) - 32;  // 6-bit signed
+        float s = (float)(sc_idx < 16 ? sc[sc_idx] : 0);
+        out[i] = val * d_val + (s < 0 ? -s * dmin_val : 0.0f);
     }
 }
 

@@ -149,7 +149,7 @@ int main(int argc, char **argv) {
             case 3: dsz = ((ne+31)/32)*20; break; // Q4_1
             case 6: dsz = ((ne+31)/32)*34; break; // Q8_0
             case 12: dsz = ((ne+255)/256)*144; break; // Q4_K
-            case 14: dsz = ((ne+255)/256)*240; break; // Q6_K
+            case 14: dsz = ((ne+255)/256)*210; break; // Q6_K (correct: 210 bytes/block)
             case 30: dsz = ne * 2; break;            // BF16
             case 39: dsz = ((ne+31)/32)*34; break; // MXFP4
             case 47: dsz = ((ne+31)/32)*34; break; // MXFP4
