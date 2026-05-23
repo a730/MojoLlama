@@ -42,7 +42,7 @@ comptime ROPE_DIM: Int = 64   # partial RoPE
 comptime ROPE_THETA: Float64 = 5000000.0
 comptime W: Int = 8           # SIMD width
 comptime RPW: Int = 8         # rows per worker in matmul
-comptime B: Int = 4           # batch size
+comptime B: Int = 8           # batch size (sweet spot: 79.6 tok/s)
 comptime QK: Int = 32         # Q8_0 block size
 comptime QB: Int = 34         # Q8_0 bytes per block
 
@@ -458,7 +458,7 @@ def main() raises:
     var nt = alloc[Int32](B)
     for bi in range(B): nt.store(bi, Int32(np))
     var max_gen = 128
-    print('ZAYA1-8B Q8_0 B=4 max_gen=', max_gen, ' prefill=', np, ' nw=', nw)
+    print('ZAYA1-8B Q8_0 B=' + String(B) + ' max_gen=', max_gen, ' prefill=', np, ' nw=', nw)
 
     # ─── Generation loop: single pass — prefill skips LM head to save time ───
     var t_gen = time.perf_counter()
