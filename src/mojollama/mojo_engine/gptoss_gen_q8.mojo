@@ -48,16 +48,35 @@ def _mm_q8(qa: Int, x: UnsafePointer[Float32, MutExternalOrigin],
         var rs = wi * RPW; var re = rs + RPW
         if re > nr: re = nr
         for r in range(rs, re):
-            var acc = SIMD[DType.float32, W](0.0); var ro = r * rb; var col = 0
-            while col < nc:
-                var bo = ro + (col // QK) * QB
-                var lo = Int(q.load(bo)); var hi = Int(q.load(bo + 1))
-                var sv = SIMD[DType.float32, W](h2f(UInt16(lo | (hi << 8))))
-                comptime for grp in range(4):
-                    var wo = q.load[width=8](bo + 2 + grp * 8)
-                    acc = (wo.cast[DType.float32]() - SIMD[DType.float32, 8](128.0)).fma[FastMathFlag.FAST](x.load[width=W](col + grp*8), acc) * sv
-                col += QK
-            o.store(r, acc.reduce_add())
+            comptime if B == 1:
+                var acc = SIMD[DType.float32, W](0.0); var ro = r * rb; var col = 0
+                while col < nc:
+                    var bo = ro + (col // QK) * QB
+                    var lo = Int(q.load(bo)); var hi = Int(q.load(bo + 1))
+                    var sv = SIMD[DType.float32, W](h2f(UInt16(lo | (hi << 8))))
+                    comptime for grp in range(4):
+                        var wo = q.load[width=8](bo + 2 + grp * 8)
+                        acc = (wo.cast[DType.float32]() - SIMD[DType.float32, 8](128.0)).fma[FastMathFlag.FAST](x.load[width=W](col + grp*8), acc) * sv
+                    col += QK
+                o.store(r, acc.reduce_add())
+            comptime if B == 4:
+                var acc0 = SIMD[DType.float32, W](0.0); var acc1 = SIMD[DType.float32, W](0.0)
+                var acc2 = SIMD[DType.float32, W](0.0); var acc3 = SIMD[DType.float32, W](0.0)
+                var ro = r * rb; var col = 0
+                while col < nc:
+                    var bo = ro + (col // QK) * QB
+                    var lo = Int(q.load(bo)); var hi = Int(q.load(bo + 1))
+                    var sv = SIMD[DType.float32, W](h2f(UInt16(lo | (hi << 8))))
+                    comptime for grp in range(4):
+                        var wo = q.load[width=8](bo + 2 + grp * 8)
+                        var wf = (wo.cast[DType.float32]() - SIMD[DType.float32, 8](128.0)) * sv
+                        acc0 = wf.fma[FastMathFlag.FAST](x.load[width=W](0*nc + col + grp*8), acc0)
+                        acc1 = wf.fma[FastMathFlag.FAST](x.load[width=W](1*nc + col + grp*8), acc1)
+                        acc2 = wf.fma[FastMathFlag.FAST](x.load[width=W](2*nc + col + grp*8), acc2)
+                        acc3 = wf.fma[FastMathFlag.FAST](x.load[width=W](3*nc + col + grp*8), acc3)
+                    col += QK
+                o.store(0*nr + r, acc0.reduce_add()); o.store(1*nr + r, acc1.reduce_add())
+                o.store(2*nr + r, acc2.reduce_add()); o.store(3*nr + r, acc3.reduce_add())
     parallelize[func=wk](num_work_items=nb, num_workers=nw)
 
 @always_inline("nodebug")
