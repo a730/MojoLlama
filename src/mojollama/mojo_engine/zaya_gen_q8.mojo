@@ -118,7 +118,7 @@ def q8_dot(q8addr: Int, x: UnsafePointer[Float32, MutExternalOrigin],
         var sv = SIMD[DType.float32, W](scale)
         comptime for grp in range(4):
             var wo = q.load[width=8](bo + 2 + grp * 8)
-            var wf = (wo.cast[DType.float32]() - SIMD[DType.float32, 8](128.0)) * sv
+            var wf = wo.cast[DType.int8]().cast[DType.float32]() * sv
             acc = wf.fma[FastMathFlag.FAST](x.load[width=W](col + grp*8), acc)
         col += QK
     return acc.reduce_add()
@@ -204,7 +204,7 @@ def _mm_q8_single(q8addr: Int, x: UnsafePointer[Float32, MutExternalOrigin],
                 var sv = SIMD[DType.float32, W](scale)
                 comptime for grp in range(4):
                     var wo = q.load[width=8](bo + 2 + grp * 8)
-                    var wf = (wo.cast[DType.float32]() - SIMD[DType.float32, 8](128.0)) * sv
+                    var wf = wo.cast[DType.int8]().cast[DType.float32]() * sv
                     acc = wf.fma[FastMathFlag.FAST](x.load[width=W](col + grp*8), acc)
                 col += QK
             o.store(r, acc.reduce_add())
