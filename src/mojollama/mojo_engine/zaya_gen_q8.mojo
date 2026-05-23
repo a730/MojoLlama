@@ -517,17 +517,28 @@ def main() raises:
         tok_to_off.store(tid, voc_meta.load(2 * nv + i))
         tok_to_len.store(tid, voc_meta.load(i))
     var batch_toks = alloc[Int32](B * MAX_SEQ)
-    # Simple "2+2=" prompt: ZAYA uses a different tokenizer, so use BOS + ASCII
-    # This is approximate — for real testing use pre-tokenized prompts
-    # Prompt: use <bos> token 2 then 511 BOS tokens for long prefill test
-    var prompt = [2, 17, 10, 17, 28]  # BOS + "2+2=" (token 28 is "=")
-    var np = len(prompt)
-    for bi in range(B):
-        for i in range(np):
-            batch_toks.store(bi * MAX_SEQ + i, Int32(prompt[i]))
+    # Read prompt from file
+    var prompt_path = String("/tmp/prompt_zaya.bin")
+    var pp = alloc[UInt8](prompt_path.byte_length() + 1)
+    var ppp = prompt_path.unsafe_ptr()
+    for i in range(prompt_path.byte_length()): pp.store(i, ppp.load(i))
+    pp.store(prompt_path.byte_length(), UInt8(0))
+    var prompt_fd = _open(pp, 0)
+    var np = 0
+    if prompt_fd >= 0:
+        var psz = _lseek(prompt_fd, 0, 2); _ = _lseek(prompt_fd, 0, 0)
+        np = Int(psz // 4)
+        var pb = alloc[UInt8](Int(psz))
+        _ = _read(prompt_fd, pb, psz); _ = _close(prompt_fd)
+        for bi in range(B):
+            for pi in range(np):
+                batch_toks.store(bi * MAX_SEQ + pi, UnsafePointer[Int32, MutExternalOrigin](unsafe_from_address=Int(pb)).load(pi))
+    if np == 0:
+        np = 1
+        for bi in range(B): batch_toks.store(bi * MAX_SEQ + 0, Int32(2))  # fallback BOS
     var nt = alloc[Int32](B)
     for bi in range(B): nt.store(bi, Int32(np))
-    var max_gen = 640
+    var max_gen = 32  # short Q&A responses
     print('ZAYA1-8B Q8_0 B=' + String(B) + ' max_gen=', max_gen, ' prefill=', np, ' nw=', nw)
 
     # ─── Generation loop: single pass — prefill skips LM head to save time ───

@@ -429,10 +429,26 @@ def main() raises:
     var sc_buf = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(MAX_SEQ * 4))))
 
     var batch_toks = alloc[Int32](B * MAX_SEQ)
-    var prompt_toks = [1, 29871, 29906, 29974, 29906, 29922]  # BOS + "2+2="
-    var np = 6; var max_gen = 640
-    for bi in range(B):
-        for i in range(np): batch_toks.store(bi * MAX_SEQ + i, Int32(prompt_toks[i]))
+    # Read prompt from file
+    var prompt_path = String("/tmp/prompt_tinyllama.bin")
+    var pp = alloc[UInt8](prompt_path.byte_length() + 1)
+    var ppp = prompt_path.unsafe_ptr()
+    for i in range(prompt_path.byte_length()): pp.store(i, ppp.load(i))
+    pp.store(prompt_path.byte_length(), UInt8(0))
+    var prompt_fd = _open(pp, 0)
+    var np = 0
+    if prompt_fd >= 0:
+        var psz = _lseek(prompt_fd, 0, 2); _ = _lseek(prompt_fd, 0, 0)
+        np = Int(psz // 4)
+        var pb = alloc[UInt8](Int(psz))
+        _ = _read(prompt_fd, pb, psz); _ = _close(prompt_fd)
+        for bi in range(B):
+            for pi in range(np):
+                batch_toks.store(bi * MAX_SEQ + pi, UnsafePointer[Int32, MutExternalOrigin](unsafe_from_address=Int(pb)).load(pi))
+    if np == 0:
+        np = 1
+        for bi in range(B): batch_toks.store(bi * MAX_SEQ + 0, Int32(1))  # fallback BOS
+    var max_gen = 32  # short Q&A responses
     var nt = alloc[Int32](B)
     for bi in range(B): nt.store(bi, Int32(np))
     print("B=", B, " max_gen=", max_gen, " (Q8_0 weights)")
