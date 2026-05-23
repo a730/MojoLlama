@@ -206,7 +206,7 @@ def main() raises:
         var lo = Int(emb.load(off)); var hi = Int(emb.load(off + 1))
         var scale = h2f(UInt16(lo | (hi << 8))); off += 2
         for i in range(QK):
-            var qv = Int(emb.load(off)) - 128
+            var qv = Int(emb.load(off).cast[DType.int8]())
             hp.store(blk * QK + i, Float32(qv) * scale); off += 1
 
     print("Embedding test: hp[0]=", hp.load(0), " hp[1]=", hp.load(1))
@@ -357,7 +357,7 @@ def main() raises:
             var lo = Int(emb.load(off2)); var hi = Int(emb.load(off2 + 1))
             var scale = h2f(UInt16(lo | (hi << 8))); off2 += 2
             for i in range(QK):
-                var qv = Int(emb.load(off2)) - 128
+                var qv = Int(emb.load(off2).cast[DType.int8]())
                 hp.store(blk * QK + i, Float32(qv) * scale); off2 += 1
 
         for l in range(NL):

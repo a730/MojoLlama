@@ -520,7 +520,7 @@ def main() raises:
     # Simple "2+2=" prompt: ZAYA uses a different tokenizer, so use BOS + ASCII
     # This is approximate — for real testing use pre-tokenized prompts
     # Prompt: use <bos> token 2 then 511 BOS tokens for long prefill test
-    var prompt = [2, 17, 10, 17]  # BOS + "2+2"
+    var prompt = [2, 17, 10, 17, 28]  # BOS + "2+2=" (token 28 is "=")
     var np = len(prompt)
     for bi in range(B):
         for i in range(np):
@@ -549,7 +549,7 @@ def main() raises:
                 var scale = h2f(UInt16(lo | (hi << 8)))
                 off += 2
                 for i in range(QK):
-                    var qv = Int(emb.load(off)) - 128
+                    var qv = Int(emb.load(off).cast[DType.int8]())
                     hp.store(bi * NE + blk * QK + i, Float32(qv) * scale)
                     off += 1
 

@@ -130,7 +130,7 @@ def _mm_q8_batch(q8addr: Int, x: UnsafePointer[Float32, MutExternalOrigin],
                     var sv = SIMD[DType.float32, W](scale)
                     comptime for grp in range(4):
                         var wo = q.load[width=8](b_off + 2 + grp * 8)
-                        var wf = wo.cast[DType.int8]().cast[DType.float32]() * sv
+                        var wf = (wo.cast[DType.float32]() - SIMD[DType.float32, 8](128.0)) * sv
                         acc0 = wf.fma[FastMathFlag.FAST](x.load[width=W](0*nc + col + grp*8), acc0)
                         acc1 = wf.fma[FastMathFlag.FAST](x.load[width=W](1*nc + col + grp*8), acc1)
                     col += QK
@@ -150,7 +150,7 @@ def _mm_q8_batch(q8addr: Int, x: UnsafePointer[Float32, MutExternalOrigin],
                     var sv = SIMD[DType.float32, W](scale)
                     comptime for grp in range(4):
                         var wo = q.load[width=8](b_off + 2 + grp * 8)
-                        var wf = wo.cast[DType.int8]().cast[DType.float32]() * sv
+                        var wf = (wo.cast[DType.float32]() - SIMD[DType.float32, 8](128.0)) * sv
                         acc0 = wf.fma[FastMathFlag.FAST](x.load[width=W](0*nc + col + grp*8), acc0)
                         acc1 = wf.fma[FastMathFlag.FAST](x.load[width=W](1*nc + col + grp*8), acc1)
                         acc2 = wf.fma[FastMathFlag.FAST](x.load[width=W](2*nc + col + grp*8), acc2)
@@ -178,7 +178,7 @@ def _mm_q8_batch(q8addr: Int, x: UnsafePointer[Float32, MutExternalOrigin],
                     var sv = SIMD[DType.float32, W](scale)
                     comptime for grp in range(4):
                         var wo = q.load[width=8](b_off + 2 + grp * 8)
-                        var wf = wo.cast[DType.int8]().cast[DType.float32]() * sv
+                        var wf = (wo.cast[DType.float32]() - SIMD[DType.float32, 8](128.0)) * sv
                         acc0 = wf.fma[FastMathFlag.FAST](x.load[width=W](0*nc + col + grp*8), acc0)
                         acc1 = wf.fma[FastMathFlag.FAST](x.load[width=W](1*nc + col + grp*8), acc1)
                         acc2 = wf.fma[FastMathFlag.FAST](x.load[width=W](2*nc + col + grp*8), acc2)
@@ -227,8 +227,8 @@ def _mm_q8_2out_batch(q8a: Int, q8b: Int,
                     var sa = SIMD[DType.float32, W](h2f(UInt16(lo_a | (hi_a << 8))))
                     var sb = SIMD[DType.float32, W](h2f(UInt16(lo_b | (hi_b << 8))))
                     comptime for grp in range(4):
-                        var wa = qa.load[width=8](ra+bo+2+grp*8).cast[DType.int8]().cast[DType.float32]() * sa
-                        var wb = qb.load[width=8](rb+bo+2+grp*8).cast[DType.int8]().cast[DType.float32]() * sb
+                        var wa = (qa.load[width=8](ra+bo+2+grp*8).cast[DType.float32]() - SIMD[DType.float32, 8](128.0)) * sa
+                        var wb = (qb.load[width=8](rb+bo+2+grp*8).cast[DType.float32]() - SIMD[DType.float32, 8](128.0)) * sb
                         var xv = x.load[width=W](0*nc + col + grp*8)
                         a0 = wa.fma[FastMathFlag.FAST](xv, a0)
                         b0 = wb.fma[FastMathFlag.FAST](xv, b0)
@@ -255,8 +255,8 @@ def _mm_q8_2out_batch(q8a: Int, q8b: Int,
                     var sa = SIMD[DType.float32, W](h2f(UInt16(lo_a | (hi_a << 8))))
                     var sb = SIMD[DType.float32, W](h2f(UInt16(lo_b | (hi_b << 8))))
                     comptime for grp in range(4):
-                        var wa = qa.load[width=8](ra+bo+2+grp*8).cast[DType.int8]().cast[DType.float32]() * sa
-                        var wb = qb.load[width=8](rb+bo+2+grp*8).cast[DType.int8]().cast[DType.float32]() * sb
+                        var wa = (qa.load[width=8](ra+bo+2+grp*8).cast[DType.float32]() - SIMD[DType.float32, 8](128.0)) * sa
+                        var wb = (qb.load[width=8](rb+bo+2+grp*8).cast[DType.float32]() - SIMD[DType.float32, 8](128.0)) * sb
                         var xv = x.load[width=W](0*nc + col + grp*8); a0 = wa.fma[FastMathFlag.FAST](xv, a0); b0 = wb.fma[FastMathFlag.FAST](xv, b0)
                         xv = x.load[width=W](1*nc + col + grp*8); a1 = wa.fma[FastMathFlag.FAST](xv, a1); b1 = wb.fma[FastMathFlag.FAST](xv, b1)
                         xv = x.load[width=W](2*nc + col + grp*8); a2 = wa.fma[FastMathFlag.FAST](xv, a2); b2 = wb.fma[FastMathFlag.FAST](xv, b2)
@@ -429,8 +429,8 @@ def main() raises:
     var sc_buf = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(MAX_SEQ * 4))))
 
     var batch_toks = alloc[Int32](B * MAX_SEQ)
-    var prompt_toks = [1, 29871, 29906, 29974, 29906]  # BOS + "2+2"
-    var np = 5; var max_gen = 128
+    var prompt_toks = [1, 29871, 29906, 29974, 29906, 29922]  # BOS + "2+2="
+    var np = 6; var max_gen = 128
     for bi in range(B):
         for i in range(np): batch_toks.store(bi * MAX_SEQ + i, Int32(prompt_toks[i]))
     var nt = alloc[Int32](B)
