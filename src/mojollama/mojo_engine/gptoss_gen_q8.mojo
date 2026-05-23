@@ -4,6 +4,7 @@
 from std import time; from std.sys import argv; from std.math import sqrt, exp, cos, sin, pow
 from std.algorithm.backend.cpu.parallelize import parallelize
 from std.builtin.simd import FastMathFlag
+from std.sys.intrinsics import prefetch
 
 comptime NE: Int = 2880;  comptime NH: Int = 64;  comptime NK: Int = 8
 comptime HD: Int = 64;    comptime QI: Int = 4096  # NH*HD
@@ -11,7 +12,7 @@ comptime NL: Int = 24;    comptime N_EXP: Int = 32;  comptime N_ACT: Int = 4
 comptime FF: Int = 2880;  comptime NV: Int = 201088
 comptime MAX_SEQ: Int = 640;  comptime MAX_CTX: Int = 4096
 comptime ROPE_THETA: Float64 = 150000.0
-comptime W: Int = 8;  comptime RPW: Int = 8;  comptime B: Int = 1
+comptime W: Int = 8;  comptime RPW: Int = 8;  comptime B: Int = 4
 comptime QK: Int = 32;  comptime QB: Int = 34;  comptime EP: Float32 = 1e-5
 comptime WPL: Int = 20  # weight slots per layer
 
@@ -51,12 +52,16 @@ def _mm_q8(qa: Int, x: UnsafePointer[Float32, MutExternalOrigin],
             var acc = SIMD[DType.float32, W](0.0); var ro = r * rb; var col = 0
             while col < nc:
                 var bo = ro + (col // QK) * QB
+                # Prefetch next block (2 blocks ahead)
+                var next_bo = bo + QB * 2
+                if next_bo < rb:
+                    prefetch[](UnsafePointer[UInt8, MutExternalOrigin](unsafe_from_address=Int(qa + ro + next_bo)))
                 var lo = Int(q.load(bo)); var hi = Int(q.load(bo + 1))
                 var sv = SIMD[DType.float32, W](h2f(UInt16(lo | (hi << 8))))
                 comptime for grp in range(4):
-                    var u8 = q.load[width=8](bo + 2 + grp * 8)  # UInt8
-                    var i8 = u8.cast[DType.int8]()               # Reinterpret → Int8
-                    var f32 = i8.cast[DType.float32]()           # Int8 → Float32
+                    var u8 = q.load[width=8](bo + 2 + grp * 8)
+                    var i8 = u8.cast[DType.int8]()
+                    var f32 = i8.cast[DType.float32]()
                     acc = (f32 * sv).fma[FastMathFlag.FAST](x.load[width=W](col + grp*8), acc)
                 col += QK
             o.store(r, acc.reduce_add())
