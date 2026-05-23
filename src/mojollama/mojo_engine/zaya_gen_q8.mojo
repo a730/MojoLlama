@@ -15,6 +15,7 @@ from std.sys import argv
 from std.math import sqrt, exp, cos, sin, pow
 from std.algorithm.backend.cpu.parallelize import parallelize
 from std.builtin.simd import FastMathFlag
+from std.sys.intrinsics import prefetch, PrefetchOptions
 from std.os import stat as os_stat
 
 # ═══ SIMD polynomial exp (fallback) ═══
@@ -147,6 +148,8 @@ def _mm_q8_batch(q8addr: Int, x: UnsafePointer[Float32, MutExternalOrigin],
                 var col = 0
                 while col < nc:
                     var bo = ro + (col // QK) * QB
+                    # Prefetch next weight block 1 block ahead to overlap DRAM latency
+                    prefetch[](q + bo + QB)
                     var lo = Int(q.load(bo + 0))
                     var hi = Int(q.load(bo + 1))
                     var scale = h2f(UInt16(lo | (hi << 8)))
@@ -269,6 +272,22 @@ def decode_token(voc: UnsafePointer[UInt8, MutExternalOrigin],
             for j in range(l): result = result + chr(Int(p.load(j)))
             return result
     return String("")
+
+# ── O(1) token decode ──
+def decode_token_quick(voc: UnsafePointer[UInt8, MutExternalOrigin],
+                        tok_len: UnsafePointer[Int32, MutExternalOrigin],
+                        tok_off: UnsafePointer[Int32, MutExternalOrigin],
+                        nv: Int, tok: Int) -> String:
+    if tok < 0 or tok >= nv: return String("")
+    var l = Int(tok_len.load(tok))
+    var off = Int(tok_off.load(tok))
+    var p = voc + off
+    # Strip leading U+2581 (▁) space marker if present
+    if l >= 3 and p.load(0) == 0xE2 and p.load(1) == 0x96 and p.load(2) == 0x81:
+        p += 3; l -= 3
+    var result = String("")
+    for j in range(l): result = result + chr(Int(p.load(j)))
+    return result
 
 # ═══ Main ═══
 def main() raises:
@@ -445,7 +464,15 @@ def main() raises:
     var vc = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(B * NL * NK * MAX_SEQ * HD * 4))))
     var sc_buf = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(MAX_CTX * 4))))
 
-    # ─── Prompt setup ───
+    # ─── Setup O(1) vocab lookup ───
+    var tok_to_idx = alloc[Int32](NV)
+    var tok_to_off = alloc[Int32](NV)
+    var tok_to_len = alloc[Int32](NV)
+    for i in range(NV):
+        var tid = Int(voc_meta.load(nv + i))
+        tok_to_idx.store(tid, Int32(i))
+        tok_to_off.store(tid, voc_meta.load(2 * nv + i))
+        tok_to_len.store(tid, voc_meta.load(i))
     var batch_toks = alloc[Int32](B * MAX_SEQ)
     # Simple "2+2=" prompt: ZAYA uses a different tokenizer, so use BOS + ASCII
     # This is approximate — for real testing use pre-tokenized prompts
@@ -629,7 +656,7 @@ def main() raises:
                     batch_toks.store(bi * MAX_SEQ + nti, Int32(best))
                     nt.store(bi, Int32(nti + 1))
                 if best != 2 and best != 0:
-                    var out_text = decode_token(voc_data, voc_meta, nv, best)
+                    var out_text = decode_token_quick(voc_data, tok_to_len, tok_to_off, nv, best)
                     print(out_text, end="")
                 elif best == 2: print("[EOS]", end="")
                 else: print("[PAD]", end="")
