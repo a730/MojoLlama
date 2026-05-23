@@ -117,7 +117,7 @@ def silu(p: UnsafePointer[Float32, MutExternalOrigin], n: Int):
         p.store(i, v / (1.0 + exp(-v)))
 
 # ─── Softmax ───
-def softmax(p: UnsafePointer[Float32, MutExternalOrigin>, n: Int):
+def softmax(p: UnsafePointer[Float32, MutExternalOrigin], n: Int):
     var mx = Float32(-1e9)
     for i in range(n):
         var v = p.load(i)
@@ -131,13 +131,18 @@ def softmax(p: UnsafePointer[Float32, MutExternalOrigin>, n: Int):
 
 # ─── Load file ───
 def lw(dcp: UnsafePointer[UInt8, MutExternalOrigin],
-       wl: UnsafePointer[Int64, MutExternalOrigin>, idx: Int,
+       wl: UnsafePointer[Int64, MutExternalOrigin], idx: Int,
        pfx: String, sfx: String):
     var fname = pfx + sfx
-    var buf = alloc[UInt8](fname.byte_length() + 1)
+    # Build full path: dcp + fname
+    var dlen = 0
+    while dcp.load(dlen) != 0: dlen += 1
+    var flen = fname.byte_length()
+    var buf = alloc[UInt8](dlen + flen + 1)
+    for i in range(dlen): buf.store(i, dcp.load(i))
     var sp = fname.unsafe_ptr()
-    for i in range(fname.byte_length()): buf.store(i, sp.load(i))
-    buf.store(fname.byte_length(), UInt8(0))
+    for i in range(flen): buf.store(dlen + i, sp.load(i))
+    buf.store(dlen + flen, UInt8(0))
     var fd = _open(buf, 0)
     if fd < 0: wl.store(idx, 0); return
     var sz = _lseek(fd, 0, 2); _ = _lseek(fd, 0, 0)
@@ -158,30 +163,17 @@ def main() raises:
     var args = argv(); var nw = 32
     if len(args) > 1: nw = Int(String(args[1]))
     
-    var wdir = String("/tmp/weights_gemma4_e4b/")
+    var wdir = String("/tmp/weights_e4b_q8/")
     var dcp = str_to_c(wdir)
     
     # ─── Load weights ───
     var wl = alloc[Int64](NL * WPL)
-    var w_emb = 0; var w_on = 0
     
-    for t in [
-        ("token_embd_weight.bin", "w_emb"),
-        ("output_norm_weight.bin", "w_on"),
-    ]:
-        var fname = String(t.get[0]())
-        pass  # load 
-    
-    # Load global weights
-    var f0 = str_to_c(String("/tmp/weights_gemma4_e4b/token_embd_weight.bin"))
-    var fd0 = _open(f0, 0)
-    if fd0 >= 0: var sz0 = _lseek(fd0, 0, 2); _ = _lseek(fd0, 0, 0)
-    w_emb = _alc(sz0); _ = _read(fd0, UnsafePointer[UInt8, MutExternalOrigin](unsafe_from_address=Int(w_emb)), sz0); _ = _close(fd0)
-    
-    var f1 = str_to_c(String("/tmp/weights_gemma4_e4b/output_norm_weight.bin"))
-    var fd1 = _open(f1, 0)
-    if fd1 >= 0: var sz1 = _lseek(fd1, 0, 2); _ = _lseek(fd1, 0, 0)
-    w_on = _alc(sz1); _ = _read(fd1, UnsafePointer[UInt8, MutExternalOrigin](unsafe_from_address=Int(w_on)), sz1); _ = _close(fd1)
+    # Load global weights using lw helper
+    lw(dcp, wl, 0, String(""), String("token_embd_weight.bin"))
+    lw(dcp, wl, 1, String(""), String("output_norm_weight.bin"))
+    var w_emb = wl.load(0)
+    var w_on = wl.load(1)
     
     # Load per-layer weights
     for l in range(NL):
