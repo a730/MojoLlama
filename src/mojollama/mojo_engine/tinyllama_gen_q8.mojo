@@ -326,45 +326,53 @@ def run_benchmark(w_emb_addr: Int64, w_on_addr: Int64, w_out_addr: Int64,
                   bp: UnsafePointer[Float32, MutExternalOrigin],
                   nw: Int):
     print()
-    print("═══ MojoLlama Q&A Benchmark ═══")
+    print("═══ MojoLlama Benchmark ═══")
     print()
     
     var emb = UnsafePointer[UInt16, MutExternalOrigin](unsafe_from_address=Int(w_emb_addr))
+    var x = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(hp))
+    var nr = NV; var nc = NE; var nrb = (nr + RPW - 1) // RPW
+    # Allocate LM head output buffer (NV floats)
+    var o = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(NV * 4))))
     
-    print("Question          Latency")
-    print("────────────────  ───────")
+    # Warmup  
+    for i in range(NE): x.store(i, 1.0)
+    for r in range(nr): o.store(r, 0.0)
     
-    # Q1: "2+2" → [1, 29871, 29906, 29974, 29906]
-    var q1 = UnsafePointer[Int32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(5 * 4))))
-    q1.store(0, 1); q1.store(1, 29871); q1.store(2, 29906)
-    q1.store(3, 29974); q1.store(4, 29906)
+    # ─── Thread Sweep ───
+    print("Thread sweep (LM head matmul f16):")
+    print("Threads   ms/fwd   GB/s")
+    print("───────  ───────  ──────")
     
-    var t0 = time.perf_counter()
-    for pi in range(5):
-        var tok = Int(q1.load(pi))
-        for i in range(NE): hp.store(i, h2f(emb.load(tok * NE + i)))
-    var t1 = time.perf_counter()
-    var lat1 = (t1 - t0) * 1000.0
-    print("Q1 2+2                ", Int(lat1), "ms")
+    var thread_list = [1, 2, 4, 8, 16, 24, 32]
     
-    # Q2: "3+5" → [1, 29871, 29907, 29974, 29907]
-    var q2 = UnsafePointer[Int32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(5 * 4))))
-    q2.store(0, 1); q2.store(1, 29907); q2.store(2, 29974)
-    q2.store(3, 29907); q2.store(4, 29906)
+    for ti in range(7):
+        var tnw = thread_list[ti]
+        var iters = 3 if tnw >= 16 else 5
+        
+        var t0 = time.perf_counter()
+        for it in range(iters):
+            def wk(wi: Int) capturing:
+                var rs = wi * RPW; var re = rs + RPW
+                if re > nr: re = nr
+                for r in range(rs, re):
+                    var acc = SIMD[DType.float32, W](0.0); var c = 0
+                    while c + W <= nc:
+                        acc = acc + h2f(emb.load(r * nc + c)) * x.load[width=W](c)
+                        c += W
+                    var s = acc.reduce_add()
+                    while c < nc: s += h2f(emb.load(r * nc + c)) * x.load(c); c += 1
+                    o.store(r, s)
+            parallelize[func=wk](num_work_items=nrb, num_workers=tnw)
+        var t1 = time.perf_counter()
+        var ms = (t1 - t0) * 1000.0 / Float64(iters)
+        var weight_gb = Float64(NV) * Float64(NE) * 2.0 / 1e9
+        var gb_s = weight_gb / (ms / 1000.0)
+        print("  ", tnw, "       ", Int(ms), "       ", Int(gb_s))
     
-    t0 = time.perf_counter()
-    for pi in range(5):
-        var tok = Int(q2.load(pi))
-        for i in range(NE): hp.store(i, h2f(emb.load(tok * NE + i)))
-    t1 = time.perf_counter()
-    var lat2 = (t1 - t0) * 1000.0
-    print("Q2 3+5                ", Int(lat2), "ms")
-    
-    # Summary
     print()
-    print("───────────────────────────────")
-    print("Bencher timing pattern working.")
-    print("Full forward pass TBD.")
+    print("Batch: B=", B, " (comptime)")
+    print("Arch: ", NE, "x", NF, "x", NV, " ", NL, "layers")
     print()
 
 def main() raises:

@@ -332,59 +332,49 @@ def decode_token_quick(voc: UnsafePointer[UInt8, MutExternalOrigin],
     for j in range(l): result = result + chr(Int(p.load(j)))
     return result
 
-# ─── Q&A Benchmark ───
+# ─── Thread sweep benchmark ───
 def run_benchmark(w_emb_addr: Int64, hp: UnsafePointer[Float32, MutExternalOrigin],
                   bp: UnsafePointer[Float32, MutExternalOrigin], nw: Int):
     print()
-    print("═══ MojoLlama Q&A Benchmark (ZAYA) ═══")
+    print("═══ MojoLlama Benchmark (ZAYA) ═══")
     print()
     
-    var emb = UnsafePointer[UInt8, MutExternalOrigin](unsafe_from_address=Int(w_emb_addr))
-    var emb_rb = ((NE + QK - 1) // QK) * QB
-    var local_qk = QK; var local_qb = QB
+    var nr = NV; var nc = NE; var nrb = (nr + RPW - 1) // RPW
+    var x = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(hp))
+    var o = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(NV * 4))))
+    var ws = UnsafePointer[UInt16, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(NV * NE * 2))))
+    for i in range(NV * NE): ws.store(i, UInt16(i & 0xFFFF))
     
-    print("Question          Latency")
-    print("────────────────  ───────")
+    for i in range(NE): x.store(i, 1.0)
+    for r in range(nr): o.store(r, 0.0)
     
-    # Q1: BOS + "2+2" → [2, 17, 10, 17]
-    var q1 = UnsafePointer[Int32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(4 * 4))))
-    q1.store(0, 2); q1.store(1, 17); q1.store(2, 10); q1.store(3, 17)
+    print("Thread sweep (synthetic f16 LM head matmul):")
+    print("Threads   ms/fwd   GB/s")
+    print("───────  ───────  ──────")
     
-    var t0 = time.perf_counter()
-    for pi in range(4):
-        var tok = Int(q1.load(pi))
-        var off = tok * emb_rb
-        for blk in range(NE // local_qk):
-            var lo = Int(emb.load(off)); var hi = Int(emb.load(off + 1))
-            var scale = h2f(UInt16(lo | (hi << 8))); off += 2
-            for i in range(local_qk):
-                var qv = Int(emb.load(off).cast[DType.int8]())
-                hp.store(blk * local_qk + i, Float32(qv) * scale); off += 1
-    var t1 = time.perf_counter()
-    var lat1 = (t1 - t0) * 1000.0
-    print("Q1 2+2                ", Int(lat1), "ms")
-    
-    # Q2: BOS + "3+5" → [2, 18, 10, 20]  
-    var q2 = UnsafePointer[Int32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(4 * 4))))
-    q2.store(0, 2); q2.store(1, 18); q2.store(2, 10); q2.store(3, 20)
-    
-    t0 = time.perf_counter()
-    for pi in range(4):
-        var tok = Int(q2.load(pi))
-        var off = tok * emb_rb
-        for blk in range(NE // local_qk):
-            var lo = Int(emb.load(off)); var hi = Int(emb.load(off + 1))
-            var scale = h2f(UInt16(lo | (hi << 8))); off += 2
-            for i in range(local_qk):
-                var qv = Int(emb.load(off).cast[DType.int8]())
-                hp.store(blk * local_qk + i, Float32(qv) * scale); off += 1
-    t1 = time.perf_counter()
-    var lat2 = (t1 - t0) * 1000.0
-    print("Q2 3+5                ", Int(lat2), "ms")
-    
+    var thread_list = [1, 2, 4, 8, 16, 24, 32]
+    for ti in range(7):
+        var tnw = thread_list[ti]; var iters = 3 if tnw >= 16 else 5
+        var t0 = time.perf_counter()
+        for it in range(iters):
+            def wk(wi: Int) capturing:
+                var rs = wi * RPW; var re = rs + RPW
+                if re > nr: re = nr
+                for r in range(rs, re):
+                    var acc = SIMD[DType.float32, W](0.0); var c = 0
+                    while c + W <= nc:
+                        acc = acc + h2f(ws.load(r * nc + c)) * x.load[width=W](c); c += W
+                    var s = acc.reduce_add()
+                    while c < nc: s += h2f(ws.load(r * nc + c)) * x.load(c); c += 1
+                    o.store(r, s)
+            parallelize[func=wk](num_work_items=nrb, num_workers=tnw)
+        var t1 = time.perf_counter()
+        var ms = (t1 - t0) * 1000.0 / Float64(iters)
+        var gb_s = (Float64(NV) * Float64(NE) * 2.0 / 1e9) / (ms / 1000.0)
+        print("  ", tnw, "       ", Int(ms), "       ", Int(gb_s))
     print()
-    print("───────────────────────────────")
-    print("Benchmark complete.")
+    print("Arch: ", NE, "x", FF, "x", NV, " ", NL, "layers")
+    print()
 
 # ═══ Main ═══
 def main() raises:
