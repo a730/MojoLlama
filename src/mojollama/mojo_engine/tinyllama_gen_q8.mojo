@@ -317,6 +317,56 @@ def decode_token(voc: UnsafePointer[UInt8, MutExternalOrigin],
             return result
     return String("")
 
+# ─── Bencher-based Q&A benchmark ───
+def run_benchmark(w_emb_addr: Int64, w_on_addr: Int64, w_out_addr: Int64,
+                  wl_ptr: UnsafePointer[Int64, MutExternalOrigin],
+                  voc_data: UnsafePointer[UInt8, MutExternalOrigin],
+                  voc_meta: UnsafePointer[Int32, MutExternalOrigin], nv: Int,
+                  hp: UnsafePointer[Float32, MutExternalOrigin],
+                  bp: UnsafePointer[Float32, MutExternalOrigin],
+                  nw: Int):
+    print()
+    print("═══ MojoLlama Q&A Benchmark ═══")
+    print()
+    
+    var emb = UnsafePointer[UInt16, MutExternalOrigin](unsafe_from_address=Int(w_emb_addr))
+    
+    print("Question          Latency")
+    print("────────────────  ───────")
+    
+    # Q1: "2+2" → [1, 29871, 29906, 29974, 29906]
+    var q1 = UnsafePointer[Int32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(5 * 4))))
+    q1.store(0, 1); q1.store(1, 29871); q1.store(2, 29906)
+    q1.store(3, 29974); q1.store(4, 29906)
+    
+    var t0 = time.perf_counter()
+    for pi in range(5):
+        var tok = Int(q1.load(pi))
+        for i in range(NE): hp.store(i, h2f(emb.load(tok * NE + i)))
+    var t1 = time.perf_counter()
+    var lat1 = (t1 - t0) * 1000.0
+    print("Q1 2+2                ", Int(lat1), "ms")
+    
+    # Q2: "3+5" → [1, 29871, 29907, 29974, 29907]
+    var q2 = UnsafePointer[Int32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(5 * 4))))
+    q2.store(0, 1); q2.store(1, 29907); q2.store(2, 29974)
+    q2.store(3, 29907); q2.store(4, 29906)
+    
+    t0 = time.perf_counter()
+    for pi in range(5):
+        var tok = Int(q2.load(pi))
+        for i in range(NE): hp.store(i, h2f(emb.load(tok * NE + i)))
+    t1 = time.perf_counter()
+    var lat2 = (t1 - t0) * 1000.0
+    print("Q2 3+5                ", Int(lat2), "ms")
+    
+    # Summary
+    print()
+    print("───────────────────────────────")
+    print("Bencher timing pattern working.")
+    print("Full forward pass TBD.")
+    print()
+
 def main() raises:
     var t0 = time.perf_counter()
     var args = argv()
@@ -401,6 +451,18 @@ def main() raises:
     var t_load = time.perf_counter()
     print("Load: ", Int((t_load - t0) * 1000), " ms")
 
+    # Check for benchmark mode arg
+    var is_bench = False
+    if len(args) > 2:
+        var arg2 = String(args[2])
+        if arg2 == String("bench"): is_bench = True
+
+    if is_bench:
+        var hp_bm = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(NE * 4))))
+        var bp_bm = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(NE * 4))))
+        run_benchmark(w_emb, w_on, w_lm, wl, voc_data, voc_meta, nv, hp_bm, bp_bm, nw)
+        return
+
     # Convert matmul weights from f16 to Q8_0 (in-place)
     var t_conv = time.perf_counter()
     convert_to_q8_0(Int(w_lm), NV, NE)                    # LM head
@@ -446,6 +508,10 @@ def main() raises:
             for pi in range(np):
                 batch_toks.store(bi * MAX_SEQ + pi, UnsafePointer[Int32, MutExternalOrigin](unsafe_from_address=Int(pb)).load(pi))
     if np == 0:
+        # No prompt file — run benchmark mode
+        run_benchmark(w_emb, w_on, w_lm, wl, voc_data, voc_meta, nv,
+                     hp, bp, nw)
+        return
         np = 1
         for bi in range(B): batch_toks.store(bi * MAX_SEQ + 0, Int32(1))  # fallback BOS
     var max_gen = 32  # short Q&A responses
