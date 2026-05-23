@@ -15,7 +15,7 @@ comptime HD: Int = 64
 comptime NL: Int = 22
 comptime NF: Int = 5632
 comptime NV: Int = 32000
-comptime MAX_SEQ: Int = 128
+comptime MAX_SEQ: Int = 640
 comptime W: Int = 8
 comptime RPW: Int = 8
 comptime B: Int = 4
@@ -430,7 +430,7 @@ def main() raises:
 
     var batch_toks = alloc[Int32](B * MAX_SEQ)
     var prompt_toks = [1, 29871, 29906, 29974, 29906, 29922]  # BOS + "2+2="
-    var np = 6; var max_gen = 128
+    var np = 6; var max_gen = 640
     for bi in range(B):
         for i in range(np): batch_toks.store(bi * MAX_SEQ + i, Int32(prompt_toks[i]))
     var nt = alloc[Int32](B)
@@ -542,7 +542,12 @@ def main() raises:
             if nti < MAX_SEQ: batch_toks.store(bi*MAX_SEQ+nti, Int32(best)); nt.store(bi, Int32(nti+1))
             if best != 2:
                 var out_text = decode_token(voc_data, voc_meta, nv, best)
-                if bi == 0: print(out_text, end="")
+                if bi == 0:
+                    var turn_len = 32
+                    var turn_num = (nti - np) // turn_len + 1
+                    if turn_num != (nti - np - 1) // turn_len + 1 and turn_num <= 20:
+                        print("\n=== Turn", turn_num, "===", end="")
+                    print(out_text, end="")
 
     print()
     var t_end = time.perf_counter()

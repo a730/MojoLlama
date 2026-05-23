@@ -9,7 +9,7 @@ comptime NE: Int = 2880;  comptime NH: Int = 64;  comptime NK: Int = 8
 comptime HD: Int = 64;    comptime QI: Int = 4096  # NH*HD
 comptime NL: Int = 24;    comptime N_EXP: Int = 32;  comptime N_ACT: Int = 4
 comptime FF: Int = 2880;  comptime NV: Int = 201088
-comptime MAX_SEQ: Int = 128;  comptime MAX_CTX: Int = 4096
+comptime MAX_SEQ: Int = 640;  comptime MAX_CTX: Int = 4096
 comptime ROPE_THETA: Float64 = 150000.0
 comptime W: Int = 8;  comptime RPW: Int = 8;  comptime B: Int = 1
 comptime QK: Int = 32;  comptime QB: Int = 34;  comptime EP: Float32 = 1e-5
@@ -327,7 +327,7 @@ def main() raises:
     print("GPT-OSS-20B Mojo engine: 1 layer test PASSED ✓")
 
     # ─── Full 24-layer generation loop ───
-    var max_gen = 128
+    var max_gen = 640
     var batch_toks = alloc[Int32](B * MAX_SEQ)
     # Load prompt from file into separate array
     var prompt_toks = alloc[Int32](MAX_SEQ)
@@ -482,9 +482,16 @@ def main() raises:
                 batch_toks.store(pos * B + bi + 1, Int32(best2))
                 nt.store(0, Int32(pos + 2))
 
-        # Print first batch item's token
-        if pos < 10 or pos % 10 == 0:
-            print("t", Int(batch_toks.load(pos * B + 1)), " ", end="")
+        # Print first batch item's token with turn markers
+        var bi0 = 0  # first batch item
+        var tok0 = Int(batch_toks.load(pos * B + bi0 + 1))
+        var turn_len = 32
+        var gen_pos = pos - np + 1  # generated token position (1-indexed)
+        var turn_num = (gen_pos + turn_len - 1) // turn_len
+        if gen_pos > 0 and gen_pos % turn_len == 1 and turn_num <= 20:
+            print("\n=== Turn", turn_num, "===", end="")
+        if pos < 640 or pos % 10 == 0:
+            print("t", tok0, " ", end="")
         elif pos == 10:
             print("... ", end="")
 

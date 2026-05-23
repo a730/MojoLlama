@@ -37,7 +37,7 @@ comptime N_RH: Int = 256      # router hidden dim
 comptime FF: Int = 4096       # expert intermediate (gate+up combined)
 comptime F2: Int = 2048       # gate or up after split (=NE)
 comptime NV: Int = 262147     # vocab_size
-comptime MAX_SEQ: Int = 128   # max sequence length
+comptime MAX_SEQ: Int = 640   # max sequence length
 comptime MAX_CTX: Int = 4096
 comptime ROPE_DIM: Int = 64   # partial RoPE
 comptime ROPE_THETA: Float64 = 5000000.0
@@ -527,7 +527,7 @@ def main() raises:
             batch_toks.store(bi * MAX_SEQ + i, Int32(prompt[i]))
     var nt = alloc[Int32](B)
     for bi in range(B): nt.store(bi, Int32(np))
-    var max_gen = 128
+    var max_gen = 640
     print('ZAYA1-8B Q8_0 B=' + String(B) + ' max_gen=', max_gen, ' prefill=', np, ' nw=', nw)
 
     # ─── Generation loop: single pass — prefill skips LM head to save time ───
@@ -726,11 +726,19 @@ def main() raises:
                 if nti < MAX_SEQ:
                     batch_toks.store(bi * MAX_SEQ + nti, Int32(best))
                     nt.store(bi, Int32(nti + 1))
+                # Turn markers every 32 generated tokens
+                var turn_len = 32
+                var gen_pos = nti - np + 1
+                var turn_num = (gen_pos + turn_len - 1) // turn_len
+                if gen_pos > 0 and gen_pos % turn_len == 1 and turn_num <= 20:
+                    print("\n=== Turn", turn_num, "===", end="")
                 if best != 2 and best != 0:
                     var out_text = decode_token_quick(voc_data, tok_to_len, tok_to_off, nv, best)
-                    print(out_text, end="")
-                elif best == 2: print("[EOS]", end="")
-                else: print("[PAD]", end="")
+                    if bi == 0: print(out_text, end="")
+                elif best == 2: 
+                    if bi == 0: print("[EOS]", end="")
+                else:
+                    if bi == 0: print("[PAD]", end="")
 
     print()
     var t_end = time.perf_counter()
