@@ -40,6 +40,9 @@ def extract(gguf_path, out_dir, arch, max_layers=None):
     r = gguf.GGUFReader(gguf_path)
     print(f"GGUF loaded: {time.time()-t0:.1f}s")
     
+    NE = arch['NE']; FF = arch['FF']; NV = arch['NV']; NL = arch['NL']
+    NH = arch.get('NH', 16); NK = arch.get('NK', 4); HD = arch.get('HD', 128)
+    
     # Build tensor lookup by name
     tensor_map = {}
     for t in r.tensors:

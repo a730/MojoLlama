@@ -45,7 +45,7 @@ int main(int argc, char **argv) {
     if (fd < 0) { perror("open"); return 1; }
     uint64_t fsz = (uint64_t)lseek(fd, 0, SEEK_END);
     lseek(fd, 0, SEEK_SET);
-    uint64_t chunk = min_u64(fsz, 4194304ULL);
+    uint64_t chunk = min_u64(fsz, 536870912ULL);  // 512MB for metadata
     uint8_t *buf = (uint8_t*)malloc(chunk);
     if (!buf) { close(fd); return 1; }
     if (read(fd, buf, chunk) != (ssize_t)chunk) { free(buf); close(fd); return 1; }
@@ -55,16 +55,24 @@ int main(int argc, char **argv) {
     uint64_t n_tensors = r8(buf + 8);
     uint64_t n_kv = r8(buf + 16);
     printf("GGUF: %lu tensors, %lu KV, %.0fMB\n", n_tensors, n_kv, fsz/1048576.0);
+    fflush(stdout);
 
     // Create output dir
     mkdir(out_dir, 0755);
 
     uint64_t pos = 24;
     // Skip KV pairs
+    printf("KV parsing (%lu pairs)...\n", n_kv); fflush(stdout);
     for (uint64_t k = 0; k < n_kv; k++) {
+        if (pos + 8 > chunk) { fprintf(stderr, "KV %lu: past buffer (%lu > %lu)\n", k, pos+8, chunk); break; }
         uint64_t klen = r8(buf + pos); pos += 8;
+        if (pos + klen > chunk) { fprintf(stderr, "KV %lu key: past buffer\n", k); break; }
+        char kname[256]; uint64_t knl = klen > 255 ? 255 : klen;
+        memcpy(kname, buf + pos, knl); kname[knl] = 0;
         pos += klen;
+        if (pos + 4 > chunk) { fprintf(stderr, "KV %lu vtype: past buffer\n", k); break; }
         uint32_t vtype = r4(buf + pos); pos += 4;
+        // printf("  KV %lu: vtype=%u key=%s\n", k, vtype, kname);  // debug
         switch (vtype) {
             case 0: case 1: pos += 1; break;
             case 2: case 3: pos += 2; break;
@@ -76,7 +84,10 @@ int main(int argc, char **argv) {
                 uint64_t al = r8(buf + pos); pos += 8;
                 for (uint64_t a = 0; a < al; a++) {
                     if (at == 8) { uint64_t sl = r8(buf + pos); pos += 8 + sl; }
-                    else { int esz = (at <= 1) ? 1 : (at <= 3) ? 2 : 4; pos += esz; }
+                    else { 
+                    int esz = (at <= 1) ? 1 : (at <= 3) ? 2 : (at == 7) ? 1 : 4; 
+                    pos += esz; 
+                }
                 }
                 break;
             }
@@ -84,7 +95,9 @@ int main(int argc, char **argv) {
             default: pos += 8; break;
         }
     }
-    uint64_t ti_start = pos;
+    printf("KV parsing done\n"); fflush(stdout);
+    uint64_t ti_start = pos;  // Tensor info immediately follows KV pairs (no alignment in v3)
+    printf("ti_start=%lu, buf_size=%lu\n", ti_start, chunk); fflush(stdout);
 
     // First pass: find total tensor info size
     uint64_t ti_end = ti_start;
