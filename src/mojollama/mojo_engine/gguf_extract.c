@@ -124,6 +124,9 @@ int main(int argc, char **argv) {
         uint32_t dtype = r4(buf + tp); tp += 4;
         uint64_t toff = r8(buf + tp); tp += 8;
 
+        // Sanity check offsets
+        if (toff >= fsz) { fprintf(stderr, "  SKIP %s: offset %lu > file size %ld\\n", name, toff, fsz); errors++; continue; }
+
         uint64_t ne = dims[0]*dims[1]*dims[2]*dims[3];
         uint64_t dsz = 0;
         switch (dtype) {
@@ -132,8 +135,9 @@ int main(int argc, char **argv) {
             case 2: dsz = ((ne+31)/32)*18; break; // Q4_0
             case 3: dsz = ((ne+31)/32)*20; break; // Q4_1
             case 6: dsz = ((ne+31)/32)*34; break; // Q8_0
-            case 10: dsz = ((ne+255)/256)*144; break; // Q4_K
-            case 12: dsz = ((ne+255)/256)*240; break; // Q6_K
+            case 12: dsz = ((ne+255)/256)*144; break; // Q4_K
+            case 14: dsz = ((ne+255)/256)*240; break; // Q6_K
+            case 30: dsz = ne * 2; break;            // BF16
             case 39: dsz = ((ne+31)/32)*34; break; // MXFP4
             case 47: dsz = ((ne+31)/32)*34; break; // MXFP4
             default: dsz = ne * 2; break;
