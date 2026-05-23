@@ -1,13 +1,16 @@
-/* model_helper.c — Model instance HTTP server for Mojo FFI (poll-based request queue) */
+/* model_helper.c — Model instance HTTP server + arch.json reader for Mojo FFI */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <poll.h>
+#include <ctype.h>
 
 #define MAX_BODY 65536
 #define MAX_QUEUE 64
@@ -43,7 +46,7 @@ static void handle(int fd) {
         strncpy(queue[i].body, body, MAX_BODY-1); queue[i].active = 1;
         qtail++; pthread_cond_signal(&qcond);
         pthread_mutex_unlock(&qmutex);
-        return; /* response sent later via send_response() */
+        return;
     }
     send_resp(fd,"{\"error\":\"not_found\"}");
 }
@@ -90,7 +93,6 @@ void send_response(const char *resp) {
     pthread_mutex_unlock(&qmutex);
 }
 
-/* Build OpenAI response JSON. Caller must free result. */
 char* build_openai_response(const char *content, int pt, int ct, const char *model) {
     char *esc = malloc(strlen(content)*2+1); if(!esc) return NULL;
     int j=0;
@@ -112,3 +114,26 @@ char* build_openai_response(const char *content, int pt, int ct, const char *mod
 }
 
 void stop_model_server(void) { running=0; if(srv_fd>=0){close(srv_fd);srv_fd=-1;} }
+
+/* ─── Read arch.json integer value ─── */
+int read_arch_int(const char *dir_path, const char *key) {
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/arch.json", dir_path);
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;
+    char buf[4096];
+    int n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0) return 0;
+    buf[n] = 0;
+    char search[256];
+    snprintf(search, sizeof(search), "\"%s\":", key);
+    char *p = strstr(buf, search);
+    if (!p) return 0;
+    p += strlen(search);
+    while (*p && (*p == ' ' || *p == '\t' || *p == '\n')) p++;
+    int val = 0, neg = 0;
+    if (*p == '-') { neg = 1; p++; }
+    while (*p && isdigit(*p)) { val = val * 10 + (*p - '0'); p++; }
+    return neg ? -val : val;
+}

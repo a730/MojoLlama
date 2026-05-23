@@ -22,7 +22,7 @@ comptime WPL: Int = 18
 @extern("malloc")
 def _alc(sz: Int64) abi("C") -> Int64: ...
 @extern("free")
-def _c_free(p: Int64) abi("C") -> None: ...
+def _c_free(p: UnsafePointer[UInt8, MutExternalOrigin]) abi("C") -> None: ...
 @extern("open")
 def _open(p: UnsafePointer[UInt8, MutExternalOrigin], f: Int) abi("C") -> Int: ...
 @extern("read")
@@ -44,6 +44,8 @@ def build_openai_response(content: UnsafePointer[UInt8, MutExternalOrigin], pt: 
 def c_free(p: UnsafePointer[UInt8, MutExternalOrigin]) abi("C") -> None: ...
 @extern("usleep") 
 def _usleep(us: Int) abi("C") -> Int: ...
+@extern("read_arch_int")
+def read_arch_int(dir: UnsafePointer[UInt8, MutExternalOrigin], key: UnsafePointer[UInt8, MutExternalOrigin]) abi("C") -> Int: ...
 
 def h2f(h: UInt16) -> Float32:
     var s = Int((h >> 15) & 1); var e = Int((h >> 10) & 0x1F); var m = Int(h & 0x3FF)
@@ -178,14 +180,33 @@ def main() raises:
     var t0 = time.perf_counter()
     print("Loading model from ", wdir, "...")
     
-    # ─── Load arch.json ───
-    var arch_path = wdir + String("arch.json")
-    # For now, hardcode the arch detection. In production, read from arch.json
-    # Auto-detect from weight count
+    # ─── Default architecture (E4B) ───
     var NE = 2560; var NH = 16; var NK = 4; var HD = 128
     var NL = 42; var FF = 10240; var NV = 262144
     var HAS_QK = True; var HAS_IG = True; var HAS_ROPE = False
     var WIDE_INTERVAL = 6
+    
+    # ─── Load arch.json (via C helper) ───
+    var dir_c = str_to_c(wdir)
+    var ne_val = read_arch_int(dir_c, str_to_c(String("ne")))
+    if ne_val > 0: NE = ne_val
+    var nh_val = read_arch_int(dir_c, str_to_c(String("nh")))
+    if nh_val > 0: NH = nh_val
+    var nk_val = read_arch_int(dir_c, str_to_c(String("nk")))
+    if nk_val > 0: NK = nk_val
+    var hd_val = read_arch_int(dir_c, str_to_c(String("hd")))
+    if hd_val > 0: HD = hd_val
+    var nl_val = read_arch_int(dir_c, str_to_c(String("nl")))
+    if nl_val > 0: NL = nl_val
+    var ff_val = read_arch_int(dir_c, str_to_c(String("ff")))
+    if ff_val > 0: FF = ff_val
+    var nv_val = read_arch_int(dir_c, str_to_c(String("nv")))
+    if nv_val > 0: NV = nv_val
+    var wi_val = read_arch_int(dir_c, str_to_c(String("wide_interval")))
+    if wi_val > 0: WIDE_INTERVAL = wi_val
+    
+    print("Arch: NE=", NE, " NH=", NH, " NK=", NK, " HD=", HD)
+    print("  NL=", NL, " FF=", FF, " NV=", NV)
     
     # ─── Load weights ───
     var dcp = str_to_c(wdir)
