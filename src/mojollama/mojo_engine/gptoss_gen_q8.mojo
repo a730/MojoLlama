@@ -11,7 +11,7 @@ comptime NL: Int = 24;    comptime N_EXP: Int = 32;  comptime N_ACT: Int = 4
 comptime FF: Int = 2880;  comptime NV: Int = 201088
 comptime MAX_SEQ: Int = 128;  comptime MAX_CTX: Int = 4096
 comptime ROPE_THETA: Float64 = 150000.0
-comptime W: Int = 8;  comptime RPW: Int = 8;  comptime B: Int = 4
+comptime W: Int = 8;  comptime RPW: Int = 8;  comptime B: Int = 1
 comptime QK: Int = 32;  comptime QB: Int = 34;  comptime EP: Float32 = 1e-5
 comptime WPL: Int = 20  # weight slots per layer
 
@@ -327,25 +327,38 @@ def main() raises:
     print("GPT-OSS-20B Mojo engine: 1 layer test PASSED ✓")
 
     # ─── Full 24-layer generation loop ───
-    var max_gen = 128; var np = 1
+    var max_gen = 128
     var batch_toks = alloc[Int32](B * MAX_SEQ)
-    for bi in range(B): batch_toks.store(bi, Int32(199998))  # All items start with BOS
+    # Load prompt from file into separate array
+    var prompt_toks = alloc[Int32](MAX_SEQ)
+    var prompt_fd = _open(cstr(String("/tmp/prompt_gptoss.bin")), 0)
+    var np = 0
+    if prompt_fd >= 0:
+        var psz = _lseek(prompt_fd, 0, 2); _ = _lseek(prompt_fd, 0, 0)
+        np = Int(psz // 4)
+        var pb = alloc[UInt8](Int(psz))
+        _ = _read(prompt_fd, pb, psz); _ = _close(prompt_fd)
+        for pi in range(np):
+            prompt_toks.store(pi, UnsafePointer[Int32, MutExternalOrigin](unsafe_from_address=Int(pb)).load(pi))
+    if np == 0:
+        prompt_toks.store(0, Int32(199998)); np = 1
+    print("Prompt len:", np, " tokens")
+    # Initialize batch_toks with BOS at position np-1 for all items (so gen starts after prompt)
+    for bi in range(B): batch_toks.store((np-1) * B + bi, Int32(prompt_toks.load(np-1)))
     var nt = alloc[Int32](B)
     nt.store(0, Int32(np))
     var t_gen = time.perf_counter()
 
     for pos in range(max_gen):
-        # Embed B tokens (one per batch item) into separate hidden state slots
-        for bi in range(B):
-            var tok = Int(batch_toks.load(pos * B + bi))
-            var row_start = tok * emb_rb; var off2 = row_start
-            var hp_bi = hp + bi * NE
-            for blk in range(NE // QK):
-                var lo = Int(emb.load(off2)); var hi = Int(emb.load(off2 + 1))
-                var scale = h2f(UInt16(lo | (hi << 8))); off2 += 2
-                for i in range(QK):
-                    var qv = Int(emb.load(off2)) - 128
-                    hp_bi.store(blk * QK + i, Float32(qv) * scale); off2 += 1
+        # Embed current token: prompt for prefill, generated for continuation
+        var tok = Int(prompt_toks.load(pos)) if pos < np else Int(batch_toks.load(pos - 1))
+        var row_start = tok * emb_rb; var off2 = row_start
+        for blk in range(NE // QK):
+            var lo = Int(emb.load(off2)); var hi = Int(emb.load(off2 + 1))
+            var scale = h2f(UInt16(lo | (hi << 8))); off2 += 2
+            for i in range(QK):
+                var qv = Int(emb.load(off2)) - 128
+                hp.store(blk * QK + i, Float32(qv) * scale); off2 += 1
 
         for l in range(NL):
             var b = l * WPL

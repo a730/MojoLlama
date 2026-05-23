@@ -429,8 +429,8 @@ def main() raises:
     var sc_buf = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(MAX_SEQ * 4))))
 
     var batch_toks = alloc[Int32](B * MAX_SEQ)
-    var prompt_toks = [1, 29871, 29906, 29974, 29906, 29922]
-    var np = 6; var max_gen = 128
+    var prompt_toks = [1, 29871, 29906, 29974, 29906]  # BOS + "2+2"
+    var np = 5; var max_gen = 128
     for bi in range(B):
         for i in range(np): batch_toks.store(bi * MAX_SEQ + i, Int32(prompt_toks[i]))
     var nt = alloc[Int32](B)

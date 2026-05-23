@@ -520,7 +520,7 @@ def main() raises:
     # Simple "2+2=" prompt: ZAYA uses a different tokenizer, so use BOS + ASCII
     # This is approximate — for real testing use pre-tokenized prompts
     # Prompt: use <bos> token 2 then 511 BOS tokens for long prefill test
-    var prompt = [2]
+    var prompt = [2, 17, 10, 17]  # BOS + "2+2"
     var np = len(prompt)
     for bi in range(B):
         for i in range(np):
