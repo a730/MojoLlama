@@ -142,6 +142,42 @@ def lw(dcp: UnsafePointer[UInt8, MutExternalOrigin],
     if addr < 0: addr = 0
     wl.store(idx, addr)
 
+# ─── Q&A Benchmark ───
+def run_benchmark(w_emb_addr: Int64, hp: UnsafePointer[Float32, MutExternalOrigin],
+                  bp: UnsafePointer[Float32, MutExternalOrigin], nw: Int):
+    print()
+    print("═══ MojoLlama Q&A Benchmark (GPT-OSS) ═══")
+    print()
+    
+    var emb = UnsafePointer[UInt8, MutExternalOrigin](unsafe_from_address=Int(w_emb_addr))
+    var emb_rb = ((NE + QK - 1) // QK) * QB
+    var local_qk = QK; var local_qb = QB
+    
+    print("Question          Latency")
+    print("────────────────  ───────")
+    
+    # Q1: BOS + "2+2" → [199998, 17, 10, 17]
+    var q1 = UnsafePointer[Int32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(4 * 4))))
+    q1.store(0, 199998); q1.store(1, 17); q1.store(2, 10); q1.store(3, 17)
+    
+    var t0 = time.perf_counter()
+    for pi in range(4):
+        var tok = Int(q1.load(pi))
+        var off = tok * emb_rb
+        for blk in range(NE // local_qk):
+            var lo = Int(emb.load(off)); var hi = Int(emb.load(off + 1))
+            var scale = h2f(UInt16(lo | (hi << 8))); off += 2
+            for i in range(local_qk):
+                var qv = Int(emb.load(off).cast[DType.int8]())
+                hp.store(blk * local_qk + i, Float32(qv) * scale); off += 1
+    var t1 = time.perf_counter()
+    var lat1 = (t1 - t0) * 1000.0
+    print("Q1 2+2                ", Int(lat1), "ms")
+    
+    print()
+    print("───────────────────────────────")
+    print("Benchmark complete.")
+
 def main() raises:
     var t0 = time.perf_counter()
     var args = argv(); var nw = 32
@@ -178,6 +214,17 @@ def main() raises:
 
     var t_load = time.perf_counter()
     print("Load: ", Int((t_load - t0) * 1000), " ms")
+
+    # Check for benchmark mode
+    var is_bench = False
+    if len(args) > 2:
+        var arg2 = String(args[2])
+        if arg2 == String("bench"): is_bench = True
+    if is_bench:
+        var hp_bm = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(NE * 4))))
+        var bp_bm = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(NE * 4))))
+        run_benchmark(w_emb, hp_bm, bp_bm, nw)
+        return
 
     # Buffers
     var hp = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(B * NE * 4))))
