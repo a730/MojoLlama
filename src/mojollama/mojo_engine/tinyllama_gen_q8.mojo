@@ -430,7 +430,7 @@ def main() raises:
 
     var batch_toks = alloc[Int32](B * MAX_SEQ)
     var prompt_toks = [1, 29871, 29906, 29974, 29906, 29922]
-    var np = 6; var max_gen = 50
+    var np = 6; var max_gen = 128
     for bi in range(B):
         for i in range(np): batch_toks.store(bi * MAX_SEQ + i, Int32(prompt_toks[i]))
     var nt = alloc[Int32](B)
