@@ -26,8 +26,8 @@ def _read(fd: Int, b: UnsafePointer[UInt8, MutExternalOrigin], c: Int64) abi("C"
 def _lseek(fd: Int, o: Int64, w: Int) abi("C") -> Int64: ...
 @extern("close")
 def _close(fd: Int) abi("C") -> Int: ...
-@extern("write")
-def _write(fd: Int, b: UnsafePointer[UInt8, MutExternalOrigin], c: Int64) abi("C") -> Int64: ...
+@extern("mojo_write_tokens")
+def _sys_write(fd: Int, b: UnsafePointer[UInt8, MutExternalOrigin], c: Int) abi("C") -> Int: ...
 @extern("getenv")
 def _getenv(n: UnsafePointer[UInt8, MutExternalOrigin]) abi("C") -> UnsafePointer[UInt8, MutExternalOrigin]: ...
 @extern("read_arch_int")
@@ -79,7 +79,37 @@ def _mm_q8(qa: Int, x: UnsafePointer[Float32, MutExternalOrigin],
             o.store(r, s)
     parallelize[func=wk](num_work_items=nb, num_workers=nw)
 
-# ═══ Main (cleanly formatted) ═══
+def rms_norm(x: UnsafePointer[Float32, MutExternalOrigin],
+              o: UnsafePointer[Float32, MutExternalOrigin],
+              w: UnsafePointer[Float32, MutExternalOrigin], n: Int, wn: Int = 0):
+    var ss = Float32(0.0); var i = 0
+    while i + 8 <= n:
+        var v = x.load[width=8](i)
+        ss += (v * v).reduce_add()
+        i += 8
+    while i < n:
+        ss += x.load(i) * x.load(i)
+        i += 1
+    var inv = 1.0 / sqrt(ss / Float32(n) + EP)
+    var w_n = wn if wn > 0 else n
+    var gs = n / w_n
+    if gs <= 1:
+        var inv_v = SIMD[DType.float32, 8](inv)
+        i = 0
+        while i + 8 <= n:
+            o.store[width=8](i, x.load[width=8](i) * inv_v * w.load[width=8](i))
+            i += 8
+        while i < n:
+            o.store(i, x.load(i) * w.load(i) * inv)
+            i += 1
+    else:
+        for gi in range(w_n):
+            var wi = w.load(gi)
+            var inv_v = SIMD[DType.float32, 8](inv * wi)
+            var go = gi * gs
+            for j in range(0, gs, 8):
+                o.store[width=8](go + j, x.load[width=8](go + j) * inv_v)
+
 def main() raises:
     var args = argv()
     var port = 8080
@@ -117,7 +147,10 @@ def main() raises:
     var nk_n = NK * HD; var nk_w = NK * HD * 2
     var max_nk = NK * 2
     
-    print("Universal Engine: NE=", NE, " NH=", NH, " NK=", NK, " NL=", NL)
+    # Write arch info to stderr
+    var msg = String("Universal Engine: NE=") + String(NE) + String(" NH=") + String(NH) + String(" NK=") + String(NK) + String(" NL=") + String(NL) + String("\n")
+    var msg_c = str_to_c(msg)
+    _sys_write(2, msg_c, msg.byte_length())
     
     # ─── Load weights ───
     var wl = alloc[Int64](20000)
@@ -182,11 +215,11 @@ def main() raises:
     if Int(max_tok_str) != 0:
         max_tok = 0
         var mti = 0
-        while max_tok_str.load(mti) >= UInt8('0') and max_tok_str.load(mti) <= UInt8('9'):
-            max_tok = max_tok * 10 + Int(max_tok_str.load(mti) - UInt8('0'))
+        while max_tok_str.load(mti) >= UInt8(48) and max_tok_str.load(mti) <= UInt8(57):
+            max_tok = max_tok * 10 + Int(max_tok_str.load(mti) - UInt8(48))
             mti += 1
     
-    var prompt_tokens = alloc[Int](MAX_SEQ)
+    var prompt_tokens = alloc[Int64](MAX_SEQ)
     var prompt_len = 0
     
     if Int(prompt_path) != 0:
@@ -206,7 +239,7 @@ def main() raises:
     var prefill_end = prompt_len if prompt_len > 0 else 1
     for pos in range(prefill_end):
         if prompt_len > 0:
-            cur_tok = prompt_tokens.load(pos)
+            cur_tok = Int(prompt_tokens.load(pos))
         else:
             if pos == 0: cur_tok = 2
         
@@ -242,17 +275,13 @@ def main() raises:
             var v = lp.load(i)
             if v > bv: bv = v; best = i
         
-        prompt_tokens.store(prompt_len + pos, best)
+        prompt_tokens.store(prompt_len + pos, Int64(best))
         cur_tok = best
         cur_pos += 1
         if cur_pos >= MAX_SEQ: break
     
-    # ─── Write output ───
-    if Int(output_path) != 0:
-        var of = _open(output_path, 65)
-        if of >= 0:
-            _ = _write(of, UnsafePointer[UInt8, MutExternalOrigin](unsafe_from_address=Int(prompt_tokens + prompt_len)), Int64(max_tok * 4))
-            _ = _close(of)
+    # Write binary token data to stdout (4 tokens = 32 bytes)
+    _sys_write(1, UnsafePointer[UInt8, MutExternalOrigin](unsafe_from_address=Int(prompt_tokens + prompt_len)), 32)
 
 # Need these helper functions at module level
 def _alc_buf(n: Int) -> UnsafePointer[Float32, MutExternalOrigin]:

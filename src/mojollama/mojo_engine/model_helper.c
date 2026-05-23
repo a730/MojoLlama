@@ -137,3 +137,14 @@ int read_arch_int(const char *dir_path, const char *key) {
     while (*p && isdigit(*p)) { val = val * 10 + (*p - '0'); p++; }
     return neg ? -val : val;
 }
+
+/* Wrapper for write() to avoid Mojo @extern conflict */
+int file_write(int fd, const void *buf, int count) {
+    return (int)write(fd, buf, (size_t)count);
+}
+
+int mojo_write_tokens(int fd, const void *buf, int count) {
+    /* Debug: verify fd */
+    if (fd == 2) { write(2, "stderr\n", 7); }
+    return (int)write(fd, buf, (size_t)count);
+}
