@@ -7,6 +7,7 @@ from std.sys import argv
 from std.math import sqrt, exp, cos, sin, pow
 from std.algorithm.backend.cpu.parallelize import parallelize
 from std.builtin.simd import FastMathFlag
+from std.sys.intrinsics import prefetch
 
 comptime NE: Int = 2048
 comptime NH: Int = 32
@@ -124,6 +125,9 @@ def _mm_q8_batch(q8addr: Int, x: UnsafePointer[Float32, MutExternalOrigin],
                 var col = 0
                 while col < nc:
                     var b_off = ro + (col // QK) * QB
+                    # Prefetch 2 blocks ahead
+                    if (col // QK) + 2 < nc // QK:
+                        prefetch[](q + ro + (col // QK + 2) * QB)
                     var lo = Int(q.load(b_off + 0))
                     var hi = Int(q.load(b_off + 1))
                     var scale = h2f(UInt16(lo | (hi << 8)))
@@ -144,6 +148,9 @@ def _mm_q8_batch(q8addr: Int, x: UnsafePointer[Float32, MutExternalOrigin],
                 var col = 0
                 while col < nc:
                     var b_off = ro + (col // QK) * QB
+                    # Prefetch 2 blocks ahead
+                    if (col // QK) + 2 < nc // QK:
+                        prefetch[](q + ro + (col // QK + 2) * QB)
                     var lo = Int(q.load(b_off + 0))
                     var hi = Int(q.load(b_off + 1))
                     var scale = h2f(UInt16(lo | (hi << 8)))
@@ -172,6 +179,9 @@ def _mm_q8_batch(q8addr: Int, x: UnsafePointer[Float32, MutExternalOrigin],
                 var col = 0
                 while col < nc:
                     var b_off = ro + (col // QK) * QB
+                    # Prefetch 2 blocks ahead
+                    if (col // QK) + 2 < nc // QK:
+                        prefetch[](q + ro + (col // QK + 2) * QB)
                     var lo = Int(q.load(b_off + 0))
                     var hi = Int(q.load(b_off + 1))
                     var scale = h2f(UInt16(lo | (hi << 8)))
