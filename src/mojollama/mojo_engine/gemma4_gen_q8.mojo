@@ -171,6 +171,37 @@ def rms_norm(x: UnsafePointer[Float32, MutExternalOrigin],
             for j in range(0, gs, 8):
                 o.store[width=8](go + j, x.load[width=8](go + j) * inv_v)
 
+# ─── RoPE ───
+def apply_rope(q: UnsafePointer[Float32, MutExternalOrigin],
+               k: UnsafePointer[Float32, MutExternalOrigin],
+               pos: Int, nh: Int, nk: Int, hd: Int,
+               freqs: UnsafePointer[Float32, MutExternalOrigin]):
+    var n_pairs = hd / 2  # 64 pairs for HD=128
+    # Apply to Q (all nh query heads)
+    for h in range(nh):
+        var base = h * hd
+        for p in range(n_pairs):
+            var f = freqs.load(p)
+            var angle = Float32(pos) * f
+            var c = cos(angle)
+            var s = sin(angle)
+            var x0 = q.load(base + p * 2)
+            var x1 = q.load(base + p * 2 + 1)
+            q.store(base + p * 2, x0 * c - x1 * s)
+            q.store(base + p * 2 + 1, x0 * s + x1 * c)
+    # Apply to K (all nk key heads)
+    for h in range(nk):
+        var base = h * hd
+        for p in range(n_pairs):
+            var f = freqs.load(p)
+            var angle = Float32(pos) * f
+            var c = cos(angle)
+            var s = sin(angle)
+            var x0 = k.load(base + p * 2)
+            var x1 = k.load(base + p * 2 + 1)
+            k.store(base + p * 2, x0 * c - x1 * s)
+            k.store(base + p * 2 + 1, x0 * s + x1 * c)
+
 # ─── SiLU ───
 def silu(p: UnsafePointer[Float32, MutExternalOrigin], n: Int):
     for i in range(n):
@@ -258,6 +289,16 @@ def main() raises:
     lw(dcp, wl, 10001, String(""), String("output_norm_weight.bin"))
     var w_emb = wl.load(10000)
     var w_on = wl.load(10001)
+    
+    # Load rope_freqs (Q8_0 → dequant to F32)
+    lw(dcp, wl, 10002, String(""), String("rope_freqs_weight.bin"))
+    var rope_addr = wl.load(10002)
+    var rope_buf = UnsafePointer[Float32, MutExternalOrigin](unsafe_from_address=Int(_alc(Int64(HD * 4))))
+    if Int(rope_addr) != 0:
+        deq8(Int(rope_addr), rope_buf, HD / 2)
+    else:
+        for i in range(HD / 2): rope_buf.store(i, 1.0)
+    # Debug rope_buf
     
     # Load per-layer weights
     for l in range(NL):
@@ -408,6 +449,9 @@ def main() raises:
                 var kn_bi = kn_buf + bi * l_nk
                 var vb_bi = vb + bi * l_nk
                 var att_bi = att_buf + bi * l_qi
+                
+                # Apply RoPE to Q and K before KV store + attention
+                apply_rope(qn_bi, kn_bi, cur_pos, nh_l, nk_l, hd_l, rope_buf)
                 
                 # Store KV cache
                 for h in range(nk_l):
