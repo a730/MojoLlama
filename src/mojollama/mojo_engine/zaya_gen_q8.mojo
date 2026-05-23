@@ -614,10 +614,12 @@ def main() raises:
                     var ec = 0
                     for i in range(1, N_EXP):
                         if scores.load(i) > scores.load(ec): ec = i
+                    # Prefetch selected expert's gate_up weights while computing score
+                    var per_exp_bytes_gate = FF * emb_rb
+                    prefetch[](UnsafePointer[UInt8, MutExternalOrigin](unsafe_from_address=Int(w_gu + ec * per_exp_bytes_gate)))
                     var exp_sum = Float32(0.0)
                     for i in range(N_EXP): exp_sum += scores.load(i)
                     var ew = scores.load(ec) / exp_sum
-                    var per_exp_bytes_gate = FF * emb_rb
                     var exp_gate_up = Int(w_gu) + ec * per_exp_bytes_gate
                     _mm_q8_batch(exp_gate_up, xb, gate_up_buf, FF, NE, nw)
                     for i in range(F2):
@@ -626,6 +628,8 @@ def main() raises:
                         if gv > 80.0: gv = 80.0
                         gate_up_buf.store(i, (gv / (1.0 + exp(-gv))) * uv)
                     var per_exp_bytes_down = F2 * emb_rb
+                    # Prefetch selected expert's down weights before down matmul
+                    prefetch[](UnsafePointer[UInt8, MutExternalOrigin](unsafe_from_address=Int(w_de + ec * per_exp_bytes_down)))
                     var exp_down = Int(w_de) + ec * per_exp_bytes_down
                     _mm_q8_batch(exp_down, gate_up_buf, bp, F2, F2, nw)
                     var rr_w_addr = wl.load(lw + 3); var rr_b_addr = wl.load(lw + 4)
