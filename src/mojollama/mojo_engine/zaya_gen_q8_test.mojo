@@ -43,7 +43,7 @@ comptime ROPE_DIM: Int = 64   # partial RoPE
 comptime ROPE_THETA: Float64 = 5000000.0
 comptime W: Int = 8           # SIMD width
 comptime RPW: Int = 8         # rows per worker in matmul
-comptime B: Int = 4           # batch size
+comptime B: Int = 1           # batch size
 comptime QK: Int = 32         # Q8_0 block size
 comptime QB: Int = 34         # Q8_0 bytes per block
 

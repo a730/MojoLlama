@@ -1,0 +1,31 @@
+=== ZAYA1-8B Q8_0 Thread × Batch Sweep ===
+Started: Sat May 23 09:44:02 UTC 2026
+B    nw   tok/s
+--   ---  -----
+Building B=1...
+1    1    ERR
+1    4    ERR
+1    8    ERR
+1    12   ERR
+1    16   ERR
+1    24   ERR
+1    32   ERR
+Building B=2...
+2    1    ERR
+2    4    ERR
+2    8    ERR
+2    12   ERR
+2    16   ERR
+2    24   ERR
+2    32   ERR
+Building B=4...
+4    1    ERR
+4    4    ERR
+4    8    ERR
+4    12   ERR
+4    16   ERR
+4    24   ERR
+4    32   ERR
+
+=== Done: Sat May 23 09:50:34 UTC 2026 ===
+Log: bench_zaya_20260523_094402.log
