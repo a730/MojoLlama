@@ -144,7 +144,5 @@ int file_write(int fd, const void *buf, int count) {
 }
 
 int mojo_write_tokens(int fd, const void *buf, int count) {
-    /* Debug: verify fd */
-    if (fd == 2) { write(2, "stderr\n", 7); }
     return (int)write(fd, buf, (size_t)count);
 }

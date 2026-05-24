@@ -147,11 +147,6 @@ def main() raises:
     var nk_n = NK * HD; var nk_w = NK * HD * 2
     var max_nk = NK * 2
     
-    # Write arch info to stderr
-    var msg = String("Universal Engine: NE=") + String(NE) + String(" NH=") + String(NH) + String(" NK=") + String(NK) + String(" NL=") + String(NL) + String("\n")
-    var msg_c = str_to_c(msg)
-    _sys_write(2, msg_c, msg.byte_length())
-    
     # ─── Load weights ───
     var wl = alloc[Int64](20000)
     lw_proc(dc, wl, 10000, "token_embd_weight.bin")
@@ -229,8 +224,15 @@ def main() raises:
             _ = _lseek(pf, 0, 0)
             prompt_len = Int(sz) / 4
             if prompt_len > MAX_SEQ: prompt_len = MAX_SEQ
+            # Read Int32 tokens directly into Int64 array
             _ = _read(pf, UnsafePointer[UInt8, MutExternalOrigin](unsafe_from_address=Int(prompt_tokens)), Int64(prompt_len * 4))
             _ = _close(pf)
+            # Expand: Int32 values are packed into the buffer; convert to Int64
+            var i = prompt_len
+            while i > 0:
+                i -= 1
+                var val32 = UnsafePointer[Int32, MutExternalOrigin](unsafe_from_address=Int(prompt_tokens)).load(i)
+                prompt_tokens.store(i, Int64(val32))
     
     var cur_tok = 2
     var cur_pos = 0
@@ -281,7 +283,7 @@ def main() raises:
         if cur_pos >= MAX_SEQ: break
     
     # Write binary token data to stdout (4 tokens = 32 bytes)
-    _sys_write(1, UnsafePointer[UInt8, MutExternalOrigin](unsafe_from_address=Int(prompt_tokens + prompt_len)), 32)
+    _sys_write(1, UnsafePointer[UInt8, MutExternalOrigin](unsafe_from_address=Int(prompt_tokens + prompt_len)), max_tok * 8)
 
 # Need these helper functions at module level
 def _alc_buf(n: Int) -> UnsafePointer[Float32, MutExternalOrigin]:
