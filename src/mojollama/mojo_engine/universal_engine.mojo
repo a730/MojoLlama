@@ -134,6 +134,8 @@ def main() raises:
     var NL = 42; var FF = 10240; var NV = 262144
     var HAS_QK = True; var HAS_IG = True; var HAS_ROPE = False
     var WIDE_INTERVAL = 6
+    var has_moe = False
+    var n_exp = 0; var n_act = 4; var exp_gu = 1408; var exp_dd = 704
     
     var dc = str_to_c(wdir)
     var ne_v = read_arch_int(dc, str_to_c(String("ne")))
@@ -152,6 +154,22 @@ def main() raises:
     if nv_v > 0: NV = nv_v
     var wi_v = read_arch_int(dc, str_to_c(String("wide_interval")))
     if wi_v > 0: WIDE_INTERVAL = wi_v
+    var moe_v = read_arch_int(dc, str_to_c(String("has_moe")))
+    if moe_v > 0: has_moe = True
+    var nexp_v = read_arch_int(dc, str_to_c(String("n_exp")))
+    if nexp_v > 0: n_exp = nexp_v
+    var nact_v = read_arch_int(dc, str_to_c(String("n_act")))
+    if nact_v > 0: n_act = nact_v
+    var egu_v = read_arch_int(dc, str_to_c(String("expert_gate_up_dim")))
+    if egu_v > 0: exp_gu = egu_v
+    var edd_v = read_arch_int(dc, str_to_c(String("expert_down_dim")))
+    if edd_v > 0: exp_dd = edd_v
+    var qk_v = read_arch_int(dc, str_to_c(String("has_qk_norm")))
+    HAS_QK = qk_v > 0
+    var ig_v = read_arch_int(dc, str_to_c(String("has_inp_gate")))
+    HAS_IG = ig_v > 0
+    var rp_v = read_arch_int(dc, str_to_c(String("has_rope")))
+    HAS_ROPE = rp_v > 0
     
     var qi_n = NH * HD; var qi_w = NH * HD * 2
     var nk_n = NK * HD; var nk_w = NK * HD * 2
@@ -183,6 +201,10 @@ def main() raises:
         lw_proc(dc, wl, l * WPL + 14, pfx + "ffn_up_weight.bin")
         lw_proc(dc, wl, l * WPL + 15, pfx + "ffn_down_weight.bin")
         lw_proc(dc, wl, l * WPL + 16, pfx + "layer_output_scale_weight.bin")
+        # MoE weights (loaded if files exist)
+        lw_proc(dc, wl, l * WPL + 20, pfx + "ffn_gate_inp_weight.bin")
+        lw_proc(dc, wl, l * WPL + 21, pfx + "ffn_gate_up_exps_weight.bin")
+        lw_proc(dc, wl, l * WPL + 22, pfx + "ffn_down_exps_weight.bin")
     
     # ─── Allocate buffers ───
     var hp = _alc_buf(NE)
@@ -259,16 +281,18 @@ def main() raises:
         run_layers(NL, NE, NH, NK, HD, FF, NV, WIDE_INTERVAL,
                   qi_n, qi_w, nk_n, nk_w, max_nk, max_nk,
                   HAS_QK, HAS_IG, HAS_ROPE,
+                  has_moe, n_exp, n_act, exp_gu, exp_dd,
                   wl, hp, bp, rp, qb, kb, vb, ab, qn, kn, gt, up_b,
                   kc, vc, sc, nb, rope_b, cur_pos, nw, False)
         cur_pos += 1
     
-    # ─── Generate ───
+    # Generation: generate max_tok new tokens
     for pos in range(max_tok):
         embed_token(cur_tok, emb, emb_rb, hp, NE)
         run_layers(NL, NE, NH, NK, HD, FF, NV, WIDE_INTERVAL,
                   qi_n, qi_w, nk_n, nk_w, max_nk, max_nk,
                   HAS_QK, HAS_IG, HAS_ROPE,
+                  has_moe, n_exp, n_act, exp_gu, exp_dd,
                   wl, hp, bp, rp, qb, kb, vb, ab, qn, kn, gt, up_b,
                   kc, vc, sc, nb, rope_b, cur_pos, nw, True)
         
@@ -351,6 +375,7 @@ def run_layers(NL: Int, NE: Int, NH: Int, NK: Int, HD: Int, FF: Int, NV: Int,
                WIDE_INTERVAL: Int, qi_n: Int, qi_w: Int, nk_n: Int, nk_w: Int,
                max_nk: Int, max_nk_hd: Int,
                HAS_QK: Bool, HAS_IG: Bool, HAS_ROPE: Bool,
+               HAS_MOE: Bool, N_EXP: Int, N_ACT: Int, EXP_GU_DIM: Int, EXP_D_DIM: Int,
                wl: UnsafePointer[Int64, MutExternalOrigin],
                hp: UnsafePointer[Float32, MutExternalOrigin],
                bp: UnsafePointer[Float32, MutExternalOrigin],
@@ -518,6 +543,90 @@ def run_layers(NL: Int, NE: Int, NH: Int, NK: Int, HD: Int, FF: Int, NV: Int,
             if Int(w_dn) != 0:
                 _mm_q8(Int(w_dn), gt, bp, NE, FF, nw)
             for i in range(NE): hp.store(i, rp.load(i) + bp.load(i) * los)
+        
+        # MoE: router + top-k expert FFN (if model has MoE)
+        if HAS_MOE:
+            var w_router = wl.load(base + 20)
+            if Int(w_router) != 0:
+                for i in range(NE): rp.store(i, hp.load(i))
+                # Router logits: [NE] @ [NE, N_EXP] → [N_EXP]
+                var router_buf = kn  # reuse K buffer for router logits (128)
+                _mm_q8(Int(w_router), bp, router_buf, N_EXP, NE, nw)
+                # Softmax
+                var rmax = router_buf.load(0)
+                for i in range(1, N_EXP):
+                    var rv = router_buf.load(i)
+                    if rv > rmax: rmax = rv
+                var rsum = Float32(0.0)
+                for i in range(N_EXP):
+                    var e2 = exp(router_buf.load(i) - rmax)
+                    router_buf.store(i, e2)
+                    rsum += e2
+                var rinv = 1.0 / (rsum + 1e-10)
+                for i in range(N_EXP):
+                    router_buf.store(i, router_buf.load(i) * rinv)
+                
+                # Top-4 selection — direct comparison without alloc
+                var sel0 = -1; var sel1 = -1; var sel2 = -1; var sel3 = -1
+                var pr0 = Float32(-1e9); var pr1 = Float32(-1e9)
+                var pr2 = Float32(-1e9); var pr3 = Float32(-1e9)
+                
+                for i in range(N_EXP):
+                    var rv = router_buf.load(i)
+                    if rv > pr0:
+                        pr3 = pr2; sel3 = sel2
+                        pr2 = pr1; sel2 = sel1
+                        pr1 = pr0; sel1 = sel0
+                        pr0 = rv; sel0 = i
+                    elif rv > pr1:
+                        pr3 = pr2; sel3 = sel2
+                        pr2 = pr1; sel2 = sel1
+                        pr1 = rv; sel1 = i
+                    elif rv > pr2:
+                        pr3 = pr2; sel3 = sel2
+                        pr2 = rv; sel2 = i
+                    elif rv > pr3:
+                        pr3 = rv; sel3 = i
+                
+                # Expert FFN for each selected expert
+                var w_gate_up = wl.load(base + 21)
+                var w_down = wl.load(base + 22)
+                var expert_stride = EXP_GU_DIM * q8_rb(NE)  # bytes per expert in gate_up_exps
+                var down_stride = NE * q8_rb(EXP_D_DIM)  # bytes per expert in down_exps
+                
+                var moe_out = bp
+                for i in range(NE): moe_out.store(i, 0.0)
+                
+                var ei = sel0; var prob = pr0
+                for expert_iter in range(N_ACT):
+                    if expert_iter == 1: ei = sel1; prob = pr1
+                    if expert_iter == 2: ei = sel2; prob = pr2
+                    if expert_iter == 3: ei = sel3; prob = pr3
+                    
+                    if ei >= 0 and Int(w_gate_up) != 0 and Int(w_down) != 0:
+                        var e_addr = Int(w_gate_up) + ei * expert_stride
+                        var e_down_addr = Int(w_down) + ei * down_stride
+                        
+                        # Gate: hidden @ W_gate_e → [EXP_D_DIM] (first half of gate_up)
+                        _mm_q8(e_addr, bp, gt, EXP_D_DIM, NE, nw)
+                        silu_proc(gt, EXP_D_DIM)
+                        
+                        # Up: hidden @ W_up_e → [EXP_D_DIM] (second half)
+                        _mm_q8(e_addr + EXP_D_DIM * q8_rb(NE), bp, up, EXP_D_DIM, NE, nw)
+                        
+                        # Element-wise multiply
+                        for i in range(EXP_D_DIM):
+                            gt.store(i, gt.load(i) * up.load(i))
+                        
+                        # Down: expert_hidden @ W_down_e → [NE]
+                        _mm_q8(e_down_addr, gt, up, NE, EXP_D_DIM, nw)
+                        
+                        # Accumulate weighted by router prob
+                        for i in range(NE):
+                            moe_out.store(i, moe_out.load(i) + up.load(i) * prob)
+                
+                # Residual + output scale
+                for i in range(NE): hp.store(i, rp.load(i) + moe_out.load(i) * los)
         
         # Post-norm
         var pn_q = wl.load(base + 9)
