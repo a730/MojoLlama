@@ -113,6 +113,22 @@ static int convert_file(const char *in_path, const char *out_path) {
         f32 = (float*)calloc(n_vals, 4);
         for (long b = 0; b < n_blk; b++)
             deq_q6k(in + b * 210, f32 + b * 256);
+    } else if (sz % 34 == 0) {  // MXFP4 (block_size=64, 64*4bit=32B + scale=2B)
+        long n_blk = sz / 34;
+        n_vals = n_blk * 64;
+        f32 = (float*)calloc(n_vals, 4);
+        for (long b = 0; b < n_blk; b++) {
+            uint16_t s_u; memcpy(&s_u, in + b * 34, 2);
+            float scale;
+            { int s=(s_u>>15)&1,e=(s_u>>10)&0x1F,m=s_u&0x3FF;
+              if(e==0) scale=(float)m*5.96e-8f; else if(e==31) scale=0;
+              else { uint32_t bits=(s<<31)|((e+112)<<23)|(m<<13); memcpy(&scale,&bits,4); } }
+            for (int j = 0; j < 64; j++) {
+                uint8_t byte = in[b * 34 + 2 + j/2];
+                int8_t q = (j & 1) ? (byte >> 4) : (byte & 0xF);
+                f32[b * 64 + j] = (float)(q - 8) * scale / 7.0f;
+            }
+        }
     } else if (sz % 144 == 0) {  // Q4_K
         long n_blk = sz / 144;
         n_vals = n_blk * 256;
